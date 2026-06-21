@@ -412,14 +412,8 @@ export const makeRoutesLayer = Layer.mergeAll(
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
-  McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer)),
-).pipe(
-  Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(ServerSelfUpdate.layer),
-  Layer.provide(commandReadinessLayer),
-  Layer.provide(browserApiCorsLayer),
-  Layer.provide(httpCompressionLayer),
-);
+  McpHttpServer.layer,
+).pipe(Layer.provide(browserApiCorsLayer));
 
 export const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -610,8 +604,8 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     return serverApplicationLayer.pipe(
-      Layer.provideMerge(runtimeServicesLive),
-      Layer.provide(activationLayer),
+      Layer.provideMerge(RuntimeServicesLive),
+      Layer.provideMerge(McpSessionRegistry.layer.pipe(Layer.provide(ServerEnvironment.layer))),
       Layer.provideMerge(serverRelayBrokerTracingLayer),
       Layer.provideMerge(HttpResponseCompressionLive),
       Layer.provideMerge(HttpServerLive),
