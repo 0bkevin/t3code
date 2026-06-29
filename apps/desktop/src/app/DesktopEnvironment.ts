@@ -158,16 +158,9 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appVersion: input.appVersion,
   });
   const displayName = branding.displayName;
-  const stateDir = path.join(
-    baseDir,
-    isDevelopment && Option.isNone(configuredBaseDir) ? "dev" : "userdata",
-  );
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
-  const linuxApplicationsDir = path.join(
-    Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
-    "applications",
-  );
+  const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata-v2");
+  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code-v2";
+  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha v2)";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
