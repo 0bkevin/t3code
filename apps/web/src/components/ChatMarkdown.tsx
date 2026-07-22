@@ -39,6 +39,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { MarkdownMedia } from "./chat/MarkdownMedia";
 import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { CHAT_FILE_TAG_CHIP_CLASS_NAME, FileTagChipContent } from "./chat/FileTagChip";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
@@ -161,10 +162,12 @@ function findTaskListMarkerOffset(markdown: string, listItemStart: number): numb
 }
 const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), "video"],
   attributes: {
     ...defaultSchema.attributes,
     "*": (defaultSchema.attributes?.["*"] ?? []).filter((attribute) => attribute !== "title"),
     code: [...(defaultSchema.attributes?.code ?? []), "dataCodeMeta", "dataInlineCode"],
+    video: ["src", "controls", "muted", "loop", "playsInline", "poster", "preload"],
   },
   protocols: {
     ...defaultSchema.protocols,
@@ -1582,6 +1585,20 @@ function ChatMarkdown({
           <code {...props} className={className}>
             {children}
           </code>
+        );
+      },
+      img({ node: _node, src, alt }) {
+        return (
+          <MarkdownMedia
+            src={typeof src === "string" ? src : undefined}
+            alt={alt}
+            threadRef={threadRef}
+          />
+        );
+      },
+      video({ node: _node, src }) {
+        return (
+          <MarkdownMedia src={typeof src === "string" ? src : undefined} threadRef={threadRef} />
         );
       },
       table({ node: _node, ...props }) {
