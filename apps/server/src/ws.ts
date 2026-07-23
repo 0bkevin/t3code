@@ -637,6 +637,7 @@ const makeWsRpcLayer = (
           yield* Effect.annotateCurrentSpan({
             "orchestration_v2.thread_id": input.threadId,
           });
+          yield* threadManagement.ensureLegacyTranscript(input.threadId);
 
           const eventStreamFrom = (afterSequence: number) =>
             threadManagement
