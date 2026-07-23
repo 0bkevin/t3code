@@ -223,7 +223,11 @@ import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
-import { resolveEffectiveEnvMode, resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
+import {
+  dedupeCheckoutOptions,
+  resolveEffectiveEnvMode,
+  resolveLocalCheckoutBranchMismatch,
+} from "./BranchToolbar.logic";
 import {
   getProviderStatusBannerKey,
   ProviderStatusBanner,
@@ -1669,6 +1673,22 @@ function ChatViewContent(props: ChatViewProps) {
     return envs;
   }, [activeProject, allProjects, projectGroupingSettings, primaryEnvironmentId, environmentById]);
   const hasMultipleEnvironments = logicalProjectEnvironments.length > 1;
+  const logicalProjectCheckouts = useMemo(() => {
+    if (!activeProject) return [];
+    const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
+    const checkouts = allProjects
+      .filter(
+        (project) =>
+          project.environmentId === activeProject.environmentId &&
+          deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings) === logicalKey,
+      )
+      .map((project) => ({
+        projectId: project.id,
+        title: project.title,
+        workspaceRoot: project.workspaceRoot,
+      }));
+    return dedupeCheckoutOptions(checkouts, activeProject.id);
+  }, [activeProject, allProjects, projectGroupingSettings]);
 
   const openPullRequestDialog = useCallback(
     (reference?: string) => {
@@ -2440,6 +2460,32 @@ function ChatViewContent(props: ChatViewProps) {
       });
     },
     [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
+  );
+
+  const onWorkspaceChange = useCallback(
+    (projectId: ProjectId, mode: DraftThreadEnvMode) => {
+      if (envLocked || !draftId || !activeProject) return;
+      const target = logicalProjectCheckouts.find((checkout) => checkout.projectId === projectId);
+      if (!target) return;
+      setDraftThreadContext(draftId, {
+        projectRef: scopeProjectRef(activeProject.environmentId, target.projectId),
+        envMode: mode,
+        startFromOrigin: resolveNewDraftStartFromOrigin({
+          envMode: mode,
+          newWorktreesStartFromOrigin: primaryServerSettings.newWorktreesStartFromOrigin,
+        }),
+        ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
+      });
+    },
+    [
+      activeProject,
+      draftId,
+      draftThread?.worktreePath,
+      envLocked,
+      logicalProjectCheckouts,
+      primaryServerSettings.newWorktreesStartFromOrigin,
+      setDraftThreadContext,
+    ],
   );
 
   const activeTerminalGroup =
@@ -5892,6 +5938,10 @@ function ChatViewContent(props: ChatViewProps) {
                                   : {})}
                                 {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
                                 availableEnvironments={logicalProjectEnvironments}
+                                availableCheckouts={logicalProjectCheckouts}
+                                {...(routeKind === "draft" && !isServerThread
+                                  ? { onWorkspaceChange }
+                                  : {})}
                               />
                             </div>
                           )}
