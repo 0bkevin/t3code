@@ -18,6 +18,7 @@ const makeServerConfigLayer = (overrides?: Partial<ServerConfig.ServerConfig["Se
       const config = yield* ServerConfig.ServerConfig;
       return {
         ...config,
+        port: 3773,
         ...overrides,
       } satisfies ServerConfig.ServerConfig["Service"];
     }),
@@ -32,10 +33,11 @@ const makeEnvironmentAuthLayer = (overrides?: Partial<ServerConfig.ServerConfig[
 
 const makeCookieRequest = (
   sessionToken: string,
+  cookieName = "t3_session",
 ): Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"]>[0] =>
   ({
     cookies: {
-      t3_session: sessionToken,
+      [cookieName]: sessionToken,
     },
     headers: {},
   }) as unknown as Parameters<
@@ -98,6 +100,38 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
       ]);
       expect(verified.subject).toBe("one-time-token");
     }).pipe(Effect.provide(makeEnvironmentAuthLayer())),
+  );
+
+  it.effect("uses the port-specific web cookie when sibling instance cookies are present", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const pairingCredential = yield* serverAuth.issuePairingCredential();
+      const exchanged = yield* serverAuth.createBrowserSession(
+        pairingCredential.credential,
+        requestMetadata,
+      );
+      const request = {
+        cookies: {
+          t3_session: "session-owned-by-the-canonical-instance",
+          t3_session_7446: exchanged.sessionToken,
+        },
+        headers: {},
+      } as unknown as Parameters<
+        EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"]
+      >[0];
+
+      const verified = yield* serverAuth.authenticateHttpRequest(request);
+
+      expect(verified.sessionId.length).toBeGreaterThan(0);
+      expect(verified.subject).toBe("one-time-token");
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthLayer({
+          mode: "web",
+          port: 7446,
+        }),
+      ),
+    ),
   );
 
   it.effect("does not exchange ordinary pairing grants for administrative access tokens", () =>

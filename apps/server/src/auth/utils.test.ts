@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveAuthClientMetadata } from "./utils.ts";
+import { deriveAuthClientMetadata, resolveSessionCookieName } from "./utils.ts";
+
+describe("resolveSessionCookieName", () => {
+  it("preserves the legacy cookie name for the canonical web port", () => {
+    expect(resolveSessionCookieName({ mode: "web", port: 3773 })).toBe("t3_session");
+  });
+
+  it("isolates web sessions on non-default ports", () => {
+    expect(resolveSessionCookieName({ mode: "web", port: 7446 })).toBe("t3_session_7446");
+    expect(resolveSessionCookieName({ mode: "web", port: 7447 })).toBe("t3_session_7447");
+  });
+
+  it("keeps desktop sessions isolated by port", () => {
+    expect(resolveSessionCookieName({ mode: "desktop", port: 3773 })).toBe("t3_session_3773");
+    expect(resolveSessionCookieName({ mode: "desktop", port: 7446 })).toBe("t3_session_7446");
+  });
+});
 
 describe("deriveAuthClientMetadata", () => {
   it("labels Electron user agents as Electron instead of Chrome", () => {

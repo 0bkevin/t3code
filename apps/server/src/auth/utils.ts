@@ -8,13 +8,15 @@ import * as NodeCrypto from "node:crypto";
 import * as Encoding from "effect/Encoding";
 import * as Result from "effect/Result";
 
+import { DEFAULT_PORT } from "../config.ts";
+
 const SESSION_COOKIE_NAME = "t3_session";
 
 export function resolveSessionCookieName(input: {
   readonly mode: "web" | "desktop";
   readonly port: number;
 }): string {
-  if (input.mode !== "desktop") {
+  if (input.mode === "web" && input.port === DEFAULT_PORT) {
     return SESSION_COOKIE_NAME;
   }
 

@@ -75,6 +75,24 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
         makeEnvironmentAuthPolicyLayer({
           mode: "web",
           host: "127.0.0.1",
+          port: 3773,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("isolates browser session cookies for web servers on non-default ports", () =>
+    Effect.gen(function* () {
+      const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
+      const descriptor = yield* policy.getDescriptor();
+
+      expect(descriptor.sessionCookieName).toBe("t3_session_7446");
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthPolicyLayer({
+          mode: "web",
+          host: "127.0.0.1",
+          port: 7446,
         }),
       ),
     ),
