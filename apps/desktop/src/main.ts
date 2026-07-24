@@ -109,7 +109,10 @@ const electronLayer = Layer.mergeAll(
   ElectronMenu.layer,
   ElectronProtocol.layer,
   ElectronSafeStorage.layer,
-  ElectronShell.layer,
+  ElectronShell.layer({ temporaryDirectory: NodeOS.tmpdir() }).pipe(
+    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(NodeHttpClient.layerUndici),
+  ),
   ElectronTheme.layer,
   ElectronUpdater.layer,
   ElectronWindow.layer,

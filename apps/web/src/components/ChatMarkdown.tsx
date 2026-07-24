@@ -45,6 +45,15 @@ import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../pierre-icons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "./ui/collapsible";
 import { ScrollArea } from "./ui/scroll-area";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -72,6 +81,8 @@ import { useRightPanelStore } from "../rightPanelStore";
 import { useActiveEnvironmentId } from "../state/entities";
 import { serverEnvironment } from "../state/server";
 import { assetEnvironment } from "../state/assets";
+import { resolveAssetUrl } from "../assets/assetUrls";
+import { useEnvironment } from "../state/environments";
 import { usePreparedConnection } from "../state/session";
 import { previewEnvironment } from "../state/preview";
 import { shellEnvironment } from "../state/shell";
@@ -745,6 +756,9 @@ interface MarkdownFileLinkProps {
   threadRef?: ScopedThreadRef | undefined;
   onOpen: (targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>;
   onShowInFinder: (targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>;
+  fileManagerAction: "native" | "download" | "disabled";
+  fileManagerLabel: string;
+  onDownloadAndShowInFinder?: ((targetPath: string) => Promise<void>) | undefined;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   className?: string | undefined;
 }
@@ -1025,9 +1039,14 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   threadRef,
   onOpen,
   onShowInFinder,
+  fileManagerAction,
+  fileManagerLabel,
+  onDownloadAndShowInFinder,
   onOpenInBrowser,
   className,
 }: MarkdownFileLinkProps) {
+  const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const handleOpenInEditor = useCallback(() => {
     void (async () => {
       try {
@@ -1086,7 +1105,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Unable to show file in Finder",
+            title: `Unable to ${fileManagerLabel.toLowerCase()}`,
             description: error instanceof Error ? error.message : "An error occurred.",
           }),
         );
@@ -1095,13 +1114,38 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Unable to show file in Finder",
+            title: `Unable to ${fileManagerLabel.toLowerCase()}`,
             description: cause instanceof Error ? cause.message : "An error occurred.",
           }),
         );
       }
     })();
-  }, [iconPath, onShowInFinder]);
+  }, [fileManagerLabel, iconPath, onShowInFinder]);
+
+  const handleDownloadAndShowInFinder = useCallback(() => {
+    if (!onDownloadAndShowInFinder) return;
+    void (async () => {
+      setIsDownloading(true);
+      try {
+        await onDownloadAndShowInFinder(iconPath);
+        setDownloadDialogOpen(false);
+      } catch (cause) {
+        reportMarkdownActionFailure(
+          { operation: "download-file-and-show-in-finder", target: iconPath },
+          cause,
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to download file",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setIsDownloading(false);
+      }
+    })();
+  }, [iconPath, onDownloadAndShowInFinder]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
@@ -1189,7 +1233,6 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       if (!api) return;
 
       try {
-        const platform = navigator.platform.toLowerCase();
         const clicked = await api.contextMenu.show(
           [
             { id: "open", label: "Open in editor" },
@@ -1200,11 +1243,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             { id: "copy-full", label: "Copy full path" },
             {
               id: "show-in-finder",
-              label: platform.includes("mac")
-                ? "Show in Finder"
-                : platform.includes("win")
-                  ? "Show in File Explorer"
-                  : "Show in Files",
+              label: fileManagerLabel,
+              disabled: fileManagerAction === "disabled",
             },
           ] as const,
           { x: event.clientX, y: event.clientY },
@@ -1227,6 +1267,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
           return;
         }
         if (clicked === "show-in-finder") {
+          if (fileManagerAction === "download") {
+            setDownloadDialogOpen(true);
+            return;
+          }
           handleShowInFinder();
         }
       } catch (cause) {
@@ -1242,43 +1286,78 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       handleOpenInBrowser,
       handleOpenInEditor,
       handleShowInFinder,
+      fileManagerAction,
+      fileManagerLabel,
       onOpenInBrowser,
       targetPath,
     ],
   );
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <a
-            href={href}
-            className={cn(CHAT_FILE_TAG_CHIP_CLASS_NAME, MARKDOWN_FILE_LINK_CLASS_NAME, className)}
-            data-markdown-copy={copyMarkdown}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (onOpenInBrowser) {
-                handleOpenInBrowser();
-                return;
-              }
-              handleOpenInFilePreview();
-            }}
-            onContextMenu={handleContextMenu}
-          >
-            <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
-          </a>
-        }
-      />
-      <TooltipPopup
-        side="top"
-        className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
+    <>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <a
+              href={href}
+              className={cn(
+                CHAT_FILE_TAG_CHIP_CLASS_NAME,
+                MARKDOWN_FILE_LINK_CLASS_NAME,
+                className,
+              )}
+              data-markdown-copy={copyMarkdown}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (onOpenInBrowser) {
+                  handleOpenInBrowser();
+                  return;
+                }
+                handleOpenInFilePreview();
+              }}
+              onContextMenu={handleContextMenu}
+            >
+              <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
+            </a>
+          }
+        />
+        <TooltipPopup
+          side="top"
+          className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
+        >
+          <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
+            {displayPath}
+          </div>
+        </TooltipPopup>
+      </Tooltip>
+      <AlertDialog
+        open={downloadDialogOpen}
+        onOpenChange={(open) => {
+          if (!isDownloading) setDownloadDialogOpen(open);
+        }}
       >
-        <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
-          {displayPath}
-        </div>
-      </TooltipPopup>
-    </Tooltip>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Download this remote file?</AlertDialogTitle>
+            <AlertDialogDescription>
+              T3 Code will download a temporary copy of{" "}
+              <span className="font-mono text-foreground">
+                {iconPath.replaceAll("\\", "/").split("/").pop() ?? iconPath}
+              </span>{" "}
+              to this Mac and show it in Finder.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={isDownloading} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button disabled={isDownloading} onClick={handleDownloadAndShowInFinder}>
+              {isDownloading ? "Downloading..." : "Download and show"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
   );
 }, areMarkdownFileLinkPropsEqual);
 
@@ -1299,6 +1378,9 @@ function areMarkdownFileLinkPropsEqual(
     previous.threadRef === next.threadRef &&
     previous.onOpen === next.onOpen &&
     previous.onShowInFinder === next.onShowInFinder &&
+    previous.fileManagerAction === next.fileManagerAction &&
+    previous.fileManagerLabel === next.fileManagerLabel &&
+    previous.onDownloadAndShowInFinder === next.onDownloadAndShowInFinder &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
     previous.className === next.className
   );
@@ -1326,6 +1408,8 @@ function ChatMarkdown({
   });
   const preparedConnection = usePreparedConnection(threadRef?.environmentId ?? null);
   const environmentId = useActiveEnvironmentId();
+  const fileEnvironmentId = threadRef?.environmentId ?? environmentId;
+  const fileEnvironment = useEnvironment(fileEnvironmentId);
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
     environmentId,
@@ -1333,7 +1417,7 @@ function ChatMarkdown({
   );
   const showFileInFinder = useCallback(
     (targetPath: string) => {
-      if (environmentId === null) {
+      if (fileEnvironmentId === null) {
         return Promise.resolve(
           AsyncResult.failure<void, Error>(
             Cause.fail(new Error("Cannot show the file because no environment is selected.")),
@@ -1341,11 +1425,54 @@ function ChatMarkdown({
         );
       }
       return revealInFileManager({
-        environmentId,
+        environmentId: fileEnvironmentId,
         input: { path: targetPath },
       });
     },
-    [environmentId, revealInFileManager],
+    [fileEnvironmentId, revealInFileManager],
+  );
+  const localPlatform = typeof navigator === "undefined" ? "" : navigator.platform.toLowerCase();
+  const isDesktopHosted = typeof window !== "undefined" && window.desktopBridge !== undefined;
+  const fileManagerLabel = localPlatform.includes("mac")
+    ? "Show in Finder"
+    : localPlatform.includes("win")
+      ? "Show in File Explorer"
+      : "Show in Files";
+  const fileManagerAction =
+    isDesktopHosted && fileEnvironment?.entry.target._tag === "PrimaryConnectionTarget"
+      ? "native"
+      : isDesktopHosted && localPlatform.includes("mac")
+        ? "download"
+        : "disabled";
+  const downloadAndShowInFinder = useCallback(
+    async (targetPath: string) => {
+      if (!threadRef || preparedConnection._tag === "None") {
+        throw new Error("The remote environment is not connected.");
+      }
+      const result = await createAssetUrl({
+        environmentId: threadRef.environmentId,
+        input: {
+          resource: {
+            _tag: "workspace-file-download",
+            threadId: threadRef.threadId,
+            path: targetPath,
+          },
+        },
+      });
+      if (result._tag === "Failure") {
+        throw squashAtomCommandFailure(result);
+      }
+      const url = resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl);
+      if (url === null) {
+        throw new Error("The remote environment returned an invalid download URL.");
+      }
+      const api = readLocalApi();
+      if (!api) {
+        throw new Error("The local desktop API is unavailable.");
+      }
+      await api.shell.downloadAndReveal({ url, fileName: targetPath });
+    },
+    [createAssetUrl, preparedConnection, threadRef],
   );
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const markdownFileLinkMetaByHref = useMemo(() => {
@@ -1569,6 +1696,11 @@ function ChatMarkdown({
             threadRef={threadRef}
             onOpen={openInPreferredEditor}
             onShowInFinder={showFileInFinder}
+            fileManagerAction={fileManagerAction}
+            fileManagerLabel={fileManagerLabel}
+            onDownloadAndShowInFinder={
+              fileManagerAction === "download" ? downloadAndShowInFinder : undefined
+            }
             onOpenInBrowser={
               threadRef &&
               isPreviewSupportedInRuntime() &&
@@ -1624,6 +1756,9 @@ function ChatMarkdown({
       openInPreferredEditor,
       openExternalLinkInPreview,
       openMarkdownFileInPreview,
+      downloadAndShowInFinder,
+      fileManagerAction,
+      fileManagerLabel,
       resolvedTheme,
       showFileInFinder,
       skills,

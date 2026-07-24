@@ -1,6 +1,7 @@
 import {
   ContextMenuItemSchema,
   DesktopAppBrandingSchema,
+  DesktopDownloadAndRevealInputSchema,
   DesktopEnvironmentBootstrapSchema,
   DesktopThemeSchema,
   PickFolderOptionsSchema,
@@ -266,5 +267,15 @@ export const openExternal = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.openExternal")(function* (url) {
     const shell = yield* ElectronShell.ElectronShell;
     return yield* shell.openExternal(url);
+  }),
+});
+
+export const downloadAndReveal = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.DOWNLOAD_AND_REVEAL_CHANNEL,
+  payload: DesktopDownloadAndRevealInputSchema,
+  result: Schema.String,
+  handler: Effect.fn("desktop.ipc.window.downloadAndReveal")(function* ({ url, fileName }) {
+    const shell = yield* ElectronShell.ElectronShell;
+    return yield* shell.downloadAndReveal(url, fileName);
   }),
 });

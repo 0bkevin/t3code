@@ -926,6 +926,12 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
   data: Schema.Uint8Array,
 });
 
+export const DesktopDownloadAndRevealInputSchema = Schema.Struct({
+  url: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
+  fileName: Schema.String.check(Schema.isNonEmpty()),
+});
+export type DesktopDownloadAndRevealInput = typeof DesktopDownloadAndRevealInputSchema.Type;
+
 export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationClickInput,
@@ -1005,6 +1011,7 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  downloadAndReveal: (input: DesktopDownloadAndRevealInput) => Promise<string>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getWindowFullscreenState: () => boolean;
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;
@@ -1101,6 +1108,7 @@ export interface LocalApi {
   shell: {
     openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
+    downloadAndReveal: (input: DesktopDownloadAndRevealInput) => Promise<string>;
   };
   contextMenu: {
     show: <T extends string>(

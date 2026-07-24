@@ -87,11 +87,13 @@ describe("LocalApi", () => {
     const pickFolder = vi.fn().mockResolvedValue("/tmp/project");
     const getClientSettings = vi.fn().mockResolvedValue(DEFAULT_CLIENT_SETTINGS);
     const setClientSettings = vi.fn().mockResolvedValue(undefined);
+    const downloadAndReveal = vi.fn().mockResolvedValue("/tmp/download/readme.txt");
     testWindow().desktopBridge = {
       showContextMenu,
       pickFolder,
       getClientSettings,
       setClientSettings,
+      downloadAndReveal,
     } as unknown as DesktopBridge;
 
     const { createLocalApi } = await import("./localApi");
@@ -102,11 +104,21 @@ describe("LocalApi", () => {
     await expect(api.dialogs.pickFolder({ initialPath: "/tmp" })).resolves.toBe("/tmp/project");
     await expect(api.persistence.getClientSettings()).resolves.toEqual(DEFAULT_CLIENT_SETTINGS);
     await api.persistence.setClientSettings(DEFAULT_CLIENT_SETTINGS);
+    await expect(
+      api.shell.downloadAndReveal({
+        url: "https://example.com/readme.txt",
+        fileName: String.raw`C:\workspace\readme.txt`,
+      }),
+    ).resolves.toBe("/tmp/download/readme.txt");
 
     expect(showContextMenu).toHaveBeenCalledWith(items, undefined);
     expect(pickFolder).toHaveBeenCalledWith({ initialPath: "/tmp" });
     expect(getClientSettings).toHaveBeenCalledTimes(1);
     expect(setClientSettings).toHaveBeenCalledWith(DEFAULT_CLIENT_SETTINGS);
+    expect(downloadAndReveal).toHaveBeenCalledWith({
+      url: "https://example.com/readme.txt",
+      fileName: String.raw`C:\workspace\readme.txt`,
+    });
   });
 
   it("persists client settings in browser storage", async () => {

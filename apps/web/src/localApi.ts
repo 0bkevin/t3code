@@ -37,6 +37,12 @@ function createBrowserLocalApi(): LocalApi {
 
         window.open(url, "_blank", "noopener,noreferrer");
       },
+      downloadAndReveal: async (input) => {
+        if (!window.desktopBridge) {
+          throw new Error("Downloading and revealing files requires the desktop app.");
+        }
+        return window.desktopBridge.downloadAndReveal(input);
+      },
     },
     contextMenu: {
       show: async <T extends string>(

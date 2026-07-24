@@ -174,6 +174,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   let fileName: string;
 
   switch (input.resource._tag) {
+    case "workspace-file-download":
     case "workspace-file": {
       if (!input.workspaceRoot) {
         return yield* new AssetWorkspaceContextNotFoundError({
@@ -203,7 +204,10 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
               }),
           ),
         );
-      if (!isWorkspacePreviewEntryPath(resolved.relativePath)) {
+      if (
+        input.resource._tag === "workspace-file" &&
+        !isWorkspacePreviewEntryPath(resolved.relativePath)
+      ) {
         return yield* new AssetPreviewTypeValidationError({
           resource: input.resource,
         });
@@ -234,21 +238,23 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             }),
         ),
       );
-      claims = isWorkspaceImagePreviewPath(resolved.relativePath)
-        ? {
-            version: 1,
-            kind: "workspace-file-exact",
-            workspaceRoot: canonicalWorkspaceRoot,
-            relativePath: resolved.relativePath,
-            expiresAt,
-          }
-        : {
-            version: 1,
-            kind: "workspace-file",
-            workspaceRoot: canonicalWorkspaceRoot,
-            baseRelativePath: path.dirname(resolved.relativePath),
-            expiresAt,
-          };
+      claims =
+        input.resource._tag === "workspace-file-download" ||
+        isWorkspaceImagePreviewPath(resolved.relativePath)
+          ? {
+              version: 1,
+              kind: "workspace-file-exact",
+              workspaceRoot: canonicalWorkspaceRoot,
+              relativePath: resolved.relativePath,
+              expiresAt,
+            }
+          : {
+              version: 1,
+              kind: "workspace-file",
+              workspaceRoot: canonicalWorkspaceRoot,
+              baseRelativePath: path.dirname(resolved.relativePath),
+              expiresAt,
+            };
       fileName = path.basename(resolved.relativePath);
       break;
     }

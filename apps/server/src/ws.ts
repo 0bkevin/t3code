@@ -1701,7 +1701,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
-              if (input.resource._tag !== "workspace-file") {
+              if (
+                input.resource._tag !== "workspace-file" &&
+                input.resource._tag !== "workspace-file-download"
+              ) {
                 return yield* issueAssetUrl({ resource: input.resource });
               }
               const thread = yield* projectionSnapshotQuery
