@@ -11,7 +11,12 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
-import { clearExpectedServerRestart, expectServerRestart } from "~/serverRestartStore";
+import {
+  clearExpectedServerRestart,
+  expectServerRestart,
+  isServerRestartSettled,
+  useServerRestartExpectation,
+} from "~/serverRestartStore";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { manualServerUpdateCommand } from "~/versionSkew";
@@ -97,6 +102,27 @@ export function ServerUpdateAction({
     },
     [],
   );
+
+  // The restart is scheduled after the RPC is acknowledged, so a rejected
+  // restart (or a replacement that comes back on the old version) can no
+  // longer be reported through the call. Without this, the mismatch banner
+  // would keep its only action disabled for the full safety window. Once the
+  // restart window has closed and this component is still mounted — meaning
+  // the skew is unresolved and the server is answering again — release the
+  // action so the user can retry immediately.
+  const restartSettled = isServerRestartSettled(useServerRestartExpectation(environmentId));
+  useEffect(() => {
+    if (!restartSettled || !inFlightRef.current) {
+      return;
+    }
+    if (expiryRef.current !== null) {
+      clearTimeout(expiryRef.current);
+      expiryRef.current = null;
+    }
+    attemptRef.current += 1;
+    inFlightRef.current = false;
+    setPending(false);
+  }, [restartSettled]);
 
   const handleUpdate = () => {
     // Synchronous re-entry guard: setPending is async, so a rapid

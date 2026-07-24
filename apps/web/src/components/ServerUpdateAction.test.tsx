@@ -16,6 +16,7 @@ const testState = vi.hoisted(() => ({
 const restartStore = vi.hoisted(() => ({
   expect: vi.fn(),
   clear: vi.fn(),
+  expectation: vi.fn(() => ({ expected: false, sawDisconnect: false })),
 }));
 
 const hooks = vi.hoisted(() => {
@@ -87,10 +88,15 @@ vi.mock("~/state/use-atom-command", () => ({
 vi.mock("./ui/toast", () => ({
   toastManager: { add: testState.toast },
 }));
-vi.mock("~/serverRestartStore", () => ({
-  expectServerRestart: restartStore.expect,
-  clearExpectedServerRestart: restartStore.clear,
-}));
+vi.mock("~/serverRestartStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/serverRestartStore")>();
+  return {
+    ...actual,
+    expectServerRestart: restartStore.expect,
+    clearExpectedServerRestart: restartStore.clear,
+    useServerRestartExpectation: restartStore.expectation,
+  };
+});
 
 import { ServerUpdateAction } from "./ServerUpdateAction";
 
@@ -133,6 +139,8 @@ describe("ServerUpdateAction", () => {
     testState.toast.mockReset();
     restartStore.expect.mockReset();
     restartStore.clear.mockReset();
+    restartStore.expectation.mockReset();
+    restartStore.expectation.mockReturnValue({ expected: false, sawDisconnect: false });
   });
 
   afterEach(() => {

@@ -22,29 +22,60 @@ import { create } from "zustand";
  */
 export const SERVER_RESTART_EXPECTED_WINDOW_MS = 90_000;
 
+interface ServerRestartWindow {
+  readonly expiresAt: number;
+  /**
+   * Whether the environment has actually gone away since the window was
+   * armed. The window is armed while the old server is still connected — that
+   * is the point, since the acknowledgement races its own disconnect — so a
+   * connected environment must not end the window until the restart it is
+   * waiting for has been observed.
+   */
+  readonly sawDisconnect: boolean;
+}
+
 interface ServerRestartState {
-  readonly expectedUntilByEnvironmentId: Readonly<Record<string, number>>;
+  readonly windowByEnvironmentId: Readonly<Record<string, ServerRestartWindow>>;
   readonly expect: (environmentId: EnvironmentId) => void;
+  readonly markDisconnected: (environmentId: EnvironmentId) => void;
   readonly clear: (environmentId: EnvironmentId) => void;
 }
 
 export const useServerRestartStore = create<ServerRestartState>()((set) => ({
-  expectedUntilByEnvironmentId: {},
+  windowByEnvironmentId: {},
   expect: (environmentId) =>
     set((state) => ({
-      expectedUntilByEnvironmentId: {
-        ...state.expectedUntilByEnvironmentId,
-        [environmentId]: Date.now() + SERVER_RESTART_EXPECTED_WINDOW_MS,
+      windowByEnvironmentId: {
+        ...state.windowByEnvironmentId,
+        [environmentId]: {
+          expiresAt: Date.now() + SERVER_RESTART_EXPECTED_WINDOW_MS,
+          // Re-arming (a slow install acknowledging late) must not forget a
+          // disconnect that was already observed.
+          sawDisconnect: state.windowByEnvironmentId[environmentId]?.sawDisconnect ?? false,
+        },
       },
     })),
-  clear: (environmentId) =>
+  markDisconnected: (environmentId) =>
     set((state) => {
-      if (!(environmentId in state.expectedUntilByEnvironmentId)) {
+      const current = state.windowByEnvironmentId[environmentId];
+      if (current === undefined || current.sawDisconnect) {
         return state;
       }
-      const next = { ...state.expectedUntilByEnvironmentId };
+      return {
+        windowByEnvironmentId: {
+          ...state.windowByEnvironmentId,
+          [environmentId]: { ...current, sawDisconnect: true },
+        },
+      };
+    }),
+  clear: (environmentId) =>
+    set((state) => {
+      if (!(environmentId in state.windowByEnvironmentId)) {
+        return state;
+      }
+      const next = { ...state.windowByEnvironmentId };
       delete next[environmentId];
-      return { expectedUntilByEnvironmentId: next };
+      return { windowByEnvironmentId: next };
     }),
 }));
 
@@ -52,18 +83,58 @@ export function expectServerRestart(environmentId: EnvironmentId): void {
   useServerRestartStore.getState().expect(environmentId);
 }
 
+/** Records that the expected restart's disconnect has now been observed. */
+export function markServerRestartDisconnected(environmentId: EnvironmentId): void {
+  useServerRestartStore.getState().markDisconnected(environmentId);
+}
+
 export function clearExpectedServerRestart(environmentId: EnvironmentId): void {
   useServerRestartStore.getState().clear(environmentId);
 }
 
+export interface ServerRestartExpectation {
+  /** An unexpired restart window is armed for this environment. */
+  readonly expected: boolean;
+  /** The restart's disconnect has been observed, so a reconnect ends it. */
+  readonly sawDisconnect: boolean;
+}
+
 /**
- * Whether a restart window is currently active for the environment.
- * Re-renders when the window is set, cleared, or lapses.
+ * Whether an armed restart window has run its course: the disconnect was
+ * observed and the window has since closed. Callers use this to recover UI
+ * that was held for the restart — the update RPC is acknowledged before the
+ * restart runs, so a rejected restart cannot report itself through the call.
+ *
+ * Note that a window which never saw a disconnect is not "settled": the
+ * restart simply never happened, and other paths (an explicit RPC failure)
+ * own that case.
  */
-export function useServerRestartExpected(environmentId: EnvironmentId | null): boolean {
-  const expiresAt = useServerRestartStore((state) =>
-    environmentId === null ? null : (state.expectedUntilByEnvironmentId[environmentId] ?? null),
+export function isServerRestartSettled(expectation: ServerRestartExpectation): boolean {
+  return expectation.sawDisconnect && !expectation.expected;
+}
+
+/**
+ * Whether the environment should currently be presented as restarting rather
+ * than as an outage: a live window plus an environment that is actually away.
+ */
+export function isServerRestarting(input: {
+  readonly expectation: ServerRestartExpectation;
+  readonly environmentUnavailable: boolean;
+}): boolean {
+  return input.expectation.expected && input.environmentUnavailable;
+}
+
+/**
+ * The restart window state for an environment. Re-renders when the window is
+ * armed, observes its disconnect, is cleared, or lapses.
+ */
+export function useServerRestartExpectation(
+  environmentId: EnvironmentId | null,
+): ServerRestartExpectation {
+  const window = useServerRestartStore((state) =>
+    environmentId === null ? null : (state.windowByEnvironmentId[environmentId] ?? null),
   );
+  const expiresAt = window?.expiresAt ?? null;
   const [, tick] = useReducer((count: number) => count + 1, 0);
   useEffect(() => {
     if (expiresAt === null) {
@@ -76,5 +147,8 @@ export function useServerRestartExpected(environmentId: EnvironmentId | null): b
     const timer = setTimeout(tick, remaining + 50);
     return () => clearTimeout(timer);
   }, [expiresAt]);
-  return expiresAt !== null && expiresAt > Date.now();
+  return {
+    expected: expiresAt !== null && expiresAt > Date.now(),
+    sawDisconnect: window?.sawDisconnect === true,
+  };
 }

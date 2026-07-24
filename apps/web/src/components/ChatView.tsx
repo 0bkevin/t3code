@@ -25,7 +25,12 @@ import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
-import { clearExpectedServerRestart, useServerRestartExpected } from "~/serverRestartStore";
+import {
+  clearExpectedServerRestart,
+  isServerRestarting,
+  markServerRestartDisconnected,
+  useServerRestartExpectation,
+} from "~/serverRestartStore";
 import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   parseScopedThreadKey,
@@ -1625,17 +1630,28 @@ function ChatViewContent(props: ChatViewProps) {
   // present them calmly and retry fast instead of letting exponential
   // backoff strand the client asleep when the server comes back.
   const activeEnvironmentId = activeEnvironment?.environmentId ?? null;
-  const activeEnvironmentRestartExpected = useServerRestartExpected(activeEnvironmentId);
-  const activeEnvironmentRestarting =
-    activeEnvironmentRestartExpected && activeEnvironmentUnavailable;
+  const activeEnvironmentRestartExpectation = useServerRestartExpectation(activeEnvironmentId);
+  const activeEnvironmentRestartExpected = activeEnvironmentRestartExpectation.expected;
+  const activeEnvironmentRestartSawDisconnect = activeEnvironmentRestartExpectation.sawDisconnect;
+  const activeEnvironmentRestarting = isServerRestarting({
+    expectation: activeEnvironmentRestartExpectation,
+    environmentUnavailable: activeEnvironmentUnavailable,
+  });
   useEffect(() => {
     if (activeEnvironmentId === null || !activeEnvironmentRestartExpected) {
       return;
     }
     if (activeEnvironmentConnectionPhase === "connected") {
-      clearExpectedServerRestart(activeEnvironmentId);
+      // The window is armed while the old server is still connected, so a
+      // healthy connection only ends it once the restart's disconnect has
+      // actually been seen. Clearing on any connected render would destroy
+      // the window before the restart it exists to cover.
+      if (activeEnvironmentRestartSawDisconnect) {
+        clearExpectedServerRestart(activeEnvironmentId);
+      }
       return;
     }
+    markServerRestartDisconnected(activeEnvironmentId);
     // Only wake the supervisor out of a backoff sleep; while an attempt is
     // live, retryNow would interrupt and restart it.
     if (activeEnvironment?.connection.retryAt == null) {
@@ -1650,6 +1666,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeEnvironmentConnectionPhase,
     activeEnvironmentId,
     activeEnvironmentRestartExpected,
+    activeEnvironmentRestartSawDisconnect,
     retryEnvironment,
   ]);
   const handleReconnectActiveEnvironment = useCallback(
