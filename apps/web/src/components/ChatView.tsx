@@ -25,6 +25,7 @@ import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
+import { clearExpectedServerRestart, useServerRestartExpected } from "~/serverRestartStore";
 import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   parseScopedThreadKey,
@@ -275,6 +276,7 @@ import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "./ui/button";
+import { Spinner } from "./ui/spinner";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -1619,6 +1621,37 @@ function ChatViewContent(props: ChatViewProps) {
       connection: activeEnvironment.connection,
     };
   }, [activeEnvironment, activeEnvironmentUnavailable, activeEnvironmentUnavailableLabel]);
+  // While a server self-update restart is expected, disconnects are routine:
+  // present them calmly and retry fast instead of letting exponential
+  // backoff strand the client asleep when the server comes back.
+  const activeEnvironmentId = activeEnvironment?.environmentId ?? null;
+  const activeEnvironmentRestartExpected = useServerRestartExpected(activeEnvironmentId);
+  const activeEnvironmentRestarting =
+    activeEnvironmentRestartExpected && activeEnvironmentUnavailable;
+  useEffect(() => {
+    if (activeEnvironmentId === null || !activeEnvironmentRestartExpected) {
+      return;
+    }
+    if (activeEnvironmentConnectionPhase === "connected") {
+      clearExpectedServerRestart(activeEnvironmentId);
+      return;
+    }
+    // Only wake the supervisor out of a backoff sleep; while an attempt is
+    // live, retryNow would interrupt and restart it.
+    if (activeEnvironment?.connection.retryAt == null) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void retryEnvironment(activeEnvironmentId);
+    }, 2_000);
+    return () => clearTimeout(timer);
+  }, [
+    activeEnvironment?.connection.retryAt,
+    activeEnvironmentConnectionPhase,
+    activeEnvironmentId,
+    activeEnvironmentRestartExpected,
+    retryEnvironment,
+  ]);
   const handleReconnectActiveEnvironment = useCallback(
     async (environmentId: EnvironmentId) => {
       const result = await retryEnvironment(environmentId);
@@ -1832,7 +1865,19 @@ function ChatViewContent(props: ChatViewProps) {
   const versionMismatchSelfUpdate = resolveServerSelfUpdateCapability(serverConfig);
   const systemComposerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const items: ComposerBannerStackItem[] = [];
-    if (activeEnvironmentUnavailableState) {
+    if (activeEnvironmentUnavailableState && activeEnvironmentRestarting) {
+      // An expected self-update restart: the disconnect and the transient
+      // connection errors behind it are routine, so keep the tone neutral
+      // and let the fast auto-retry loop do the work instead of asking the
+      // user to reconnect by hand.
+      items.push({
+        id: `environment-restarting:${activeEnvironmentUnavailableState.environmentId}`,
+        variant: "info",
+        icon: <Spinner className="size-4" />,
+        title: `${activeEnvironmentUnavailableState.label} is restarting`,
+        description: "Finishing the server update — reconnecting automatically.",
+      });
+    } else if (activeEnvironmentUnavailableState) {
       const connection = activeEnvironmentUnavailableState.connection;
       const isReconnecting =
         connection.phase === "connecting" || connection.phase === "reconnecting";
@@ -1872,7 +1917,10 @@ function ChatViewContent(props: ChatViewProps) {
       showVersionMismatchBanner &&
       versionMismatch &&
       versionMismatchDismissKey &&
-      versionMismatchEnvironmentId
+      versionMismatchEnvironmentId &&
+      // The mismatch data predates the disconnect; during an expected
+      // restart it is stale and its update action would double-trigger.
+      !activeEnvironmentRestarting
     ) {
       items.push({
         id: `version-mismatch:${versionMismatchDismissKey}`,
@@ -1906,6 +1954,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return items;
   }, [
+    activeEnvironmentRestarting,
     activeEnvironmentUnavailableState,
     handleReconnectActiveEnvironment,
     navigate,

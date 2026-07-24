@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { clearExpectedServerRestart, expectServerRestart } from "~/serverRestartStore";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { manualServerUpdateCommand } from "~/versionSkew";
@@ -116,6 +117,13 @@ export function ServerUpdateAction({
         expiry = armExpiry();
       }
     };
+    // Armed before dispatch: the boot-service path acknowledges and then
+    // drops every connection, and even the respawn acknowledgement can lose
+    // the race against the disconnect. An explicit RPC failure proves the
+    // server stayed alive, so the expectation is withdrawn there; on
+    // success or interrupt it stays armed and expires on its own if the
+    // server never returns.
+    expectServerRestart(environmentId);
     void Promise.resolve()
       .then(() =>
         updateServer({
@@ -133,6 +141,7 @@ export function ServerUpdateAction({
           if (isAtomCommandInterrupted(result)) {
             return;
           }
+          clearExpectedServerRestart(environmentId);
           toastManager.add({
             type: "error",
             title: "Server update failed",
@@ -152,6 +161,7 @@ export function ServerUpdateAction({
       })
       .catch((error: unknown) => {
         if (!ownsAttempt()) return;
+        clearExpectedServerRestart(environmentId);
         toastManager.add({
           type: "error",
           title: "Server update failed",

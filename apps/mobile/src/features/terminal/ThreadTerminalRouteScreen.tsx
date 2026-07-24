@@ -1209,7 +1209,9 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
               environment.presentation?.connection ?? {
                 phase: "available",
                 error: null,
+                reason: null,
                 traceId: null,
+                retryAt: null,
               }
             }
             resourceName="terminal"

@@ -60,6 +60,24 @@ export class RemoteEnvironmentAuthorization extends Context.Service<
 const TOKEN_EXPIRY_SAFETY_MARGIN_MS = 60_000;
 const CACHED_ENDPOINT_FAILURE_THRESHOLD = 2;
 
+/**
+ * Transient reasons that suggest the *cached endpoint itself* is stale —
+ * something answered and rejected or could not route the request — so
+ * re-bootstrapping may hand back a different endpoint.
+ *
+ * `network` and `timeout` are excluded on purpose: they only prove the
+ * endpoint was unreachable right now, which is the normal shape of a server
+ * restart or a brief outage. Evicting on those threw away a perfectly good
+ * token and forced a full relay bootstrap + token exchange on every
+ * reconnect, adding latency exactly when the server was coming back.
+ */
+const CACHED_ENDPOINT_STALE_REASONS: ReadonlySet<string> = new Set([
+  "endpoint-unavailable",
+  "remote-unavailable",
+  "relay-unavailable",
+  "transport",
+]);
+
 function mapDpopSocketError(error: RemoteEnvironmentAuthError | ConnectionAttemptError) {
   return error._tag === "ConnectionTransientError" || error._tag === "ConnectionBlockedError"
     ? error
@@ -215,6 +233,11 @@ export const make = Effect.gen(function* () {
         }
         const mappedFailure = mapDpopSocketError(cachedSocket.failure);
         if (mappedFailure._tag === "ConnectionTransientError") {
+          if (!CACHED_ENDPOINT_STALE_REASONS.has(mappedFailure.reason)) {
+            // Pure unreachability: keep the cached token so the next attempt
+            // is a single ticket request rather than a full re-bootstrap.
+            return yield* mappedFailure;
+          }
           const failureCount = yield* recordCachedEndpointFailure(input.expectedEnvironmentId);
           if (failureCount < CACHED_ENDPOINT_FAILURE_THRESHOLD) {
             return yield* mappedFailure;

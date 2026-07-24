@@ -40,7 +40,9 @@ function environment(
     connection: {
       phase,
       error: phase === "error" ? "Connection failed." : null,
+      reason: phase === "error" ? "authentication" : null,
       traceId: phase === "error" ? "trace-1" : null,
+      retryAt: null,
     },
     serverConfig: null,
   };

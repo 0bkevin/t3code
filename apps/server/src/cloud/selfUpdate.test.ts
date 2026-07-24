@@ -26,6 +26,30 @@ import * as SelfUpdate from "./selfUpdate.ts";
 
 const NODE_PATH = "/usr/local/bin/node";
 
+/**
+ * The deferred restart runs on a detached fiber, so its rollback performs
+ * real filesystem I/O that advancing the TestClock does not await. Poll on
+ * real time until the expected content lands.
+ */
+const eventuallyFileString = Effect.fn("test.eventuallyFileString")(function* (
+  filePath: string,
+  expected: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  let last = "";
+  for (let iteration = 0; iteration < 1_000; iteration += 1) {
+    last = yield* fs.readFileString(filePath);
+    if (last === expected) {
+      return last;
+    }
+    // Yielding (rather than sleeping) keeps this on the real event loop:
+    // TestClock would only advance virtual time and never let the
+    // detached fiber's filesystem writes land.
+    yield* Effect.yieldNow;
+  }
+  return yield* Effect.die(new Error(`Expected file contents were not observed at ${filePath}.`));
+});
+
 interface RecordedCommand {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -490,7 +514,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("rewrites the systemd unit and restarts the boot service", () =>
+  it.effect("rewrites the systemd unit and defers the boot-service restart", () =>
     Effect.gen(function* () {
       const context = yield* makeContext({ bootService: true });
       const result = yield* context.service.update({ targetVersion: "0.0.29" });
@@ -504,12 +528,15 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
         context.path.join(context.home, ".config", "systemd", "user", "t3code.service"),
       );
       assert.include(unit, `ExecStart=${NODE_PATH} ${pinnedEntry} serve`);
+      // The restart is deferred so the RPC acknowledgement flushes before
+      // systemd stops this process.
       assert.deepEqual(
         context.commands.map((entry) => entry.command),
-        ["npm", NODE_PATH, "systemctl", "systemctl"],
+        ["npm", NODE_PATH, "systemctl"],
       );
       assert.deepEqual(context.commands[2]?.args, ["--user", "daemon-reload"]);
 
+      yield* TestClock.adjust(Duration.seconds(10));
       assert.deepEqual(context.commands[3], {
         command: "systemctl",
         args: ["--user", "restart", "t3code.service"],
@@ -520,7 +547,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("restores the previous unit and permits a retry when systemd restart fails", () =>
+  it.effect("restores the previous unit and permits a retry when the deferred restart fails", () =>
     Effect.gen(function* () {
       let failRestart = true;
       const context = yield* makeContext({
@@ -542,9 +569,12 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
       );
       const previousUnit = yield* context.fs.readFileString(unitPath);
 
-      const first = yield* context.service.update({ targetVersion: "0.0.29" }).pipe(Effect.flip);
-      assert.include(first.reason, "Restarting the systemd boot service failed");
-      assert.equal(yield* context.fs.readFileString(unitPath), previousUnit);
+      // The RPC acknowledges before the restart runs, so a rejected
+      // restart can only roll back and log — never fail the request.
+      const first = yield* context.service.update({ targetVersion: "0.0.29" });
+      assert.deepEqual(first, { targetVersion: "0.0.29", method: "boot-service" });
+      yield* TestClock.adjust(Duration.seconds(10));
+      yield* eventuallyFileString(unitPath, previousUnit);
       assert.deepEqual(
         context.commands.slice(-2).map((entry) => entry.args),
         [

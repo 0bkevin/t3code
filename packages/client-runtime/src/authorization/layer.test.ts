@@ -316,6 +316,42 @@ describe("RemoteEnvironmentAuthorization", () => {
     }),
   );
 
+  it.effect("keeps a cached token when the endpoint is merely unreachable", () =>
+    Effect.gen(function* () {
+      const cached = new TokenStore.RemoteDpopAccessToken({
+        environmentId: ENVIRONMENT_ID,
+        label: DESCRIPTOR.label,
+        endpoint: ENDPOINT,
+        accessToken: "cached-access-token",
+        expiresAtEpochMs: Number.MAX_SAFE_INTEGER,
+        dpopThumbprint: "thumbprint-1",
+      });
+      // A restarting server refuses connections outright rather than
+      // answering; re-bootstrapping would not produce a better endpoint, so
+      // the token must survive to keep reconnects to a single request.
+      const harness = yield* makeHarness({
+        initialToken: cached,
+        responses: [],
+      });
+
+      yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const failure = yield* remote
+            .authorizeDpop({
+              expectedEnvironmentId: ENVIRONMENT_ID,
+              obtainBootstrap: harness.obtainBootstrap,
+            })
+            .pipe(Effect.flip);
+          expect(failure._tag).toBe("ConnectionTransientError");
+        }
+      }).pipe(Effect.provide(harness.layer));
+
+      expect((yield* Ref.get(harness.tokens)).get(ENVIRONMENT_ID)).toBe(cached);
+      expect(yield* Ref.get(harness.bootstrapCalls)).toBe(0);
+    }),
+  );
+
   it.effect("does not persist a refreshed token until its websocket ticket succeeds", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({

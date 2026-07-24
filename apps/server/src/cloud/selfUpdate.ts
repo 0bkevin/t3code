@@ -349,37 +349,46 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
         yield* Effect.logInfo("Server self-update installed; restarting boot service.", {
           targetVersion,
         });
-        // A successful systemd restart stops this process, so the RPC is
-        // interrupted and the reconnecting client observes the new version.
-        // A rejected restart returns while the old process is still alive;
-        // restore the previous unit and report that failure through the RPC.
-        yield* Effect.gen(function* () {
-          const restart = yield* runner
-            .run({
-              command: "systemctl",
-              args: ["--user", "restart", BOOT_SERVICE_UNIT_FILE],
-            })
-            .pipe(
-              Effect.mapError((cause) =>
-                failWith("Could not restart the systemd boot service.", cause),
+        // Deferred like the respawn path: a synchronous systemctl restart
+        // stops this process mid-RPC, so every successful update used to
+        // surface to the client as an interrupted call indistinguishable
+        // from a dropped connection. Deferring lets the acknowledgement
+        // flush first. The trade: a rejected restart can no longer be
+        // reported through this RPC — it rolls back, logs, and clears the
+        // in-flight guard so a retry works.
+        yield* scheduleRestart(
+          Effect.gen(function* () {
+            const restart = yield* runner
+              .run({
+                command: "systemctl",
+                args: ["--user", "restart", BOOT_SERVICE_UNIT_FILE],
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  failWith("Could not restart the systemd boot service.", cause),
+                ),
+              );
+            if (restart.code !== 0) {
+              return yield* failWith(
+                `Restarting the systemd boot service failed (exit code ${String(restart.code)}).`,
+              );
+            }
+          }).pipe(
+            Effect.catch((restartError) =>
+              Effect.logError(
+                "Server self-update restart was rejected; restoring the previous systemd unit.",
+              ).pipe(
+                Effect.annotateLogs({ targetVersion, error: restartError.reason }),
+                Effect.andThen(
+                  writeUnitAtomically(unitPath, previousUnit).pipe(Effect.andThen(reloadSystemd())),
+                ),
+                Effect.catch((rollbackError) =>
+                  Effect.logError(
+                    "Server self-update could not restore the previous systemd unit after a rejected restart.",
+                  ).pipe(Effect.annotateLogs({ targetVersion, error: String(rollbackError) })),
+                ),
+                Effect.ensuring(Ref.set(inFlight, false)),
               ),
-            );
-          if (restart.code !== 0) {
-            return yield* failWith(
-              `Restarting the systemd boot service failed (exit code ${String(restart.code)}).`,
-            );
-          }
-        }).pipe(
-          Effect.catch((restartError) =>
-            writeUnitAtomically(unitPath, previousUnit).pipe(
-              Effect.andThen(reloadSystemd()),
-              Effect.mapError((rollbackError) =>
-                failWith("Could not restore the previous systemd unit.", {
-                  restartError,
-                  rollbackError,
-                }),
-              ),
-              Effect.andThen(Effect.fail(restartError)),
             ),
           ),
         );

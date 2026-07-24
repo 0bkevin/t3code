@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import { BearerConnectionProfile, type ConnectionCatalogEntry } from "./catalog.ts";
 import {
   BearerConnectionTarget,
+  ConnectionBlockedError,
   ConnectionTransientError,
   type SupervisorConnectionState,
 } from "./model.ts";
@@ -59,7 +60,9 @@ describe("connection presentation", () => {
     expect(presentConnectionState(supervisorState({ phase: "connecting", attempt: 1 }))).toEqual({
       phase: "connecting",
       error: null,
+      reason: null,
       traceId: null,
+      retryAt: null,
     });
     expect(
       presentConnectionState(
@@ -75,8 +78,10 @@ describe("connection presentation", () => {
       ),
     ).toEqual({
       phase: "reconnecting",
-      error: "Socket closed.",
+      error: "The connection to the environment was interrupted.",
+      reason: "transport",
       traceId: "trace-previous",
+      retryAt: null,
     });
     expect(
       presentConnectionState(
@@ -93,8 +98,48 @@ describe("connection presentation", () => {
       ),
     ).toEqual({
       phase: "reconnecting",
-      error: "Disconnected.",
+      error: "The connection to the environment was interrupted.",
+      reason: "transport",
       traceId: "trace-1",
+      retryAt: 1,
+    });
+  });
+
+  it("summarizes transport failures without exposing endpoint internals", () => {
+    const presented = presentConnectionState(
+      supervisorState({
+        phase: "backoff",
+        attempt: 2,
+        retryAt: 5,
+        lastFailure: new ConnectionTransientError({
+          reason: "network",
+          detail:
+            "Failed to fetch remote environment endpoint https://prod-6e7fc14fddd8f0fb.t3coderelay.com/api/auth/websocket-ticket (HttpClientError: Transport error).",
+        }),
+      }),
+    );
+    expect(presented.error).toBe("The environment could not be reached.");
+    expect(presented.error).not.toContain("t3coderelay.com");
+    expect(presented.reason).toBe("network");
+  });
+
+  it("keeps authored blocked-failure messages, which are already actionable", () => {
+    expect(
+      presentConnectionState(
+        supervisorState({
+          phase: "blocked",
+          lastFailure: new ConnectionBlockedError({
+            reason: "authentication",
+            detail: "The environment credential is invalid.",
+          }),
+        }),
+      ),
+    ).toEqual({
+      phase: "error",
+      error: "The environment credential is invalid.",
+      reason: "authentication",
+      traceId: null,
+      retryAt: null,
     });
   });
 
@@ -106,7 +151,7 @@ describe("connection presentation", () => {
           stage: "opening",
           attempt: 2,
           lastFailure: new ConnectionTransientError({
-            reason: "transport",
+            reason: "timeout",
             detail: "Relay connection timed out.",
             traceId: "trace-retry",
           }),
@@ -114,8 +159,10 @@ describe("connection presentation", () => {
       ),
     ).toEqual({
       phase: "reconnecting",
-      error: "Relay connection timed out.",
+      error: "The environment did not respond in time.",
+      reason: "timeout",
       traceId: "trace-retry",
+      retryAt: null,
     });
   });
 
@@ -127,7 +174,9 @@ describe("connection presentation", () => {
     const connection = {
       phase: "reconnecting",
       error: "Relay request timed out.",
+      reason: "timeout",
       traceId: "trace-retry",
+      retryAt: null,
     } as const;
     expect(connectionStatusText(connection)).toBe(
       "Failed to connect. Reconnecting... Reason: Relay request timed out.",
@@ -147,7 +196,9 @@ describe("connection presentation", () => {
     ).toEqual({
       phase: "offline",
       error: null,
+      reason: null,
       traceId: null,
+      retryAt: null,
     });
   });
 
@@ -163,7 +214,9 @@ describe("connection presentation", () => {
     ).toEqual({
       phase: "connected",
       error: null,
+      reason: null,
       traceId: null,
+      retryAt: null,
     });
   });
 
@@ -181,7 +234,9 @@ describe("connection presentation", () => {
     ).toEqual({
       phase: "available",
       error: null,
+      reason: null,
       traceId: null,
+      retryAt: null,
     });
   });
 });
