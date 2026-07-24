@@ -19,6 +19,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
   TurnId,
+  WorkspaceTaskId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -342,9 +343,28 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const ThreadForkProvenance = Schema.Struct({
+  mode: Schema.Literals(["fresh", "portable"]),
+  sourceThreadId: Schema.NullOr(ThreadId),
+  createdAt: IsoDateTime,
+});
+export type ThreadForkProvenance = typeof ThreadForkProvenance.Type;
+
+const ThreadTaskFields = {
+  // Optional at the wire boundary so a task-aware client remains compatible
+  // with pre-task servers. New servers always materialize these fields and
+  // legacy rows are backfilled to one task with one tab.
+  workspaceTaskId: Schema.optional(WorkspaceTaskId),
+  tabLabel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  tabPosition: Schema.optional(NonNegativeInt),
+  tabClosedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  forkProvenance: Schema.optional(Schema.NullOr(ThreadForkProvenance)),
+} as const;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  ...ThreadTaskFields,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -401,6 +421,7 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  ...ThreadTaskFields,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -546,6 +567,7 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  ...ThreadTaskFields,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -621,6 +643,9 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  tabLabel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  tabPosition: Schema.optional(NonNegativeInt),
+  tabClosedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
 });
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({
@@ -641,6 +666,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
+  ...ThreadTaskFields,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -940,6 +966,7 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  ...ThreadTaskFields,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1003,6 +1030,9 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  tabLabel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  tabPosition: Schema.optional(NonNegativeInt),
+  tabClosedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   updatedAt: IsoDateTime,
 });
 

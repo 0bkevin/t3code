@@ -115,6 +115,7 @@ import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { WorkspaceTaskTabs } from "./WorkspaceTaskTabs";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
@@ -4725,6 +4726,18 @@ function ChatViewContent(props: ChatViewProps) {
                 ? {
                     createThread: {
                       projectId: activeProject.id,
+                      ...(draftThread?.workspaceTaskId
+                        ? { workspaceTaskId: draftThread.workspaceTaskId }
+                        : {}),
+                      ...(draftThread?.tabLabel !== undefined
+                        ? { tabLabel: draftThread.tabLabel }
+                        : {}),
+                      ...(draftThread?.tabPosition !== undefined
+                        ? { tabPosition: draftThread.tabPosition }
+                        : {}),
+                      ...(draftThread?.forkProvenance !== undefined
+                        ? { forkProvenance: draftThread.forkProvenance }
+                        : {}),
                       title,
                       modelSelection: threadCreateModelSelection,
                       runtimeMode,
@@ -5655,6 +5668,7 @@ function ChatViewContent(props: ChatViewProps) {
           />
         </header>
 
+        <WorkspaceTaskTabs />
         <ThreadErrorBanner
           error={threadError}
           onDismiss={() => setThreadError(activeThread.id, null)}

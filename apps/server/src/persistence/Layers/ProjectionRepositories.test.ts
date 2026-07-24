@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId, WorkspaceTaskId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -78,6 +78,11 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       yield* threads.upsert({
         threadId: ThreadId.make("thread-null-options"),
         projectId: ProjectId.make("project-null-options"),
+        workspaceTaskId: WorkspaceTaskId.make("thread-null-options"),
+        tabLabel: null,
+        tabPosition: 0,
+        tabClosedAt: null,
+        forkProvenance: null,
         title: "Null options thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -140,6 +145,11 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       yield* threads.upsert({
         threadId: ThreadId.make("thread-settled"),
         projectId: ProjectId.make("project-1"),
+        workspaceTaskId: WorkspaceTaskId.make("thread-settled"),
+        tabLabel: null,
+        tabPosition: 0,
+        tabClosedAt: null,
+        forkProvenance: null,
         title: "Settled thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),

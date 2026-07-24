@@ -4,6 +4,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
+  WorkspaceTaskId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -597,6 +598,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            workspaceTaskId:
+              event.payload.workspaceTaskId ?? WorkspaceTaskId.make(String(event.payload.threadId)),
+            tabLabel: event.payload.tabLabel ?? null,
+            tabPosition: event.payload.tabPosition ?? 0,
+            tabClosedAt: event.payload.tabClosedAt ?? null,
+            forkProvenance: event.payload.forkProvenance ?? null,
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -729,6 +736,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
+              : {}),
+            ...(event.payload.tabLabel !== undefined ? { tabLabel: event.payload.tabLabel } : {}),
+            ...(event.payload.tabPosition !== undefined
+              ? { tabPosition: event.payload.tabPosition }
+              : {}),
+            ...(event.payload.tabClosedAt !== undefined
+              ? { tabClosedAt: event.payload.tabClosedAt }
               : {}),
             updatedAt: event.payload.updatedAt,
           });

@@ -20,6 +20,7 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  WorkspaceTaskId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -476,6 +477,80 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
+
+  effectIt.effect(
+    "injects a source transcript only into the first provider turn of a portable task fork",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness());
+        const now = "2026-01-01T00:00:00.000Z";
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-source-turn"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("source-user-message"),
+            role: "user",
+            text: "Source tab context",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        });
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+
+        yield* harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-fork-thread-create"),
+          threadId: ThreadId.make("thread-fork"),
+          projectId: asProjectId("project-1"),
+          workspaceTaskId: WorkspaceTaskId.make("thread-1"),
+          tabPosition: 1,
+          forkProvenance: {
+            mode: "portable",
+            sourceThreadId: ThreadId.make("thread-1"),
+            createdAt: now,
+          },
+          title: "Fork",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-fork-turn"),
+          threadId: ThreadId.make("thread-fork"),
+          message: {
+            messageId: asMessageId("fork-user-message"),
+            role: "user",
+            text: "Try another approach",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        });
+
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 2));
+        expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+          threadId: ThreadId.make("thread-fork"),
+        });
+        const forkInput = harness.sendTurn.mock.calls[1]?.[0] as { input?: string };
+        expect(forkInput.input).toContain("Source tab context");
+        expect(forkInput.input?.endsWith("Try another approach")).toBe(true);
+        const readModel = yield* Effect.promise(() => harness.readModel());
+        const fork = readModel.threads.find((thread) => thread.id === ThreadId.make("thread-fork"));
+        expect(fork?.messages.map((message) => message.text)).toEqual(["Try another approach"]);
+      }),
+  );
 
   effectIt.effect("projects starting before a slow provider session finishes", () =>
     Effect.gen(function* () {

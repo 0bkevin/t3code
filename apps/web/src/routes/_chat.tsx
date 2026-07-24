@@ -21,6 +21,7 @@ import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { primaryServerKeybindingsAtom } from "~/state/server";
+import { useWorkspaceTaskTabs } from "../hooks/useWorkspaceTaskTabs";
 
 function ChatRouteGlobalShortcuts() {
   const clearSelection = useThreadSelectionStore((state) => state.clearSelection);
@@ -29,6 +30,7 @@ function ChatRouteGlobalShortcuts() {
     useHandleNewThread();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const sidebarV2Enabled = useClientSettings((settings) => settings.sidebarV2Enabled);
+  const workspaceTaskTabs = useWorkspaceTaskTabs();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -108,6 +110,14 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
+      if (command === "chat.newTab") {
+        if (!sidebarV2Enabled || !workspaceTaskTabs.hasTask) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void workspaceTaskTabs.createTab("fresh");
+        return;
+      }
+
       if (command === "preview.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -169,6 +179,7 @@ function ChatRouteGlobalShortcuts() {
     selectedThreadKeysSize,
     sidebarV2Enabled,
     terminalOpen,
+    workspaceTaskTabs,
   ]);
 
   return null;

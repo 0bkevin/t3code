@@ -6,6 +6,7 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  WorkspaceTaskId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -284,6 +285,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          workspaceTaskId: WorkspaceTaskId.make("thread-1"),
+          tabLabel: null,
+          tabPosition: 0,
+          tabClosedAt: null,
+          forkProvenance: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -398,6 +404,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          workspaceTaskId: WorkspaceTaskId.make("thread-1"),
+          tabLabel: null,
+          tabPosition: 0,
+          tabClosedAt: null,
+          forkProvenance: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -446,6 +457,23 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
+      }
+
+      yield* sql`
+        UPDATE projection_threads
+        SET tab_closed_at = '2026-02-24T00:00:09.000Z'
+        WHERE thread_id = 'thread-1'
+      `;
+      const closedShellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.deepEqual(closedShellSnapshot.threads, []);
+      const closedThreadShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
+      assert.equal(closedThreadShell._tag, "None");
+      const closedThreadDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(closedThreadDetail._tag, "Some");
+      if (closedThreadDetail._tag === "Some") {
+        assert.equal(closedThreadDetail.value.tabClosedAt, "2026-02-24T00:00:09.000Z");
       }
     }),
   );

@@ -18,7 +18,6 @@ import {
   AlarmClockOffIcon,
   CheckIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
@@ -101,6 +100,11 @@ import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoute
 import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
+import {
+  groupThreadsByWorkspaceTask,
+  taskPresentationThread,
+  workspaceTaskKey,
+} from "../lib/workspaceTasks";
 import {
   formatWorkingDurationLabel,
   firstValidTimestampMs,
@@ -365,6 +369,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // When a snooze ended (timer or early wake); drives the Woke pill until
   // the user visits the thread.
   wokeAt: string | null;
+  tabCount: number;
   isActive: boolean;
   jumpLabel: string | null;
   currentEnvironmentId: string | null;
@@ -766,6 +771,14 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               />
             </span>
             {title}
+            {props.tabCount > 1 ? (
+              <span
+                className="shrink-0 rounded bg-sidebar-accent px-1.5 font-mono text-[10px] text-sidebar-muted-foreground"
+                aria-label={`${props.tabCount} task tabs`}
+              >
+                {props.tabCount}
+              </span>
+            ) : null}
             {/* The PR badge stays outside the hover-fading slot: it must
               remain visible AND clickable while the row is hovered. Only
               the time/jump label yields to the settle affordance. */}
@@ -941,7 +954,17 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 ) : null}
               </span>
             </div>
-            <div className="mt-1 flex min-w-0">{title}</div>
+            <div className="mt-1 flex min-w-0 items-center gap-1.5">
+              {title}
+              {props.tabCount > 1 ? (
+                <span
+                  className="shrink-0 rounded bg-sidebar-accent px-1.5 font-mono text-[10px] text-sidebar-muted-foreground"
+                  aria-label={`${props.tabCount} task tabs`}
+                >
+                  {props.tabCount}
+                </span>
+              ) : null}
+            </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/75">
               {thread.branch ? (
                 <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch}</span>
@@ -1056,6 +1079,34 @@ export default function SidebarV2() {
   });
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  const routeTaskKey = useMemo(() => {
+    if (routeThreadKey === null) return null;
+    const routeThread = threads.find(
+      (thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
+    );
+    return routeThread ? workspaceTaskKey(routeThread) : null;
+  }, [routeThreadKey, threads]);
+  const taskTabCountByKey = useMemo(
+    () =>
+      new Map(
+        groupThreadsByWorkspaceTask(threads.filter((thread) => thread.tabClosedAt == null)).map(
+          (task) => [task.key, task.tabs.length] as const,
+        ),
+      ),
+    [threads],
+  );
+  const taskTabsByThreadKey = useMemo(() => {
+    const mapping = new Map<string, ReadonlyArray<EnvironmentThreadShell>>();
+    for (const task of groupThreadsByWorkspaceTask(
+      threads.filter((thread) => thread.tabClosedAt == null),
+    )) {
+      for (const tab of task.tabs) {
+        mapping.set(scopedThreadKey(scopeThreadRef(tab.environmentId, tab.id)), task.tabs);
+      }
+    }
+    return mapping;
+  }, [threads]);
   const routeTargetRef = useRef(routeTarget);
   routeTargetRef.current = routeTarget;
   // Post-settle navigation validates against the CURRENT route, not the one
@@ -1368,13 +1419,15 @@ export default function SidebarV2() {
     const visible = threads.filter(
       (thread) =>
         thread.archivedAt === null &&
+        thread.tabClosedAt == null &&
         (scopedProjectKeys === null ||
           scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
     );
     const active: EnvironmentThreadShell[] = [];
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
-    for (const thread of visible) {
+    for (const task of groupThreadsByWorkspaceTask(visible)) {
+      const thread = taskPresentationThread(task, routeThreadKey);
       // Threads on servers without the settlement capability (old server,
       // or descriptor not loaded yet) never classify as settled: the user
       // could neither un-settle nor pin them, so auto-settling them would
@@ -1383,17 +1436,22 @@ export default function SidebarV2() {
         serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSettlement === true;
       const supportsSnooze =
         serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true;
-      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const changeRequestState = changeRequestStateByKey.get(threadKey) ?? null;
+      const tabStates = task.tabs.map((tab) => {
+        const threadKey = scopedThreadKey(scopeThreadRef(tab.environmentId, tab.id));
+        const changeRequestState = changeRequestStateByKey.get(threadKey) ?? null;
+        return {
+          snoozed: supportsSnooze && effectiveSnoozed(tab, { now: preciseNow }),
+          settled:
+            supportsSettlement &&
+            effectiveSettled(tab, { now, autoSettleAfterDays, changeRequestState }),
+        };
+      });
       // Snooze outranks settled classification: an explicitly snoozed thread
       // belongs to the shelf even if it would also auto-settle (the shelf's
       // wake time is a stronger statement about when it matters again).
-      if (supportsSnooze && effectiveSnoozed(thread, { now: preciseNow })) {
+      if (tabStates.every((state) => state.snoozed)) {
         snoozed.push(thread);
-      } else if (
-        supportsSettlement &&
-        effectiveSettled(thread, { now, autoSettleAfterDays, changeRequestState })
-      ) {
+      } else if (tabStates.every((state) => state.settled)) {
         settled.push(thread);
       } else {
         active.push(thread);
@@ -1418,6 +1476,7 @@ export default function SidebarV2() {
     serverConfigs,
     snoozeWakeTick,
     threads,
+    routeThreadKey,
   ]);
 
   // Arm a timeout for the earliest upcoming wake so the shelf empties the
@@ -1455,17 +1514,14 @@ export default function SidebarV2() {
     // The open thread must never hide under "Show more": navigating into a
     // deep settled thread (search, deep link) pulls its row into the visible
     // tail so the highlight and the un-settle affordance stay reachable.
-    if (routeThreadKey !== null) {
+    if (routeTaskKey !== null) {
       const routeThread = settledThreads
         .slice(settledVisibleCount)
-        .find(
-          (thread) =>
-            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
-        );
+        .find((thread) => workspaceTaskKey(thread) === routeTaskKey);
       if (routeThread !== undefined) visible.push(routeThread);
     }
     return visible;
-  }, [routeThreadKey, settledThreads, settledVisibleCount]);
+  }, [routeTaskKey, settledThreads, settledVisibleCount]);
   const hiddenSettledCount = settledThreads.length - visibleSettledThreads.length;
   const showMoreSettled = useCallback(
     () => setSettledVisibleCount((count) => count + SETTLED_TAIL_PAGE_COUNT),
@@ -1475,13 +1531,12 @@ export default function SidebarV2() {
   const toggleSettledShelf = useCallback(() => setSettledShelfExpanded((value) => !value), []);
   const renderedSettledThreads = useMemo(() => {
     if (settledShelfExpanded) return visibleSettledThreads;
-    if (routeThreadKey === null) return [];
+    if (routeTaskKey === null) return [];
     const routeThread = visibleSettledThreads.find(
-      (thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
+      (thread) => workspaceTaskKey(thread) === routeTaskKey,
     );
     return routeThread === undefined ? [] : [routeThread];
-  }, [routeThreadKey, settledShelfExpanded, visibleSettledThreads]);
+  }, [routeTaskKey, settledShelfExpanded, visibleSettledThreads]);
 
   // The snoozed shelf is collapsed by default: out of the way, never gone.
   // Collapsed threads don't render (and so don't participate in jump
@@ -1494,13 +1549,10 @@ export default function SidebarV2() {
     // snoozed thread reached by route (deep link, open before snoozing
     // elsewhere) keeps its row — with highlight and wake affordance — same
     // exception the settled tail's "Show more" makes.
-    if (routeThreadKey === null) return [];
-    const routeThread = snoozedThreads.find(
-      (thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
-    );
+    if (routeTaskKey === null) return [];
+    const routeThread = snoozedThreads.find((thread) => workspaceTaskKey(thread) === routeTaskKey);
     return routeThread === undefined ? [] : [routeThread];
-  }, [routeThreadKey, snoozedShelfExpanded, snoozedThreads]);
+  }, [routeTaskKey, snoozedShelfExpanded, snoozedThreads]);
 
   const orderedThreads = useMemo(
     () => [...activeThreads, ...visibleSnoozedThreads, ...renderedSettledThreads],
@@ -1812,6 +1864,52 @@ export default function SidebarV2() {
     },
     [attemptUnsnooze, planForwardNavigation, snoozeThread],
   );
+  const taskTabsForRef = useCallback(
+    (threadRef: ScopedThreadRef) => taskTabsByThreadKey.get(scopedThreadKey(threadRef)) ?? [],
+    [taskTabsByThreadKey],
+  );
+  const attemptSettleTask = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      const tabs = taskTabsForRef(threadRef);
+      const coSettlingKeys = new Set(
+        tabs.map((tab) => scopedThreadKey(scopeThreadRef(tab.environmentId, tab.id))),
+      );
+      for (const tab of tabs) {
+        attemptSettle(scopeThreadRef(tab.environmentId, tab.id), { coSettlingKeys });
+      }
+    },
+    [attemptSettle, taskTabsForRef],
+  );
+  const attemptUnsettleTask = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      for (const tab of taskTabsForRef(threadRef)) {
+        attemptUnsettle(scopeThreadRef(tab.environmentId, tab.id));
+      }
+    },
+    [attemptUnsettle, taskTabsForRef],
+  );
+  const attemptSnoozeTask = useCallback(
+    (threadRef: ScopedThreadRef, preset: SnoozePreset) => {
+      const tabs = taskTabsForRef(threadRef);
+      const coSnoozingKeys = new Set(
+        tabs.map((tab) => scopedThreadKey(scopeThreadRef(tab.environmentId, tab.id))),
+      );
+      for (const tab of tabs) {
+        attemptSnooze(scopeThreadRef(tab.environmentId, tab.id), preset, {
+          coSnoozingKeys,
+        });
+      }
+    },
+    [attemptSnooze, taskTabsForRef],
+  );
+  const attemptUnsnoozeTask = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      for (const tab of taskTabsForRef(threadRef)) {
+        attemptUnsnooze(scopeThreadRef(tab.environmentId, tab.id));
+      }
+    },
+    [attemptUnsnooze, taskTabsForRef],
+  );
 
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const handleMultiSelectContextMenu = useCallback(
@@ -1827,13 +1925,20 @@ export default function SidebarV2() {
       );
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
+      const selectedTabsByKey = new Map<string, EnvironmentThreadShell>();
+      for (const threadKey of threadKeys) {
+        const thread = threadByKeyRef.current.get(threadKey);
+        if (!thread) continue;
+        const tabs = taskTabsByThreadKey.get(threadKey) ?? [thread];
+        for (const tab of tabs) {
+          selectedTabsByKey.set(scopedThreadKey(scopeThreadRef(tab.environmentId, tab.id)), tab);
+        }
+      }
+      const selectedTabEntries = [...selectedTabsByKey.entries()];
       // Snooze (N) is offered when every selected thread can actually take
       // it — a mixed selection with blocked-on-you work would half-apply.
       const selectionNow = new Date().toISOString();
-      const snoozableThreads = threadKeys.flatMap((threadKey) => {
-        const thread = threadByKeyRef.current.get(threadKey);
-        return thread ? [thread] : [];
-      });
+      const snoozableThreads = selectedTabEntries.map(([, thread]) => thread);
       const canSnoozeSelection = snoozableThreads.every(
         (thread) =>
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true &&
@@ -1870,7 +1975,7 @@ export default function SidebarV2() {
         if (preset) {
           // Post-snooze navigation must skip threads snoozing in this same
           // batch — they are all leaving the card block together.
-          const coSnoozingKeys = new Set(threadKeys);
+          const coSnoozingKeys = new Set(selectedTabsByKey.keys());
           for (const thread of snoozableThreads) {
             attemptSnooze(scopeThreadRef(thread.environmentId, thread.id), preset, {
               coSnoozingKeys,
@@ -1885,18 +1990,16 @@ export default function SidebarV2() {
         // batch — they are all leaving the card block together. Rows that
         // are already explicitly settled are skipped: nothing to do on a
         // valid mixed selection.
-        const coSettlingKeys = new Set(threadKeys);
-        for (const threadKey of threadKeys) {
-          const thread = threadByKeyRef.current.get(threadKey);
-          if (!thread || thread.settledOverride === "settled") continue;
+        const coSettlingKeys = new Set(selectedTabsByKey.keys());
+        for (const [, thread] of selectedTabEntries) {
+          if (thread.settledOverride === "settled") continue;
           attemptSettle(scopeThreadRef(thread.environmentId, thread.id), { coSettlingKeys });
         }
         clearSelection();
         return;
       }
       if (clicked.value === "mark-unread") {
-        for (const threadKey of threadKeys) {
-          const thread = threadByKeyRef.current.get(threadKey);
+        for (const [threadKey, thread] of selectedTabEntries) {
           markThreadUnread(threadKey, thread?.latestTurn?.completedAt);
         }
         clearSelection();
@@ -1907,8 +2010,8 @@ export default function SidebarV2() {
         const confirmed = await settlePromise(() =>
           api.dialogs.confirm(
             [
-              `Delete ${count} thread${count === 1 ? "" : "s"}?`,
-              "This permanently clears conversation history for these threads.",
+              `Delete ${count} task${count === 1 ? "" : "s"}?`,
+              "This permanently clears conversation history for every tab in these tasks.",
             ].join("\n"),
           ),
         );
@@ -1919,9 +2022,7 @@ export default function SidebarV2() {
       // really gone, or the first delete would treat still-alive batch mates
       // as deleted and remove a worktree they still point at.
       const deletedThreadKeys = new Set<string>();
-      for (const threadKey of threadKeys) {
-        const thread = threadByKeyRef.current.get(threadKey);
-        if (!thread) continue;
+      for (const [threadKey, thread] of selectedTabEntries) {
         const result = await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
           deletedThreadKeys,
         });
@@ -1951,6 +2052,7 @@ export default function SidebarV2() {
       markThreadUnread,
       removeFromSelection,
       serverConfigs,
+      taskTabsByThreadKey,
     ],
   );
 
@@ -1967,6 +2069,7 @@ export default function SidebarV2() {
         }
         const thread = threadByKeyRef.current.get(threadKey);
         if (!thread) return;
+        const taskTabs = taskTabsForRef(threadRef);
         // Un-settle works on every settled row: for explicit settles it
         // clears the override, for auto-settled rows it pins the thread
         // active until real activity clears the pin. Environments without
@@ -1994,8 +2097,8 @@ export default function SidebarV2() {
               ...(supportsSettlement
                 ? [
                     isSettled
-                      ? { id: "unsettle", label: "Un-settle thread" }
-                      : { id: "settle", label: "Settle thread" },
+                      ? { id: "unsettle", label: "Un-settle task" }
+                      : { id: "settle", label: "Settle task" },
                   ]
                 : []),
               ...(supportsSnooze
@@ -2013,9 +2116,9 @@ export default function SidebarV2() {
                         },
                   ]
                 : []),
-              { id: "rename", label: "Rename thread" },
+              { id: "rename", label: "Rename task" },
               { id: "mark-unread", label: "Mark unread" },
-              { id: "delete", label: "Delete", destructive: true, icon: "trash" },
+              { id: "delete", label: "Delete task", destructive: true, icon: "trash" },
             ],
             position,
           ),
@@ -2025,7 +2128,7 @@ export default function SidebarV2() {
           const preset = snoozePresets.find(
             (candidate) => `snooze:${candidate.id}` === clicked.value,
           );
-          if (preset) attemptSnooze(threadRef, preset);
+          if (preset) attemptSnoozeTask(threadRef, preset);
           return;
         }
         switch (clicked.value) {
@@ -2053,43 +2156,53 @@ export default function SidebarV2() {
             return;
           }
           case "settle":
-            attemptSettle(threadRef);
+            attemptSettleTask(threadRef);
             return;
           case "unsettle":
-            attemptUnsettle(threadRef);
+            attemptUnsettleTask(threadRef);
             return;
           case "unsnooze":
-            attemptUnsnooze(threadRef);
+            attemptUnsnoozeTask(threadRef);
             return;
           case "rename":
             startThreadRename(threadRef, thread.title);
             return;
           case "mark-unread":
-            markThreadUnread(threadKey, thread.latestTurn?.completedAt);
+            for (const tab of taskTabs) {
+              markThreadUnread(
+                scopedThreadKey(scopeThreadRef(tab.environmentId, tab.id)),
+                tab.latestTurn?.completedAt,
+              );
+            }
             return;
           case "delete": {
             if (confirmThreadDelete) {
               const confirmed = await settlePromise(() =>
                 api.dialogs.confirm(
                   [
-                    `Delete thread "${thread.title}"?`,
-                    "This permanently clears conversation history for this thread.",
+                    `Delete task "${thread.title}" and its ${taskTabs.length} tab${taskTabs.length === 1 ? "" : "s"}?`,
+                    "This permanently clears conversation history for every tab in the task.",
                   ].join("\n"),
                 ),
               );
               if (confirmed._tag === "Failure" || !confirmed.value) return;
             }
-            const result = await deleteThread(threadRef);
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Failed to delete thread",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-              return;
+            const deletedThreadKeys = new Set<string>();
+            for (const tab of taskTabs) {
+              const tabRef = scopeThreadRef(tab.environmentId, tab.id);
+              const result = await deleteThread(tabRef, { deletedThreadKeys });
+              if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                const error = squashAtomCommandFailure(result);
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Failed to delete task",
+                    description: error instanceof Error ? error.message : "An error occurred.",
+                  }),
+                );
+                return;
+              }
+              deletedThreadKeys.add(scopedThreadKey(tabRef));
             }
             return;
           }
@@ -2099,16 +2212,17 @@ export default function SidebarV2() {
       })();
     },
     [
-      attemptSettle,
-      attemptSnooze,
-      attemptUnsettle,
-      attemptUnsnooze,
+      attemptSettleTask,
+      attemptSnoozeTask,
+      attemptUnsettleTask,
+      attemptUnsnoozeTask,
       confirmThreadDelete,
       deleteThread,
       handleMultiSelectContextMenu,
       markThreadUnread,
       serverConfigs,
       startThreadRename,
+      taskTabsForRef,
     ],
   );
 
@@ -2221,7 +2335,7 @@ export default function SidebarV2() {
                   <SidebarMenuButton
                     size="sm"
                     type="button"
-                    aria-label="Search threads and commands"
+                    aria-label="Search tasks and commands"
                     className="h-8 gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                     data-testid="command-palette-trigger"
                   />
@@ -2246,7 +2360,7 @@ export default function SidebarV2() {
                       className="relative size-8 justify-center rounded-md border-0 bg-transparent p-0 text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                       onClick={handleNewThreadClick}
                       disabled={projects.length === 0}
-                      aria-label="New thread"
+                      aria-label="New task"
                     />
                   }
                 >
@@ -2257,7 +2371,7 @@ export default function SidebarV2() {
                   />
                 </TooltipTrigger>
                 <TooltipPopup side="right">
-                  {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+                  {newThreadShortcutLabel ? `New task (${newThreadShortcutLabel})` : "New task"}
                 </TooltipPopup>
               </Tooltip>
             </div>
@@ -2268,7 +2382,7 @@ export default function SidebarV2() {
             <div className="flex items-center gap-1">
               <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
                 <MenuTrigger
-                  aria-label="Filter threads by project"
+                  aria-label="Filter tasks by project"
                   className="flex h-8 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 text-left text-sm font-medium text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                 >
                   {scopedProjectGroup ? (
@@ -2417,7 +2531,8 @@ export default function SidebarV2() {
                       // the wake signal must survive the trip. Still-snoozed
                       // rows resolve to null on their own.
                       wokeAt={threadWokeAt(thread, { now: snoozeNow })}
-                      isActive={routeThreadKey === threadKey}
+                      tabCount={taskTabCountByKey.get(workspaceTaskKey(thread)) ?? 1}
+                      isActive={routeTaskKey === workspaceTaskKey(thread)}
                       jumpLabel={showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null}
                       currentEnvironmentId={primaryEnvironmentId}
                       environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
@@ -2439,10 +2554,10 @@ export default function SidebarV2() {
                       isRenaming={renamingThreadKey === threadKey}
                       renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
                       onContextMenu={handleThreadContextMenu}
-                      onSettle={attemptSettle}
-                      onUnsettle={attemptUnsettle}
-                      onSnooze={attemptSnooze}
-                      onUnsnooze={attemptUnsnooze}
+                      onSettle={attemptSettleTask}
+                      onUnsettle={attemptUnsettleTask}
+                      onSnooze={attemptSnoozeTask}
+                      onUnsnooze={attemptUnsnoozeTask}
                       onChangeRequestState={handleChangeRequestState}
                     />
                   );
@@ -2544,9 +2659,9 @@ export default function SidebarV2() {
                   </button>
                 </>
               ) : scopedProjectGroup ? (
-                `No threads in ${scopedProjectGroup.displayName} yet`
+                `No tasks in ${scopedProjectGroup.displayName} yet`
               ) : (
-                "No threads yet"
+                "No tasks yet"
               )}
             </div>
           ) : null}

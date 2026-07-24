@@ -984,6 +984,21 @@ const makeWsRpcLayer = (
                 commandId: yield* serverCommandId("bootstrap-thread-create"),
                 threadId: command.threadId,
                 projectId: bootstrap.createThread.projectId,
+                ...(bootstrap.createThread.workspaceTaskId !== undefined
+                  ? { workspaceTaskId: bootstrap.createThread.workspaceTaskId }
+                  : {}),
+                ...(bootstrap.createThread.tabLabel !== undefined
+                  ? { tabLabel: bootstrap.createThread.tabLabel }
+                  : {}),
+                ...(bootstrap.createThread.tabPosition !== undefined
+                  ? { tabPosition: bootstrap.createThread.tabPosition }
+                  : {}),
+                ...(bootstrap.createThread.tabClosedAt !== undefined
+                  ? { tabClosedAt: bootstrap.createThread.tabClosedAt }
+                  : {}),
+                ...(bootstrap.createThread.forkProvenance !== undefined
+                  ? { forkProvenance: bootstrap.createThread.forkProvenance }
+                  : {}),
                 title: bootstrap.createThread.title,
                 modelSelection: bootstrap.createThread.modelSelection,
                 runtimeMode: bootstrap.createThread.runtimeMode,

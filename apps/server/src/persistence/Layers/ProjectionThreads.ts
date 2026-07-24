@@ -14,11 +14,12 @@ import {
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
 } from "../Services/ProjectionThreads.ts";
-import { ModelSelection } from "@t3tools/contracts";
+import { ModelSelection, ThreadForkProvenance } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
+    forkProvenance: Schema.NullOr(Schema.fromJsonString(ThreadForkProvenance)),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -33,6 +34,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         INSERT INTO projection_threads (
           thread_id,
           project_id,
+          workspace_task_id,
+          tab_label,
+          tab_position,
+          tab_closed_at,
+          fork_provenance_json,
           title,
           model_selection_json,
           runtime_mode,
@@ -56,6 +62,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         VALUES (
           ${row.threadId},
           ${row.projectId},
+          ${row.workspaceTaskId},
+          ${row.tabLabel},
+          ${row.tabPosition},
+          ${row.tabClosedAt},
+          ${row.forkProvenance === null ? null : JSON.stringify(row.forkProvenance)},
           ${row.title},
           ${JSON.stringify(row.modelSelection)},
           ${row.runtimeMode},
@@ -79,6 +90,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         ON CONFLICT (thread_id)
         DO UPDATE SET
           project_id = excluded.project_id,
+          workspace_task_id = excluded.workspace_task_id,
+          tab_label = excluded.tab_label,
+          tab_position = excluded.tab_position,
+          tab_closed_at = excluded.tab_closed_at,
+          fork_provenance_json = excluded.fork_provenance_json,
           title = excluded.title,
           model_selection_json = excluded.model_selection_json,
           runtime_mode = excluded.runtime_mode,
@@ -109,6 +125,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          COALESCE(workspace_task_id, thread_id) AS "workspaceTaskId",
+          tab_label AS "tabLabel",
+          tab_position AS "tabPosition",
+          tab_closed_at AS "tabClosedAt",
+          fork_provenance_json AS "forkProvenance",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -141,6 +162,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          COALESCE(workspace_task_id, thread_id) AS "workspaceTaskId",
+          tab_label AS "tabLabel",
+          tab_position AS "tabPosition",
+          tab_closed_at AS "tabClosedAt",
+          fork_provenance_json AS "forkProvenance",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",

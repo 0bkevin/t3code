@@ -1,0 +1,2390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Implementation plan for evolving T3 Code Sidebar v2 threads into workspace tasks with agent tabs and context forks."
+    />
+    <title>Workspace Tasks + Agent Tabs — Implementation Plan</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --page: #000;
+        --surface: #0a0a0a;
+        --surface-raised: #101010;
+        --surface-soft: #151515;
+        --line: #292929;
+        --line-strong: #3a3a3a;
+        --text: #fff;
+        --muted: #a3a3a3;
+        --muted-2: #707070;
+        --blue: #8ab4ff;
+        --blue-bg: #0d1c38;
+        --violet: #c4a7ff;
+        --violet-bg: #21143d;
+        --green: #65df9b;
+        --green-bg: #0d291a;
+        --amber: #f8c66b;
+        --amber-bg: #30210b;
+        --red: #ff8e8e;
+        --red-bg: #351111;
+        --cyan: #6ee7f2;
+        --max: 1480px;
+        --radius: 14px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 24px;
+      }
+
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      body::before {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background:
+          radial-gradient(circle at 15% 0%, rgba(111, 76, 255, 0.13), transparent 32rem),
+          radial-gradient(circle at 86% 8%, rgba(41, 142, 255, 0.1), transparent 28rem);
+        content: "";
+        pointer-events: none;
+      }
+
+      a {
+        color: var(--blue);
+        text-decoration-color: rgba(138, 180, 255, 0.45);
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        color: #c1d7ff;
+      }
+
+      code,
+      pre,
+      .mono {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      }
+
+      code {
+        border: 1px solid #242424;
+        border-radius: 5px;
+        background: #111;
+        padding: 1px 5px;
+        color: #f1f1f1;
+        font-size: 0.92em;
+      }
+
+      pre {
+        margin: 12px 0 0;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #050505;
+        padding: 16px;
+        color: #d8d8d8;
+        font-size: 12.5px;
+        line-height: 1.58;
+      }
+
+      h1,
+      h2,
+      h3,
+      h4,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 1050px;
+        margin-bottom: 18px;
+        font-size: clamp(42px, 7vw, 82px);
+        font-weight: 720;
+        letter-spacing: -0.055em;
+        line-height: 0.98;
+      }
+
+      h2 {
+        margin-bottom: 18px;
+        font-size: clamp(27px, 4vw, 40px);
+        letter-spacing: -0.035em;
+        line-height: 1.08;
+      }
+
+      h3 {
+        margin-bottom: 10px;
+        font-size: 19px;
+        letter-spacing: -0.015em;
+      }
+
+      h4 {
+        margin-bottom: 7px;
+        font-size: 15px;
+      }
+
+      p {
+        margin-bottom: 12px;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0;
+        padding-left: 21px;
+      }
+
+      li + li {
+        margin-top: 6px;
+      }
+
+      main {
+        width: min(var(--max), calc(100vw - 40px));
+        margin: 0 auto;
+        padding: 48px 0 100px;
+      }
+
+      .hero {
+        border-bottom: 1px solid var(--line-strong);
+        padding: 26px 0 38px;
+      }
+
+      .eyebrow {
+        margin-bottom: 14px;
+        color: var(--violet);
+        font-size: 12px;
+        font-weight: 760;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .lede {
+        max-width: 1050px;
+        color: #d2d2d2;
+        font-size: clamp(17px, 2.1vw, 22px);
+        line-height: 1.5;
+      }
+
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 22px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        background: var(--surface);
+        padding: 3px 10px;
+        color: #c7c7c7;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .pill.green {
+        border-color: #20593a;
+        background: var(--green-bg);
+        color: var(--green);
+      }
+
+      .pill.violet {
+        border-color: #493073;
+        background: var(--violet-bg);
+        color: var(--violet);
+      }
+
+      .pill.amber {
+        border-color: #654716;
+        background: var(--amber-bg);
+        color: var(--amber);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 245px minmax(0, 1fr);
+        gap: 34px;
+        align-items: start;
+        margin-top: 28px;
+      }
+
+      nav {
+        position: sticky;
+        top: 24px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(8, 8, 8, 0.92);
+        padding: 14px;
+        backdrop-filter: blur(14px);
+      }
+
+      nav .nav-title {
+        margin: 2px 8px 9px;
+        color: var(--muted-2);
+        font-size: 11px;
+        font-weight: 750;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      nav a {
+        display: block;
+        border-radius: 7px;
+        padding: 7px 8px;
+        color: var(--muted);
+        font-size: 13px;
+        text-decoration: none;
+      }
+
+      nav a:hover {
+        background: var(--surface-soft);
+        color: var(--text);
+      }
+
+      article {
+        min-width: 0;
+      }
+
+      section {
+        border-top: 1px solid var(--line);
+        padding: 46px 0 10px;
+      }
+
+      article > section:first-child {
+        border-top: 0;
+        padding-top: 2px;
+      }
+
+      .section-intro {
+        max-width: 950px;
+        color: var(--muted);
+        font-size: 16px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      .card {
+        grid-column: span 12;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(145deg, #0c0c0c, #080808);
+        padding: 20px;
+      }
+
+      .card.half {
+        grid-column: span 6;
+      }
+
+      .card.third {
+        grid-column: span 4;
+      }
+
+      .card.quarter {
+        grid-column: span 3;
+      }
+
+      .card.blue {
+        border-color: #22395d;
+        background: linear-gradient(145deg, var(--blue-bg), #080d16 78%);
+      }
+
+      .card.violet {
+        border-color: #402b64;
+        background: linear-gradient(145deg, var(--violet-bg), #0d0816 78%);
+      }
+
+      .card.green {
+        border-color: #1e5236;
+        background: linear-gradient(145deg, var(--green-bg), #070e0a 78%);
+      }
+
+      .card.amber {
+        border-color: #604417;
+        background: linear-gradient(145deg, var(--amber-bg), #100c05 78%);
+      }
+
+      .card.red {
+        border-color: #632727;
+        background: linear-gradient(145deg, var(--red-bg), #100606 78%);
+      }
+
+      .card p:last-child,
+      .card ul:last-child,
+      .card ol:last-child {
+        margin-bottom: 0;
+      }
+
+      .label {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--muted-2);
+        font-size: 11px;
+        font-weight: 760;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .big-number {
+        color: var(--violet);
+        font-size: 38px;
+        font-weight: 760;
+        line-height: 1;
+      }
+
+      .decision {
+        display: grid;
+        grid-template-columns: 180px 1fr;
+        gap: 18px;
+        border-top: 1px solid var(--line);
+        padding: 16px 0;
+      }
+
+      .decision:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .decision:last-child {
+        padding-bottom: 0;
+      }
+
+      .decision strong {
+        color: #e9e9e9;
+      }
+
+      .decision p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .callout {
+        margin-top: 18px;
+        border: 1px solid var(--line-strong);
+        border-left: 4px solid var(--violet);
+        border-radius: 10px;
+        background: var(--surface);
+        padding: 16px 18px;
+      }
+
+      .callout.warning {
+        border-left-color: var(--amber);
+      }
+
+      .callout.danger {
+        border-left-color: var(--red);
+      }
+
+      .callout.success {
+        border-left-color: var(--green);
+      }
+
+      .callout p:last-child {
+        margin-bottom: 0;
+      }
+
+      .table-wrap {
+        margin-top: 18px;
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+
+      table {
+        width: 100%;
+        min-width: 740px;
+        border-collapse: collapse;
+        background: #070707;
+        font-size: 13.5px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 11px 13px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      th {
+        background: #0e0e0e;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 760;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      td {
+        color: #d1d1d1;
+      }
+
+      td:first-child {
+        color: #f3f3f3;
+        font-weight: 650;
+      }
+
+      .diagram {
+        margin-top: 18px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #050505;
+        padding: 20px;
+      }
+
+      .diagram svg {
+        display: block;
+        min-width: 760px;
+        max-width: 100%;
+        height: auto;
+        margin: 0 auto;
+      }
+
+      .diagram figcaption,
+      .caption {
+        margin-top: 12px;
+        color: var(--muted-2);
+        font-size: 12px;
+        text-align: center;
+      }
+
+      .mock-app {
+        display: grid;
+        grid-template-columns: 270px minmax(580px, 1fr);
+        min-width: 900px;
+        min-height: 530px;
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: 14px;
+        background: #060606;
+        box-shadow: 0 26px 80px rgba(0, 0, 0, 0.55);
+      }
+
+      .mock-sidebar {
+        border-right: 1px solid var(--line);
+        background: #090909;
+        padding: 14px 10px;
+      }
+
+      .mock-search,
+      .mock-project {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        border-radius: 7px;
+        padding: 0 9px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .mock-search {
+        border: 1px solid #222;
+        background: #0e0e0e;
+      }
+
+      .mock-project {
+        margin: 10px 0 7px;
+        color: #cecece;
+        font-weight: 650;
+      }
+
+      .mock-task {
+        margin: 4px 0;
+        border: 1px solid transparent;
+        border-radius: 9px;
+        padding: 10px;
+      }
+
+      .mock-task.active {
+        border-color: #3b3154;
+        background: #15111e;
+      }
+
+      .mock-task-title {
+        overflow: hidden;
+        color: #f2f2f2;
+        font-size: 12px;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .mock-task-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 7px;
+        color: var(--muted-2);
+        font-size: 10px;
+      }
+
+      .agent-stack {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .agent-dot {
+        display: inline-grid;
+        width: 19px;
+        height: 19px;
+        margin-left: -4px;
+        place-items: center;
+        border: 2px solid #15111e;
+        border-radius: 50%;
+        background: #222;
+        color: #fff;
+        font-size: 8px;
+        font-weight: 750;
+      }
+
+      .agent-dot:first-child {
+        margin-left: 0;
+      }
+
+      .agent-dot.codex {
+        background: #17365b;
+        color: var(--blue);
+      }
+
+      .agent-dot.claude {
+        background: #4a2917;
+        color: #f1b27d;
+      }
+
+      .mock-main {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+      }
+
+      .mock-titlebar {
+        display: flex;
+        min-height: 52px;
+        align-items: end;
+        gap: 5px;
+        border-bottom: 1px solid var(--line);
+        padding: 10px 16px 0;
+        background: #080808;
+      }
+
+      .mock-tab {
+        display: flex;
+        min-width: 110px;
+        max-width: 190px;
+        height: 34px;
+        align-items: center;
+        gap: 7px;
+        border: 1px solid transparent;
+        border-bottom: 0;
+        border-radius: 8px 8px 0 0;
+        padding: 0 10px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mock-tab.active {
+        border-color: var(--line-strong);
+        background: #111;
+        color: #fff;
+      }
+
+      .mock-tab.add {
+        min-width: 34px;
+        width: 34px;
+        justify-content: center;
+        padding: 0;
+        color: var(--muted);
+      }
+
+      .status-dot {
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      .status-dot.working {
+        background: #65bfff;
+        box-shadow: 0 0 10px rgba(101, 191, 255, 0.6);
+      }
+
+      .mock-contextbar {
+        display: flex;
+        min-height: 38px;
+        align-items: center;
+        gap: 10px;
+        border-bottom: 1px solid #1c1c1c;
+        padding: 0 18px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .mock-contextbar strong {
+        color: #d7d7d7;
+      }
+
+      .mock-chat {
+        display: flex;
+        min-height: 0;
+        flex: 1;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 25px 10%;
+        background:
+          radial-gradient(circle at 50% 0, rgba(80, 60, 130, 0.09), transparent 18rem), #070707;
+      }
+
+      .context-card {
+        max-width: 620px;
+        border: 1px solid #41355a;
+        border-radius: 9px;
+        background: #100c17;
+        padding: 12px 14px;
+        color: #cfc5df;
+        font-size: 11px;
+      }
+
+      .context-card strong {
+        color: var(--violet);
+      }
+
+      .mock-message {
+        max-width: 610px;
+        margin-top: 20px;
+      }
+
+      .mock-message .who {
+        margin-bottom: 4px;
+        color: var(--muted-2);
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .mock-message p {
+        margin: 0;
+        color: #d8d8d8;
+        font-size: 12px;
+      }
+
+      .mock-composer {
+        border: 1px solid #333;
+        border-radius: 12px;
+        background: #101010;
+        padding: 13px 14px;
+        color: #888;
+        font-size: 11px;
+      }
+
+      .fork-dialog {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .choice {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0b0b0b;
+        padding: 15px;
+      }
+
+      .choice.recommended {
+        border-color: #513c78;
+        background: #120d1c;
+      }
+
+      .choice-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 6px;
+        color: #eee;
+        font-weight: 700;
+      }
+
+      .choice p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .step-list {
+        counter-reset: phase;
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      .step {
+        position: relative;
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+        gap: 16px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #080808;
+        padding: 18px;
+        counter-increment: phase;
+      }
+
+      .step-num::before {
+        content: counter(phase, decimal-leading-zero);
+      }
+
+      .step-num {
+        color: var(--violet);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      .step h3 {
+        margin-bottom: 7px;
+      }
+
+      .step p {
+        color: var(--muted);
+      }
+
+      .step .exit {
+        margin-top: 11px;
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+        color: var(--green);
+        font-size: 12px;
+      }
+
+      .file-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 7px 16px;
+        margin-top: 12px;
+      }
+
+      .file-list code {
+        overflow-wrap: anywhere;
+      }
+
+      .checklist {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px 18px;
+        margin-top: 16px;
+      }
+
+      .check {
+        position: relative;
+        padding-left: 23px;
+        color: #d1d1d1;
+      }
+
+      .check::before {
+        position: absolute;
+        left: 0;
+        color: var(--green);
+        content: "✓";
+        font-weight: 800;
+      }
+
+      .no {
+        color: var(--red);
+      }
+
+      .yes {
+        color: var(--green);
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .tiny {
+        color: var(--muted-2);
+        font-size: 12px;
+      }
+
+      .footer {
+        margin-top: 54px;
+        border-top: 1px solid var(--line-strong);
+        padding-top: 24px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @media (max-width: 1050px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        nav {
+          position: static;
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+        }
+
+        nav .nav-title {
+          grid-column: 1 / -1;
+        }
+
+        .card.third,
+        .card.quarter {
+          grid-column: span 6;
+        }
+      }
+
+      @media (max-width: 720px) {
+        main {
+          width: min(100% - 24px, var(--max));
+          padding-top: 24px;
+        }
+
+        nav {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .card.half,
+        .card.third,
+        .card.quarter {
+          grid-column: span 12;
+        }
+
+        .decision {
+          grid-template-columns: 1fr;
+          gap: 5px;
+        }
+
+        .fork-dialog,
+        .file-list,
+        .checklist {
+          grid-template-columns: 1fr;
+        }
+
+        .step {
+          grid-template-columns: 44px minmax(0, 1fr);
+          padding: 15px;
+        }
+      }
+
+      @media print {
+        body::before,
+        nav {
+          display: none;
+        }
+
+        body {
+          background: #000;
+        }
+
+        main {
+          width: 100%;
+          padding: 0;
+        }
+
+        .layout {
+          display: block;
+        }
+
+        section,
+        .card,
+        .step {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <div class="eyebrow">T3 Code · Sidebar v2 experiment · implementation plan</div>
+        <h1>Workspace tasks with agent tabs</h1>
+        <p class="lede">
+          Turn one sidebar “thread” into a durable task that owns a worktree, then let multiple
+          provider-backed conversation tabs branch from the task’s context while operating on the
+          same files.
+        </p>
+        <div class="meta-row">
+          <span class="pill violet">Recommended: additive WorkspaceTask aggregate</span>
+          <span class="pill green">Keep Thread as the provider conversation primitive</span>
+          <span class="pill">Web · Sidebar v2 only</span>
+          <span class="pill amber">Experimental shared-worktree concurrency</span>
+        </div>
+      </header>
+
+      <div class="layout">
+        <nav aria-label="Plan sections">
+          <div class="nav-title">Plan</div>
+          <a href="#recommendation">Recommendation</a>
+          <a href="#ux">Product experience</a>
+          <a href="#model">Domain model</a>
+          <a href="#forking">Context forking</a>
+          <a href="#concurrency">Concurrency safety</a>
+          <a href="#lifecycle">Task lifecycle</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#migration">Migration</a>
+          <a href="#phases">Delivery phases</a>
+          <a href="#verification">Verification</a>
+          <a href="#risks">Risks & decisions</a>
+          <a href="#done">Definition of done</a>
+        </nav>
+
+        <article>
+          <section id="recommendation">
+            <h2>The recommendation</h2>
+            <p class="section-intro">
+              Do not rename the existing backend concept of a thread. It is already the identity
+              used by provider sessions, turns, messages, approvals, checkpoints, terminals,
+              routes, caches, and runtime events. Treat that existing object as an
+              <strong>agent tab</strong>, then add one product-level container above it.
+            </p>
+
+            <div class="grid">
+              <div class="card violet half">
+                <span class="label">New product primitive</span>
+                <h3>WorkspaceTask</h3>
+                <p>
+                  Owns the goal/title, project, environment, branch, worktree, sidebar lifecycle,
+                  aggregate status, and the set of tabs.
+                </p>
+              </div>
+              <div class="card blue half">
+                <span class="label">Existing primitive, new presentation</span>
+                <h3>Thread → agent tab</h3>
+                <p>
+                  Continues to own provider instance, model, harness resume state, transcript,
+                  turns, approvals, interaction mode, and permissions.
+                </p>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="decision">
+                <strong>⌘N / Ctrl+N</strong>
+                <p>
+                  Creates a new task draft with its first agent tab. This feels exactly like “new
+                  thread” today until the user adds another tab.
+                </p>
+              </div>
+              <div class="decision">
+                <strong>New tab</strong>
+                <p>
+                  Desktop/Electron uses <code>⌘T</code>. Browsers reserve that accelerator, so web
+                  uses <code>Mod+Alt+T</code> plus a visible <code>+</code> button and “New tab in
+                  task” command-palette action.
+                </p>
+              </div>
+              <div class="decision">
+                <strong>Context choice</strong>
+                <p>
+                  The new-tab sheet defaults to “Fork through the latest completed turn,” with
+                  “Start fresh in the same worktree” as the explicit alternative.
+                </p>
+              </div>
+              <div class="decision">
+                <strong>Provider choice</strong>
+                <p>
+                  Every tab picks its own provider instance, model, model options, permission mode,
+                  and interaction mode. The source tab’s selections are convenient defaults, not
+                  task-wide constraints.
+                </p>
+              </div>
+              <div class="decision">
+                <strong>Route strategy</strong>
+                <p>
+                  Keep <code>/$environmentId/$threadId</code> as the canonical active-tab route in
+                  the first experiment. Resolve the task from the thread shell. This preserves
+                  every existing deep link and avoids a route migration.
+                </p>
+              </div>
+              <div class="decision">
+                <strong>Rollout boundary</strong>
+                <p>
+                  Render task rows and tab chrome only when
+                  <code>sidebarV2Enabled &amp;&amp; taskTabsEnabled</code>. Advertise server support
+                  with a new <code>workspaceTasks</code> environment capability.
+                </p>
+              </div>
+            </div>
+
+            <div class="callout success">
+              <strong>Why this seam is unusually valuable.</strong>
+              Provider adapters and orchestration can keep speaking in threads. The UI gains a
+              richer task abstraction without forcing a high-risk rename through hundreds of
+              thread-scoped call sites. A kill switch can always fall back to rendering each tab as
+              an ordinary thread, so the experiment is reversible without discarding data.
+            </div>
+
+            <h3 style="margin-top: 28px">What the repository already tells us</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Current responsibility</th>
+                    <th>Evidence in the current code</th>
+                    <th>Implication</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Sidebar v2 is thread-first</td>
+                    <td>
+                      <code>apps/web/src/components/SidebarV2.tsx</code> directly sorts, renders,
+                      settles, snoozes, renames, and navigates thread shells.
+                    </td>
+                    <td>Replace its input view-model with task summaries; do not rewrite rows blind.</td>
+                  </tr>
+                  <tr>
+                    <td>Draft promotion is first-turn driven</td>
+                    <td>
+                      <code>useHandleNewThread.ts</code>, <code>ChatView.tsx</code>, and
+                      <code>apps/server/src/ws.ts</code> create the thread/worktree during the first
+                      turn bootstrap.
+                    </td>
+                    <td>A task draft and a tab draft can reuse the same promotion pattern.</td>
+                  </tr>
+                  <tr>
+                    <td>Provider state is thread-scoped</td>
+                    <td>
+                      <code>ProviderService</code>, adapters, resume cursors, and runtime bindings
+                      all key sessions by <code>ThreadId</code>.
+                    </td>
+                    <td>The existing Thread is exactly the correct agent-tab primitive.</td>
+                  </tr>
+                  <tr>
+                    <td>Codex supports exact forks</td>
+                    <td>
+                      The generated app-server contract already includes <code>thread/fork</code>
+                      with <code>threadId</code> and optional <code>lastTurnId</code>.
+                    </td>
+                    <td>Same-continuation Codex tabs can get a real provider-native fork.</td>
+                  </tr>
+                  <tr>
+                    <td>Worktree deletion detects sharing</td>
+                    <td>
+                      <code>worktreeCleanup.ts</code> avoids deleting a path while another thread
+                      references it.
+                    </td>
+                    <td>Existing safety helps, but task-level deletion should become canonical.</td>
+                  </tr>
+                  <tr>
+                    <td>Checkpoints assume one writer</td>
+                    <td>
+                      <code>CheckpointReactor.ts</code> captures diffs per thread against a shared
+                      filesystem state.
+                    </td>
+                    <td>Parallel tabs require explicit overlap detection before revert can be safe.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="ux">
+            <h2>What it looks and feels like</h2>
+            <p class="section-intro">
+              The sidebar remains the task inbox. Tabs live in the task workspace header because
+              they are alternate agents working on the same thing—not peer items that should crowd
+              the global task list.
+            </p>
+
+            <div class="diagram" aria-label="Proposed T3 Code task and tab interface">
+              <div class="mock-app">
+                <aside class="mock-sidebar">
+                  <div class="mock-search">⌕&nbsp;&nbsp; Search tasks and commands</div>
+                  <div class="mock-project">▾&nbsp;&nbsp; t3code</div>
+                  <div class="mock-task active">
+                    <div class="mock-task-title">Task tabs + context forks</div>
+                    <div class="mock-task-meta">
+                      <span class="agent-stack">
+                        <span class="agent-dot codex">C</span>
+                        <span class="agent-dot claude">A</span>
+                      </span>
+                      <span style="color: #77c8ff">2 working · 3 tabs</span>
+                    </div>
+                  </div>
+                  <div class="mock-task">
+                    <div class="mock-task-title">Fix remote reconnect flow</div>
+                    <div class="mock-task-meta">
+                      <span class="agent-stack"><span class="agent-dot codex">C</span></span>
+                      <span>Ready · 18m</span>
+                    </div>
+                  </div>
+                  <div class="mock-task">
+                    <div class="mock-task-title">Tailscale dev server links</div>
+                    <div class="mock-task-meta">
+                      <span class="agent-stack"><span class="agent-dot claude">A</span></span>
+                      <span style="color: #f8c66b">Approval · 24m</span>
+                    </div>
+                  </div>
+                  <div class="mock-project" style="margin-top: 14px">▸&nbsp;&nbsp; Settled (12)</div>
+                </aside>
+
+                <div class="mock-main">
+                  <div class="mock-titlebar">
+                    <div class="mock-tab">
+                      <span class="agent-dot codex" style="margin: 0; border: 0">C</span>
+                      Codex plan
+                      <span class="status-dot"></span>
+                    </div>
+                    <div class="mock-tab active">
+                      <span class="agent-dot claude" style="margin: 0; border: 0">A</span>
+                      Claude impl
+                      <span class="status-dot working"></span>
+                    </div>
+                    <div class="mock-tab">
+                      <span class="agent-dot codex" style="margin: 0; border: 0">C</span>
+                      Review
+                    </div>
+                    <div class="mock-tab add" aria-label="New tab">+</div>
+                  </div>
+                  <div class="mock-contextbar">
+                    <strong>Task tabs + context forks</strong>
+                    <span>·</span>
+                    <span>t3code/task-tabs-context-fork</span>
+                    <span>·</span>
+                    <span>shared worktree</span>
+                    <span style="margin-left: auto; color: #f8c66b">2 agents active</span>
+                  </div>
+                  <div class="mock-chat">
+                    <div>
+                      <div class="context-card">
+                        <strong>Forked context</strong> from “Codex plan” through turn 7 · Portable
+                        handoff · View inherited context
+                      </div>
+                      <div class="mock-message">
+                        <div class="who">Theo</div>
+                        <p>Take the approved approach and implement the contracts + migration slice.</p>
+                      </div>
+                      <div class="mock-message">
+                        <div class="who">Claude · working</div>
+                        <p>
+                          I’m adding the task projection and keeping ThreadId as the provider session
+                          key. I’ll leave the Sidebar v1 path untouched.
+                        </p>
+                      </div>
+                    </div>
+                    <div class="mock-composer">
+                      Message Claude in this tab…
+                      <span style="float: right; color: #bbb">Claude Sonnet · Full access ↑</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="caption">
+                One sidebar card per task; provider tabs, fork provenance, and shared-worktree
+                awareness sit inside the active task.
+              </div>
+            </div>
+
+            <h3 style="margin-top: 28px">New-tab sheet</h3>
+            <div class="card">
+              <div class="fork-dialog">
+                <div class="choice recommended">
+                  <div class="choice-title">
+                    <span>Fork current context</span>
+                    <span class="pill violet">Default</span>
+                  </div>
+                  <p>
+                    Snapshot through the latest completed turn. Exact when the target harness can
+                    natively fork; otherwise create a transparent portable handoff.
+                  </p>
+                </div>
+                <div class="choice">
+                  <div class="choice-title"><span>Start fresh</span></div>
+                  <p>
+                    Share the task’s worktree and branch but bring no conversation history into the
+                    new agent.
+                  </p>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <tbody>
+                    <tr>
+                      <td>Agent / harness</td>
+                      <td>Provider-instance picker (Codex, Claude, Cursor, OpenCode, custom instances)</td>
+                    </tr>
+                    <tr>
+                      <td>Model</td>
+                      <td>Target instance’s default, with source selection prefilled when compatible</td>
+                    </tr>
+                    <tr>
+                      <td>Fork point</td>
+                      <td>Latest completed turn; while a turn runs, the sheet states that the live turn is excluded</td>
+                    </tr>
+                    <tr>
+                      <td>Permissions</td>
+                      <td>Copy the source tab’s runtime mode by default; editable before creation</td>
+                    </tr>
+                    <tr>
+                      <td>Tab label</td>
+                      <td>Optional; defaults to provider display name with a numeric suffix when needed</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <h3 style="margin-top: 28px">Interaction contract</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Action</th>
+                    <th>Sidebar v2 behavior</th>
+                    <th>Keyboard</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>New task</td>
+                    <td>Same draft flow as “new thread” today; copy active working mode, use configured workspace defaults</td>
+                    <td><code>Mod+N</code> (retain <code>chat.new</code> as a compatibility alias)</td>
+                  </tr>
+                  <tr>
+                    <td>New tab in task</td>
+                    <td>Open the fork/fresh sheet in the active task; disabled when no task is active</td>
+                    <td><code>Cmd+T</code> desktop; <code>Mod+Alt+T</code> browser</td>
+                  </tr>
+                  <tr>
+                    <td>Switch tab</td>
+                    <td>Navigate to the selected thread-backed route; composer and transcript are tab-local</td>
+                    <td>Click first; configurable <code>taskTab.previous/next</code> commands</td>
+                  </tr>
+                  <tr>
+                    <td>Jump task</td>
+                    <td>Existing sidebar jump slots become task slots and open that task’s last-visited visible tab</td>
+                    <td>Keep <code>Mod+1…9</code></td>
+                  </tr>
+                  <tr>
+                    <td>Close tab</td>
+                    <td>Hide one conversation from the strip; block while it is running or awaiting input; never remove the worktree</td>
+                    <td>Command palette initially; no browser-conflicting default required</td>
+                  </tr>
+                  <tr>
+                    <td>Settle / snooze / archive / delete</td>
+                    <td>Operate on the whole task. Individual tabs are closed/restored, not settled or snoozed.</td>
+                    <td>Existing task-row actions</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout warning">
+              <strong>Browser accelerator reality.</strong> A web page cannot reliably own
+              <code>Cmd+T</code> or <code>Ctrl+T</code>; the browser opens a browser tab before the
+              React key handler can act. Electron can register the native accelerator. The visible
+              plus button and command palette are therefore first-class, not fallbacks.
+            </div>
+          </section>
+
+          <section id="model">
+            <h2>Domain model and ownership</h2>
+            <p class="section-intro">
+              Internally call the new entity <code>WorkspaceTask</code>, not just
+              <code>Task</code>. The contracts already have <code>RuntimeTaskId</code> for provider
+              tool/sub-agent progress events, so the longer name prevents a subtle and permanent
+              terminology collision.
+            </p>
+
+            <figure class="diagram">
+              <svg
+                viewBox="0 0 1080 520"
+                role="img"
+                aria-label="Entity relationship diagram for project, workspace task, thread tabs, and provider sessions"
+              >
+                <defs>
+                  <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                    <path d="M0,0 L8,4 L0,8 Z" fill="#707070"></path>
+                  </marker>
+                </defs>
+
+                <rect x="30" y="180" width="210" height="150" rx="14" fill="#0d1c38" stroke="#315487" />
+                <text x="52" y="214" fill="#8ab4ff" font-size="13" font-weight="700">PROJECT</text>
+                <text x="52" y="247" fill="#fff" font-size="18" font-weight="700">Project</text>
+                <text x="52" y="276" fill="#a3a3a3" font-size="12">workspaceRoot</text>
+                <text x="52" y="298" fill="#a3a3a3" font-size="12">repositoryIdentity</text>
+
+                <rect x="335" y="95" width="300" height="320" rx="14" fill="#21143d" stroke="#68499b" />
+                <text x="360" y="132" fill="#c4a7ff" font-size="13" font-weight="700">NEW · PRODUCT CONTAINER</text>
+                <text x="360" y="167" fill="#fff" font-size="21" font-weight="700">WorkspaceTask</text>
+                <line x1="360" y1="185" x2="610" y2="185" stroke="#49356c" />
+                <text x="360" y="214" fill="#d6cceb" font-size="12">title / goal</text>
+                <text x="360" y="238" fill="#d6cceb" font-size="12">projectId + environment</text>
+                <text x="360" y="262" fill="#d6cceb" font-size="12">branch + worktreePath</text>
+                <text x="360" y="286" fill="#d6cceb" font-size="12">settle / snooze / archive lifecycle</text>
+                <text x="360" y="310" fill="#d6cceb" font-size="12">aggregate activity + status</text>
+                <text x="360" y="334" fill="#d6cceb" font-size="12">createdAt / updatedAt</text>
+                <text x="360" y="371" fill="#8877a8" font-size="11">Internal id: WorkspaceTaskId</text>
+                <text x="360" y="392" fill="#8877a8" font-size="11">Product label: Task</text>
+
+                <rect x="735" y="48" width="305" height="205" rx="14" fill="#101010" stroke="#3a3a3a" />
+                <text x="760" y="83" fill="#65df9b" font-size="13" font-weight="700">EXISTING · AGENT TAB</text>
+                <text x="760" y="116" fill="#fff" font-size="21" font-weight="700">Thread</text>
+                <line x1="760" y1="133" x2="1015" y2="133" stroke="#292929" />
+                <text x="760" y="158" fill="#c9c9c9" font-size="12">provider instance + model/options</text>
+                <text x="760" y="180" fill="#c9c9c9" font-size="12">transcript / turns / approvals</text>
+                <text x="760" y="202" fill="#c9c9c9" font-size="12">runtime + interaction modes</text>
+                <text x="760" y="224" fill="#c9c9c9" font-size="12">fork provenance + tab label</text>
+
+                <rect x="735" y="310" width="305" height="155" rx="14" fill="#0d291a" stroke="#2c704c" />
+                <text x="760" y="345" fill="#65df9b" font-size="13" font-weight="700">PROVIDER RUNTIME</text>
+                <text x="760" y="378" fill="#fff" font-size="19" font-weight="700">Provider session</text>
+                <text x="760" y="409" fill="#b4d7c2" font-size="12">resume cursor / provider thread id</text>
+                <text x="760" y="432" fill="#b4d7c2" font-size="12">process + live turn state</text>
+
+                <line x1="240" y1="255" x2="328" y2="255" stroke="#707070" stroke-width="2" marker-end="url(#arrow)" />
+                <text x="270" y="242" fill="#a3a3a3" font-size="11">1:N</text>
+                <line x1="635" y1="220" x2="728" y2="163" stroke="#707070" stroke-width="2" marker-end="url(#arrow)" />
+                <text x="667" y="171" fill="#a3a3a3" font-size="11">1:N</text>
+                <line x1="887" y1="253" x2="887" y2="302" stroke="#707070" stroke-width="2" marker-end="url(#arrow)" />
+                <text x="898" y="284" fill="#a3a3a3" font-size="11">1:1 active</text>
+              </svg>
+              <figcaption>
+                Provider events can continue to use ThreadId. The WorkspaceTask owns everything
+                that must be shared across tabs.
+              </figcaption>
+            </figure>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>State</th>
+                    <th>Owner</th>
+                    <th>Why</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Project, environment, branch, worktree path</td>
+                    <td>WorkspaceTask</td>
+                    <td>Every tab must resolve exactly the same effective cwd.</td>
+                  </tr>
+                  <tr>
+                    <td>Task title, sidebar position, settle/snooze/archive state</td>
+                    <td>WorkspaceTask</td>
+                    <td>The sidebar row represents the whole unit of work.</td>
+                  </tr>
+                  <tr>
+                    <td>Provider instance, model, options, permission mode</td>
+                    <td>Thread/tab</td>
+                    <td>Choosing a different harness is a core reason tabs exist.</td>
+                  </tr>
+                  <tr>
+                    <td>Messages, turns, pending approval/input, provider session</td>
+                    <td>Thread/tab</td>
+                    <td>Provider conversations remain isolated and independently interruptible.</td>
+                  </tr>
+                  <tr>
+                    <td>Fork source, fork point, strategy, context bundle</td>
+                    <td>Thread/tab</td>
+                    <td>Provenance describes how this particular conversation began.</td>
+                  </tr>
+                  <tr>
+                    <td>Composer draft</td>
+                    <td>Thread/tab (client local until promotion)</td>
+                    <td>Each agent can hold a distinct unsent prompt.</td>
+                  </tr>
+                  <tr>
+                    <td>Terminals, preview, file panel presentation</td>
+                    <td>Thread/tab for the experiment</td>
+                    <td>They already key by ThreadId and still launch in the task’s effective cwd; task-scoping can be a later UX choice.</td>
+                  </tr>
+                  <tr>
+                    <td>Git/source-control status</td>
+                    <td>WorkspaceTask-derived</td>
+                    <td>It reflects one shared worktree even when surfaced inside multiple tabs.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout">
+              <strong>Compatibility denormalization.</strong> During the experiment, keep
+              <code>branch</code>, <code>worktreePath</code>, and a compatibility
+              <code>title</code> on each thread shell. The server derives them from the task and
+              enforces equality. New code reads the task as canonical; older clients continue to
+              function from thread fields. Remove the duplicate fields only in a later protocol
+              major version.
+            </div>
+
+            <h3 style="margin-top: 28px">Proposed contract shapes</h3>
+            <pre><code>WorkspaceTask {
+  id: WorkspaceTaskId
+  projectId: ProjectId
+  title: string
+  branch: string | null
+  worktreePath: string | null
+  createdAt: IsoDateTime
+  updatedAt: IsoDateTime
+  archivedAt: IsoDateTime | null
+  settledOverride: "settled" | "active" | null
+  settledAt: IsoDateTime | null
+  snoozedUntil: IsoDateTime | null
+  snoozedAt: IsoDateTime | null
+}
+
+Thread {
+  // existing fields remain
+  workspaceTaskId: WorkspaceTaskId
+  tabLabel: string | null
+  tabClosedAt: IsoDateTime | null
+  fork: {
+    sourceThreadId: ThreadId
+    sourceTurnId: TurnId | null
+    strategy: "native" | "portable"
+    contextBundleId: ContextBundleId | null
+  } | null
+}</code></pre>
+          </section>
+
+          <section id="forking">
+            <h2>Context forking: exact when possible, honest when not</h2>
+            <p class="section-intro">
+              “Fork” cannot mean the same implementation for every harness. The product should
+              expose one consistent action while recording which fidelity it delivered.
+            </p>
+
+            <div class="grid">
+              <div class="card green half">
+                <span class="label">Strategy A · highest fidelity</span>
+                <h3>Native provider fork</h3>
+                <p>
+                  Use when source and target share a provider driver and continuation identity, and
+                  that adapter advertises native fork support.
+                </p>
+                <ul>
+                  <li>Codex calls app-server <code>thread/fork</code>.</li>
+                  <li>Pass the source provider thread id and provider-native last completed turn id.</li>
+                  <li>Bind the returned provider thread id as the target tab’s resume cursor.</li>
+                  <li>Never reuse the source resume cursor for two live T3 threads.</li>
+                </ul>
+              </div>
+              <div class="card violet half">
+                <span class="label">Strategy B · cross-provider</span>
+                <h3>Portable context handoff</h3>
+                <p>
+                  Use when moving between harnesses, accounts, provider homes, or adapters without a
+                  native fork primitive.
+                </p>
+                <ul>
+                  <li>Freeze a bounded, provider-neutral ContextBundle at the chosen turn.</li>
+                  <li>Inject it once when the target tab starts its first provider session.</li>
+                  <li>Show a “Portable handoff” provenance card in the timeline.</li>
+                  <li>Do not silently label this as an exact clone.</li>
+                </ul>
+              </div>
+            </div>
+
+            <figure class="diagram">
+              <svg
+                viewBox="0 0 1120 560"
+                role="img"
+                aria-label="Decision flow for creating a native or portable context fork"
+              >
+                <defs>
+                  <marker id="forkArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                    <path d="M0,0 L8,4 L0,8 Z" fill="#777"></path>
+                  </marker>
+                </defs>
+
+                <rect x="28" y="210" width="225" height="105" rx="14" fill="#21143d" stroke="#68499b" />
+                <text x="140" y="248" text-anchor="middle" fill="#c4a7ff" font-size="13" font-weight="700">NEW TAB DRAFT</text>
+                <text x="140" y="278" text-anchor="middle" fill="#fff" font-size="15">Capture source + fork point</text>
+
+                <rect x="340" y="190" width="255" height="145" rx="14" fill="#101010" stroke="#3a3a3a" />
+                <text x="468" y="230" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">Native fork eligible?</text>
+                <text x="468" y="258" text-anchor="middle" fill="#a3a3a3" font-size="11">same driver + continuationKey</text>
+                <text x="468" y="280" text-anchor="middle" fill="#a3a3a3" font-size="11">adapter supports fork</text>
+                <text x="468" y="302" text-anchor="middle" fill="#a3a3a3" font-size="11">provider turn id is known</text>
+
+                <rect x="705" y="52" width="355" height="165" rx="14" fill="#0d291a" stroke="#2c704c" />
+                <text x="730" y="90" fill="#65df9b" font-size="13" font-weight="700">NATIVE</text>
+                <text x="730" y="121" fill="#fff" font-size="17" font-weight="700">Adapter.forkSession(...)</text>
+                <text x="730" y="151" fill="#b4d7c2" font-size="11">Codex → thread/fork</text>
+                <text x="730" y="174" fill="#b4d7c2" font-size="11">persist target resume cursor</text>
+                <text x="730" y="197" fill="#b4d7c2" font-size="11">strategy = "native"</text>
+
+                <rect x="705" y="320" width="355" height="185" rx="14" fill="#21143d" stroke="#68499b" />
+                <text x="730" y="358" fill="#c4a7ff" font-size="13" font-weight="700">PORTABLE</text>
+                <text x="730" y="389" fill="#fff" font-size="17" font-weight="700">ContextForkService.buildBundle(...)</text>
+                <text x="730" y="419" fill="#d6cceb" font-size="11">transcript + plan + task/worktree facts</text>
+                <text x="730" y="442" fill="#d6cceb" font-size="11">bounded + stored as immutable blob</text>
+                <text x="730" y="465" fill="#d6cceb" font-size="11">inject once at first session start</text>
+                <text x="730" y="488" fill="#d6cceb" font-size="11">strategy = "portable"</text>
+
+                <line x1="253" y1="262" x2="332" y2="262" stroke="#777" stroke-width="2" marker-end="url(#forkArrow)" />
+                <line x1="595" y1="226" x2="697" y2="148" stroke="#777" stroke-width="2" marker-end="url(#forkArrow)" />
+                <text x="642" y="171" fill="#65df9b" font-size="12">yes</text>
+                <line x1="595" y1="298" x2="697" y2="402" stroke="#777" stroke-width="2" marker-end="url(#forkArrow)" />
+                <text x="642" y="368" fill="#c4a7ff" font-size="12">no</text>
+
+                <text x="28" y="42" fill="#a3a3a3" font-size="12">A running source turn is never forked mid-flight.</text>
+                <text x="28" y="65" fill="#a3a3a3" font-size="12">The captured fork point is the latest completed turn at the moment the draft tab is created.</text>
+              </svg>
+              <figcaption>
+                One UX action, two persisted strategies. Failures remain visible and retryable; they
+                never silently change fidelity.
+              </figcaption>
+            </figure>
+
+            <h3>Portable ContextBundle contents</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Include</th>
+                    <th>Exclude or summarize</th>
+                    <th>Constraint</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Task title, project, branch, effective cwd, fork source and point</td>
+                    <td>Absolute machine metadata that the target does not need</td>
+                    <td>Structured envelope, versioned schema</td>
+                  </tr>
+                  <tr>
+                    <td>User + assistant conversation through the fork point</td>
+                    <td>Raw provider-native event payloads</td>
+                    <td>Deterministic truncation from oldest low-value content first</td>
+                  </tr>
+                  <tr>
+                    <td>Latest proposed plan and unresolved user decisions</td>
+                    <td>Resolved approvals and transient permission prompts</td>
+                    <td>Mark source message ids for provenance</td>
+                  </tr>
+                  <tr>
+                    <td>Changed-file list, HEAD/branch, dirty-worktree summary</td>
+                    <td>Full diffs by default</td>
+                    <td>The agent can inspect the shared worktree directly</td>
+                  </tr>
+                  <tr>
+                    <td>Attachment names/types and durable references</td>
+                    <td>Inline duplicate binaries unless the target explicitly supports them</td>
+                    <td>Never smuggle local secrets or raw tool logs</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout warning">
+              <strong>Do not summarize with an LLM in the first slice.</strong> Begin with a
+              deterministic, bounded transcript/context envelope so the fork is predictable,
+              testable, and does not make an invisible model call. A separately labeled
+              “condensed handoff” optimization can come later if real usage proves the raw bundle
+              too expensive.
+            </div>
+
+            <h3 style="margin-top: 28px">Provider contract additions</h3>
+            <pre><code>ProviderAdapterCapabilities {
+  sessionModelSwitch: "in-session" | "unsupported"
+  nativeConversationFork: "supported" | "unsupported"
+}
+
+ProviderAdapterShape {
+  forkSession?(input: {
+    sourceThreadId: ThreadId
+    targetThreadId: ThreadId
+    sourceResumeCursor: unknown
+    sourceProviderTurnId?: string
+    cwd: string
+    modelSelection: ModelSelection
+    runtimeMode: RuntimeMode
+  }): Effect&lt;ProviderSession&gt;
+}
+
+// Exact fork only when source/target continuation identities match.
+sourceInstance.continuationIdentity.continuationKey
+  === targetInstance.continuationIdentity.continuationKey</code></pre>
+          </section>
+
+          <section id="concurrency">
+            <h2>Shared worktree concurrency is the sharp edge</h2>
+            <p class="section-intro">
+              Multiple agents can safely read the same worktree. Multiple agents can also write it,
+              but T3 cannot truthfully attribute overlapping filesystem changes to one tab using
+              ordinary git diffs. The plan must make that limitation visible and prevent unsafe
+              reverts.
+            </p>
+
+            <div class="grid">
+              <div class="card red third">
+                <span class="label">Failure mode</span>
+                <h3>Cross-contaminated checkpoints</h3>
+                <p>
+                  Tab A’s completion diff may include Tab B’s edits if their turns overlap in the
+                  same checkout.
+                </p>
+              </div>
+              <div class="card red third">
+                <span class="label">Failure mode</span>
+                <h3>Destructive revert</h3>
+                <p>
+                  Reverting A’s checkpoint could erase B’s legitimate work because the existing
+                  checkpoint model assumes one writer.
+                </p>
+              </div>
+              <div class="card amber third">
+                <span class="label">UX risk</span>
+                <h3>Invisible collisions</h3>
+                <p>
+                  Two agents can edit the same file while both timelines look independently
+                  healthy.
+                </p>
+              </div>
+            </div>
+
+            <div class="card" style="margin-top: 14px">
+              <span class="label">Recommended experiment policy</span>
+              <h3>Allow parallel turns, but degrade attribution explicitly</h3>
+              <ol>
+                <li>
+                  Add a task-scoped <strong>workspace activity coordinator</strong> that records
+                  active tab turns and a git/worktree fingerprint at every turn boundary.
+                </li>
+                <li>
+                  When more than one writing-capable turn overlaps, mark all involved checkpoints
+                  <code>isolation: "overlapping"</code>.
+                </li>
+                <li>
+                  Continue showing task-wide changed files and diff, but label them
+                  <strong>shared-worktree changes</strong>, not “changes from this tab.”
+                </li>
+                <li>
+                  Disable checkpoint revert for overlapping turns and explain why. Never expose an
+                  action that may erase a sibling tab’s work.
+                </li>
+                <li>
+                  Show a persistent header badge such as “2 agents active in shared worktree” and
+                  surface which tabs are running.
+                </li>
+                <li>
+                  Keep an optional task setting for <strong>single-writer mode</strong> if dogfood
+                  usage shows parallel writes are too chaotic; it can queue or block a second turn.
+                </li>
+              </ol>
+            </div>
+
+            <div class="callout danger">
+              <strong>Hard invariant for launch:</strong> no overlapping checkpoint may be reverted.
+              Perfect per-agent diff attribution would require isolated worktrees/overlays and a
+              merge layer, which contradicts the experiment’s defining idea that tabs operate on
+              the same live worktree.
+            </div>
+
+            <h3 style="margin-top: 28px">Workspace fingerprint</h3>
+            <p class="muted">
+              Capture enough state to detect interference without trying to assign authorship:
+              <code>HEAD</code>, branch, staged/unstaged status entries, untracked-path set, and a
+              stable hash of the status snapshot. Store the fingerprint and sibling active-turn ids
+              with the checkpoint projection.
+            </p>
+          </section>
+
+          <section id="lifecycle">
+            <h2>Task-level status and lifecycle</h2>
+            <p class="section-intro">
+              A task row needs one understandable status even when several tabs are doing different
+              things. Preserve Sidebar v2’s “inbox” philosophy and aggregate by urgency.
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Priority</th>
+                    <th>Task status</th>
+                    <th>Aggregation rule</th>
+                    <th>Row treatment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>1</td>
+                    <td style="color: var(--amber)">Approval</td>
+                    <td>Any visible tab has a pending approval</td>
+                    <td>“Approval · Codex” plus count when more than one</td>
+                  </tr>
+                  <tr>
+                    <td>2</td>
+                    <td style="color: var(--violet)">Input</td>
+                    <td>Any visible tab awaits structured user input</td>
+                    <td>“Input · Claude”</td>
+                  </tr>
+                  <tr>
+                    <td>3</td>
+                    <td style="color: var(--red)">Failed</td>
+                    <td>Any tab failed and no tab has a more urgent user request</td>
+                    <td>“Failed · Review”</td>
+                  </tr>
+                  <tr>
+                    <td>4</td>
+                    <td style="color: #77c8ff">Working</td>
+                    <td>One or more tabs are starting/running</td>
+                    <td>“2 working · 3 tabs” and provider avatar stack</td>
+                  </tr>
+                  <tr>
+                    <td>5</td>
+                    <td style="color: var(--green)">Done</td>
+                    <td>At least one tab completed after its last local visit</td>
+                    <td>Unread completion treatment</td>
+                  </tr>
+                  <tr>
+                    <td>6</td>
+                    <td>Ready</td>
+                    <td>No higher-priority state</td>
+                    <td>Quiet row using current v2 semantics</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="grid">
+              <div class="card half">
+                <span class="label">Task actions</span>
+                <h3>Settle, snooze, archive, delete</h3>
+                <ul>
+                  <li>Block settle while any tab is running or needs user input/approval.</li>
+                  <li>Snoozing suppresses the whole task; activity in any tab wakes it.</li>
+                  <li>Archiving stops all live provider sessions and task-linked terminals.</li>
+                  <li>Deleting offers worktree cleanup once, after all tabs are handled.</li>
+                </ul>
+              </div>
+              <div class="card half">
+                <span class="label">Tab actions</span>
+                <h3>Rename, close, restore</h3>
+                <ul>
+                  <li>Rename changes only the tab label.</li>
+                  <li>Close is blocked for running/pending tabs and preserves history.</li>
+                  <li>The last visible tab cannot be closed; archive/delete the task instead.</li>
+                  <li>Closed tabs remain available from a task menu for restoration.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="callout">
+              <strong>Last-opened tab is client preference.</strong> Store
+              <code>lastVisitedThreadIdByTask</code> in the UI state store. Clicking a task opens
+              that visible tab when it still exists; otherwise choose the tab with the most recent
+              actionable activity, then the oldest root tab. Avoid persisting “active tab” on the
+              server, which would create noisy cross-device races.
+            </div>
+          </section>
+
+          <section id="architecture">
+            <h2>Architecture changes</h2>
+            <p class="section-intro">
+              This is an additive vertical slice through contracts, event sourcing, provider
+              adapters, shared client state, and Sidebar v2. The provider runtime remains
+              thread-scoped end to end.
+            </p>
+
+            <h3>Contracts and shell protocol</h3>
+            <div class="card">
+              <ul>
+                <li>
+                  Add <code>WorkspaceTaskId</code> and <code>ContextBundleId</code> in
+                  <code>packages/contracts/src/baseSchemas.ts</code>.
+                </li>
+                <li>
+                  Extend <code>OrchestrationReadModel</code> and shell snapshots with a
+                  <code>tasks</code> array. Keep tasks and threads separate and join by
+                  <code>workspaceTaskId</code>; avoid nesting copies of thread shells inside every
+                  task.
+                </li>
+                <li>
+                  Add shell events <code>task-upserted</code> and <code>task-removed</code>. Existing
+                  thread shell events continue unchanged except for additive fields.
+                </li>
+                <li>
+                  Add task commands/events for create, metadata, settle/unsettle, snooze/unsnooze,
+                  archive/unarchive, and delete.
+                </li>
+                <li>
+                  Add thread tab commands/events for label, close/restore, and fork metadata.
+                </li>
+                <li>
+                  Advertise <code>environment.capabilities.workspaceTasks</code> and add provider
+                  native-fork capability at the provider adapter/instance layer.
+                </li>
+              </ul>
+            </div>
+
+            <h3 style="margin-top: 28px">Persistence and event sourcing</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Storage</th>
+                    <th>Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>orchestration_events</code></td>
+                    <td>Add aggregate kind <code>workspace-task</code> and task event types.</td>
+                  </tr>
+                  <tr>
+                    <td><code>projection_workspace_tasks</code></td>
+                    <td>New canonical task projection with project/workspace/lifecycle fields.</td>
+                  </tr>
+                  <tr>
+                    <td><code>projection_threads</code></td>
+                    <td>Add task id, tab label, closed timestamp, fork source/point/strategy, and context bundle reference.</td>
+                  </tr>
+                  <tr>
+                    <td><code>projection_context_bundles</code></td>
+                    <td>Immutable bounded JSON/blob payload for portable handoffs; events store the reference, not the potentially large body.</td>
+                  </tr>
+                  <tr>
+                    <td><code>projection_turns</code></td>
+                    <td>Persist provider-native turn id plus overlap/isolation metadata required by exact fork and safe revert.</td>
+                  </tr>
+                  <tr>
+                    <td><code>checkpoint_diff_blobs</code></td>
+                    <td>Add task id / workspace fingerprint linkage or companion metadata table.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3 style="margin-top: 28px">First-turn bootstrap</h3>
+            <p class="muted">
+              Keep drafts local until the first message, including a newly added unsent tab.
+              Extend the existing <code>thread.turn.start</code> bootstrap rather than inventing a
+              second transport path.
+            </p>
+            <pre><code>bootstrap: {
+  createWorkspaceTask?: {
+    taskId, projectId, title, branch, worktreePath, createdAt
+  }
+  createThread?: {
+    // existing fields
+    workspaceTaskId, tabLabel, fork
+  }
+  prepareWorktree?: { ...existing }
+  runSetupScript?: boolean
+}</code></pre>
+
+            <div class="callout warning">
+              <strong>Bootstrap cleanup must become task-aware.</strong> If worktree preparation,
+              tab fork setup, or the first provider turn fails, tombstone the newly created thread
+              and task and remove any worktree created by that bootstrap. Existing cleanup currently
+              centers on the thread; this slice must not leave an orphan task or checkout.
+            </div>
+
+            <h3 style="margin-top: 28px">Client state and UI</h3>
+            <div class="grid">
+              <div class="card half">
+                <span class="label">Shared client runtime</span>
+                <ul>
+                  <li>Add environment-scoped task models and refs.</li>
+                  <li>Teach shell reducer/cache to accept task events.</li>
+                  <li>Build pure selectors that join task + tab shells and aggregate status.</li>
+                  <li>Add task commands and capability reads.</li>
+                  <li>Decode old cached snapshots with missing <code>tasks</code>.</li>
+                </ul>
+              </div>
+              <div class="card half">
+                <span class="label">Web · Sidebar v2</span>
+                <ul>
+                  <li>Feed <code>SidebarV2</code> task summaries rather than raw threads.</li>
+                  <li>Add <code>TaskTabBar</code> and <code>NewTaskTabDialog</code> above ChatView.</li>
+                  <li>Extend the composer draft store with task id + captured fork spec.</li>
+                  <li>Keep existing active thread routes and detail subscriptions.</li>
+                  <li>Leave Sidebar v1 and mobile task UI out of scope.</li>
+                </ul>
+              </div>
+            </div>
+
+            <h3 style="margin-top: 28px">Primary file touchpoints</h3>
+            <div class="card">
+              <div class="file-list">
+                <code>packages/contracts/src/baseSchemas.ts</code>
+                <code>packages/contracts/src/orchestration.ts</code>
+                <code>packages/contracts/src/environment.ts</code>
+                <code>packages/contracts/src/keybindings.ts</code>
+                <code>apps/server/src/orchestration/decider.ts</code>
+                <code>apps/server/src/orchestration/projector.ts</code>
+                <code>apps/server/src/orchestration/Layers/ProjectionPipeline.ts</code>
+                <code>apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts</code>
+                <code>apps/server/src/orchestration/Layers/ProviderCommandReactor.ts</code>
+                <code>apps/server/src/orchestration/Layers/CheckpointReactor.ts</code>
+                <code>apps/server/src/provider/Services/ProviderAdapter.ts</code>
+                <code>apps/server/src/provider/Layers/CodexAdapter.ts</code>
+                <code>apps/server/src/provider/Layers/CodexSessionRuntime.ts</code>
+                <code>apps/server/src/ws.ts</code>
+                <code>packages/client-runtime/src/state/models.ts</code>
+                <code>packages/client-runtime/src/state/shellReducer.ts</code>
+                <code>packages/client-runtime/src/operations/commands.ts</code>
+                <code>apps/web/src/components/SidebarV2.tsx</code>
+                <code>apps/web/src/components/ChatView.tsx</code>
+                <code>apps/web/src/hooks/useHandleNewThread.ts</code>
+                <code>apps/web/src/composerDraftStore.ts</code>
+                <code>apps/web/src/routes/_chat.tsx</code>
+                <code>apps/web/src/keybindings.ts</code>
+                <code>apps/web/src/components/CommandPalette.tsx</code>
+              </div>
+            </div>
+
+            <div class="callout">
+              <strong>Suggested new modules.</strong>
+              <code>packages/client-runtime/src/state/tasks.ts</code>,
+              <code>apps/web/src/components/tasks/TaskTabBar.tsx</code>,
+              <code>apps/web/src/components/tasks/NewTaskTabDialog.tsx</code>,
+              <code>apps/web/src/tasks/taskPresentation.ts</code>,
+              <code>apps/server/src/orchestration/Layers/TaskLifecycleReactor.ts</code>, and
+              <code>apps/server/src/provider/ContextForkService.ts</code>. Keep pure aggregation
+              logic out of the already-large Sidebar and ChatView components.
+            </div>
+          </section>
+
+          <section id="migration">
+            <h2>Migration and version skew</h2>
+            <p class="section-intro">
+              Every existing thread becomes a one-tab task. Use
+              <code>workspaceTaskId = threadId</code> for the backfill so identifiers are stable,
+              deterministic, and easy to reason about.
+            </p>
+
+            <div class="card">
+              <span class="label">Migration 035 · proposed</span>
+              <ol>
+                <li>Create <code>projection_workspace_tasks</code> and context-bundle storage.</li>
+                <li>Add task/tab/fork columns and indexes to thread and turn projections.</li>
+                <li>
+                  For every existing thread, set <code>workspace_task_id = thread_id</code> and copy
+                  title/project/branch/worktree/lifecycle fields into a one-tab task.
+                </li>
+                <li>
+                  Append deterministic, idempotent <code>workspace-task.created</code> migration
+                  events plus lifecycle events needed to reproduce archive/settle/snooze/delete
+                  state during a complete replay.
+                </li>
+                <li>
+                  Use deterministic event ids and stream versions; migration tests must prove a
+                  second run inserts nothing.
+                </li>
+                <li>
+                  Backfill <code>provider_turn_id</code> from orchestration event metadata where it
+                  exists. Legacy turns without it simply cannot be a precise historical native-fork
+                  point and fall back to a portable handoff.
+                </li>
+              </ol>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Client/server pairing</th>
+                    <th>Behavior</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>New client + old server</td>
+                    <td>
+                      Synthesize one task per thread client-side for Sidebar v2 presentation.
+                      Hide/disable “New tab” and explain that the environment must be updated.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Old client + new server</td>
+                    <td>
+                      Extra fields are ignored. Tabs render as separate legacy threads with
+                      compatibility titles; thread commands remain valid and cannot delete a
+                      worktree still referenced by sibling tabs.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>New client + new server, flag off</td>
+                    <td>
+                      Preserve current thread-per-row UI. This is the operational kill switch and
+                      must reveal all created tabs rather than hiding data.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>New client + new server, flag on</td>
+                    <td>Full task rows, tab strip, fresh tabs, context forks, and task lifecycle.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout success">
+              <strong>Reversibility target.</strong> Disabling the experiment changes only
+              presentation and available creation actions. It does not need a down-migration:
+              every tab remains a valid thread, provider resume state remains keyed by ThreadId, and
+              the worktree remains referenced by all sibling thread shells.
+            </div>
+          </section>
+
+          <section id="phases">
+            <h2>Delivery plan</h2>
+            <p class="section-intro">
+              Ship behind a beta flag in reviewable vertical slices. Each phase has a useful exit
+              condition and keeps current thread behavior working.
+            </p>
+
+            <div class="step-list">
+              <div class="step">
+                <div class="step-num"></div>
+                <div>
+                  <h3>Pure model and UX specification</h3>
+                  <p>
+                    Add pure task aggregation selectors, naming, status priority, last-tab fallback,
+                    and fork-strategy decision logic with tests. Add the beta setting and keybinding
+                    command ids, but keep the feature unavailable.
+                  </p>
+                  <div class="exit">Exit: core semantics are testable without server or React component churn.</div>
+                </div>
+              </div>
+
+              <div class="step">
+                <div class="step-num"></div>
+                <div>
+                  <h3>Contracts, projections, migration, and capability</h3>
+                  <p>
+                    Add WorkspaceTask schemas/events/commands, shell protocol fields, migration 035,
+                    task repositories, projection pipeline support, client shell state, and
+                    <code>workspaceTasks</code> capability. Backfill every thread as a one-tab task.
+                  </p>
+                  <div class="exit">
+                    Exit: a new client can read real task shells and an old environment still decodes
+                    as synthetic one-tab tasks.
+                  </div>
+                </div>
+              </div>
+
+              <div class="step">
+                <div class="step-num"></div>
+                <div>
+                  <h3>Sidebar v2 grouping and task lifecycle</h3>
+                  <p>
+                    Switch Sidebar v2 to task summaries. Move rename, settle, snooze, archive,
+                    delete, selection, jump hints, status, and worktree cleanup to task actions.
+                    Keep the flag off by default.
+                  </p>
+                  <div class="exit">
+                    Exit: existing users see one task row per migrated thread with no visual or
+                    lifecycle regression when each task has one tab.
+                  </div>
+                </div>
+              </div>
+
+              <div class="step">
+                <div class="step-num"></div>
+                <div>
+                  <h3>Tab chrome and fresh tabs</h3>
+                  <p>
+                    Add TaskTabBar, NewTaskTabDialog, draft-tab state, task-aware promotion, route
+                    fallback, tab labels, close/restore, command palette entries, and desktop/web
+                    shortcut split. First ship “Start fresh” in the same worktree.
+                  </p>
+                  <div class="exit">
+                    Exit: a task can run two independent providers against one worktree without
+                    context inheritance.
+                  </div>
+                </div>
+              </div>
+
+              <div class="step">
+                <div class="step-num"></div>
+                <div>
+                  <h3>Portable cross-provider context handoff</h3>
+                  <p>
+                    Add immutable ContextBundle storage/building, captured fork points, one-time
+                    target-session injection, provenance cards, size limits, and deterministic
+                    truncation. This unlocks different harnesses first.
+                  </p>
+                  <div class="exit">
+                    Exit: Codex → Claude (and any other provider pair) starts with a visible,
+                    reproducible portable context bundle.
+                  </div>
+                </div>
+              </div>
+
+              <div class="step">
+                <div class="step-num"></div>
+                <div>
+                  <h3>Exact Codex native fork</h3>
+                  <p>
+                    Extend ProviderAdapter capabilities and fork method, persist provider turn ids,
+                    wire CodexSessionRuntime to <code>thread/fork</code>, enforce continuation-key
+                    compatibility, bind the new resume cursor, and add exact-fork retry/fallback UI.
+                  </p>
+                  <div class="exit">
+                    Exit: Codex → compatible Codex creates a genuine provider-native branch through
+                    the selected completed turn.
+                  </div>
+                </div>
+              </div>
+
+              <div class="step">
+                <div class="step-num"></div>
+                <div>
+                  <h3>Shared-worktree safety and dogfood rollout</h3>
+                  <p>
+                    Add workspace activity coordination, overlap metadata, unsafe-revert blocking,
+                    shared-worktree status UI, metrics, and the hidden Beta toggle. Dogfood with
+                    focused scenarios before enabling the experiment for broader v2 users.
+                  </p>
+                  <div class="exit">
+                    Exit: parallel tabs are observable, overlapping changes cannot be destructively
+                    reverted, and the feature can be disabled without losing access to any thread.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="callout warning">
+              <strong>Why fresh tabs precede forks.</strong> They prove the task/worktree/tab model,
+              provider isolation, lifecycle, draft promotion, and route behavior without mixing in
+              context-fidelity bugs. Portable handoff then unlocks the headline cross-harness use
+              case; native Codex fork becomes an optimization with stronger fidelity.
+            </div>
+          </section>
+
+          <section id="verification">
+            <h2>Verification strategy</h2>
+            <p class="section-intro">
+              Backend behavior requires focused tests in every changed layer. The final web slices
+              require one integrated Sidebar v2 pass in an isolated T3 environment, as required by
+              the repository workflow.
+            </p>
+
+            <div class="grid">
+              <div class="card third">
+                <span class="label">Contracts + migration</span>
+                <ul>
+                  <li>Decode old snapshots/events.</li>
+                  <li>Backfill one task per thread.</li>
+                  <li>Preserve lifecycle state.</li>
+                  <li>Prove migration idempotence.</li>
+                  <li>Replay reconstructs the same projections.</li>
+                </ul>
+              </div>
+              <div class="card third">
+                <span class="label">Orchestration</span>
+                <ul>
+                  <li>Task/thread membership invariants.</li>
+                  <li>All tabs resolve the task cwd.</li>
+                  <li>Task settle/snooze guards.</li>
+                  <li>Activity wakes the whole task.</li>
+                  <li>Cascade stop/archive/delete behavior.</li>
+                </ul>
+              </div>
+              <div class="card third">
+                <span class="label">Provider layer</span>
+                <ul>
+                  <li>Native eligibility matrix.</li>
+                  <li>Codex request parameters.</li>
+                  <li>New cursor bound to target only.</li>
+                  <li>Portable injection happens once.</li>
+                  <li>Failure is retryable and visible.</li>
+                </ul>
+              </div>
+              <div class="card half">
+                <span class="label">Client + React</span>
+                <ul>
+                  <li>Status priority and counts across mixed tab states.</li>
+                  <li>Task sorting stays stable under tab activity.</li>
+                  <li>Task click chooses last visited/fallback tab.</li>
+                  <li>Draft tab captures a fixed fork point and promotes once.</li>
+                  <li>Keyboard commands respect terminal/preview focus and browser differences.</li>
+                  <li>Flag-off mode exposes every underlying thread.</li>
+                </ul>
+              </div>
+              <div class="card half">
+                <span class="label">Checkpoint safety</span>
+                <ul>
+                  <li>One active tab keeps current checkpoint/revert behavior.</li>
+                  <li>Two overlapping turns mark both checkpoints overlapping.</li>
+                  <li>Overlapping revert is rejected server-side, not only hidden in UI.</li>
+                  <li>Task-wide diff remains viewable and clearly labeled.</li>
+                  <li>Deleting one tab never offers shared worktree deletion.</li>
+                </ul>
+              </div>
+            </div>
+
+            <h3 style="margin-top: 28px">Integrated dogfood script</h3>
+            <div class="card">
+              <ol>
+                <li>Enable Sidebar v2 + Task Tabs in an isolated environment.</li>
+                <li>Create a new task with <code>Mod+N</code> in a dedicated worktree.</li>
+                <li>Send a planning turn in the root Codex tab and wait for completion.</li>
+                <li>Create a fresh Claude tab; confirm same branch/cwd and independent transcript.</li>
+                <li>Create a portable fork from Codex to Claude; inspect the provenance card and handoff contents.</li>
+                <li>Create an exact Codex fork; confirm the native branch begins at the captured completed turn.</li>
+                <li>Run two tabs concurrently; confirm the task row shows both and overlapping revert is disabled/rejected.</li>
+                <li>Complete one background tab; confirm task “Done” and last-visited routing.</li>
+                <li>Settle, un-settle, snooze, wake, archive, and restore the whole task.</li>
+                <li>Disable the beta flag; confirm all tab threads remain reachable in legacy thread-per-row presentation.</li>
+                <li>Delete the task; confirm one worktree-removal prompt and no provider/terminal residue.</li>
+              </ol>
+            </div>
+
+            <p class="tiny" style="margin-top: 14px">
+              Run focused <code>vp test run &lt;affected-test-files&gt;</code>, targeted package
+              typechecks/formatting, and the <code>test-t3-app</code> integrated web pass. Do not
+              substitute the repo-wide suite for focused local verification.
+            </p>
+          </section>
+
+          <section id="risks">
+            <h2>Risks and decisions to lock before implementation</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Question</th>
+                    <th>Recommendation</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Are task tabs allowed to write concurrently?</td>
+                    <td>Yes for the experiment, with overlap labeling and server-enforced revert blocking.</td>
+                    <td>This tests the bold idea without pretending attribution is safe.</td>
+                  </tr>
+                  <tr>
+                    <td>Should “fork” always imply exact history?</td>
+                    <td>No. Persist and display <code>native</code> vs <code>portable</code>.</td>
+                    <td>Cross-provider exact cloning is not generally available.</td>
+                  </tr>
+                  <tr>
+                    <td>Should a new tab immediately persist?</td>
+                    <td>No. Keep it as a local draft until first send, matching current thread drafts.</td>
+                    <td>Closing an unused tab leaves no server/provider debris.</td>
+                  </tr>
+                  <tr>
+                    <td>Should routes be task-shaped now?</td>
+                    <td>No. Preserve active thread routes for the first version.</td>
+                    <td>Deep-link stability and smaller blast radius outweigh URL purity.</td>
+                  </tr>
+                  <tr>
+                    <td>Should terminals/previews be shared across tabs?</td>
+                    <td>Not initially. Keep presentation tab-local while resolving all launches to task cwd.</td>
+                    <td>Avoids forcing a ChatView/right-panel/terminal state migration into the core experiment.</td>
+                  </tr>
+                  <tr>
+                    <td>Should mobile or Sidebar v1 group tasks?</td>
+                    <td>No for this experiment. They retain thread-per-row compatibility presentation.</td>
+                    <td>The user-visible scope is explicitly Sidebar v2.</td>
+                  </tr>
+                  <tr>
+                    <td>Can the task title and tab title be the same field?</td>
+                    <td>No. Add a tab label; denormalize task title into legacy thread title only for compatibility.</td>
+                    <td>Multi-tab tasks need a stable goal and distinguishable agent labels.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="grid">
+              <div class="card red half">
+                <span class="label">Do not do</span>
+                <ul>
+                  <li>Do not mass-rename ThreadId or provider runtime events to TabId.</li>
+                  <li>Do not share one provider resume cursor across concurrent T3 threads.</li>
+                  <li>Do not call portable handoff an exact fork.</li>
+                  <li>Do not allow task tabs to diverge onto different worktrees.</li>
+                  <li>Do not expose checkpoint revert after overlapping writes.</li>
+                  <li>Do not hide task data when the beta flag is disabled.</li>
+                </ul>
+              </div>
+              <div class="card green half">
+                <span class="label">Preserve</span>
+                <ul>
+                  <li>Current <code>Mod+N</code> new-work behavior and draft-first feel.</li>
+                  <li>Per-provider sessions, approvals, and interrupt controls.</li>
+                  <li>Existing thread deep links and subscriptions.</li>
+                  <li>Sidebar v2 stable creation-order sorting and inbox lifecycle.</li>
+                  <li>Worktree sharing checks for legacy clients.</li>
+                  <li>Capability-based behavior under client/server version skew.</li>
+                </ul>
+              </div>
+            </div>
+
+            <h3 style="margin-top: 28px">Telemetry for the experiment</h3>
+            <p class="muted">
+              Record counts and timings only: task creation, tab count distribution, fork strategy,
+              source/target driver kinds, fork failures, time to first target turn, overlapping-turn
+              frequency, and flag disablement. Never include prompt text, context bundles, paths, or
+              transcript content in analytics.
+            </p>
+          </section>
+
+          <section id="done">
+            <h2>Definition of done</h2>
+            <div class="checklist">
+              <div class="check">Sidebar v2 shows one row per WorkspaceTask.</div>
+              <div class="check">Existing threads migrate to one-tab tasks without title or lifecycle loss.</div>
+              <div class="check">Mod+N creates a task draft and first tab with current defaults.</div>
+              <div class="check">Desktop Cmd+T and web-safe action open the new-tab sheet.</div>
+              <div class="check">Fresh tabs use the exact same project, branch, and effective cwd.</div>
+              <div class="check">Each tab independently selects provider, model, and runtime mode.</div>
+              <div class="check">Portable forks capture a fixed, bounded, visible ContextBundle.</div>
+              <div class="check">Compatible Codex forks use app-server thread/fork.</div>
+              <div class="check">Running source turns fork only through the latest completed turn.</div>
+              <div class="check">Task status aggregates all visible tab states deterministically.</div>
+              <div class="check">Task lifecycle actions guard and affect every tab.</div>
+              <div class="check">Parallel tab activity is visible at task and tab level.</div>
+              <div class="check">Overlapping checkpoints cannot be reverted in client or server.</div>
+              <div class="check">Disabling the flag exposes all tabs as ordinary threads.</div>
+              <div class="check">Old-server capability fallback is clear and non-failing.</div>
+              <div class="check">Focused backend, contract, client, and integrated web verification passes.</div>
+            </div>
+
+            <div class="callout success" style="margin-top: 24px">
+              <strong>The experiment succeeds</strong> if one task can hold multiple independently
+              useful agent conversations—especially across harnesses—while the user continues to
+              reason about exactly one checkout, one goal, and one sidebar item. The plan
+              deliberately makes provider-fork fidelity and shared-filesystem hazards visible
+              instead of smoothing over them.
+            </div>
+          </section>
+        </article>
+      </div>
+
+      <footer class="footer">
+        Prepared from the current T3 Code contracts, Sidebar v2, draft-promotion flow,
+        orchestration/event-store layers, provider adapters, Codex app-server generated protocol,
+        and checkpoint/worktree cleanup behavior. Scope: web Sidebar v2 experiment only.
+      </footer>
+    </main>
+  </body>
+</html>

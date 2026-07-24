@@ -24,6 +24,7 @@ import {
   ModelSelection,
   ProjectId,
   ThreadId,
+  ThreadForkProvenance,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -78,6 +79,7 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
+    forkProvenance: Schema.NullOr(Schema.fromJsonString(ThreadForkProvenance)),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -116,6 +118,10 @@ const ProjectIdLookupInput = Schema.Struct({
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
+});
+const ThreadRowByIdLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  includeClosed: Schema.Boolean,
 });
 const ProjectionProjectLookupRowSchema = ProjectionProjectDbRowSchema;
 const ProjectionThreadIdLookupRowSchema = Schema.Struct({
@@ -324,6 +330,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          COALESCE(workspace_task_id, thread_id) AS "workspaceTaskId",
+          tab_label AS "tabLabel",
+          tab_position AS "tabPosition",
+          tab_closed_at AS "tabClosedAt",
+          fork_provenance_json AS "forkProvenance",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -356,6 +367,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          COALESCE(workspace_task_id, thread_id) AS "workspaceTaskId",
+          tab_label AS "tabLabel",
+          tab_position AS "tabPosition",
+          tab_closed_at AS "tabClosedAt",
+          fork_provenance_json AS "forkProvenance",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -378,6 +394,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NULL
+          AND tab_closed_at IS NULL
         ORDER BY project_id ASC, created_at ASC, thread_id ASC
       `,
   });
@@ -390,6 +407,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          COALESCE(workspace_task_id, thread_id) AS "workspaceTaskId",
+          tab_label AS "tabLabel",
+          tab_position AS "tabPosition",
+          tab_closed_at AS "tabClosedAt",
+          fork_provenance_json AS "forkProvenance",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -748,14 +770,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  const getActiveThreadRowById = SqlSchema.findOneOption({
-    Request: ThreadIdLookupInput,
+  const getThreadRowById = SqlSchema.findOneOption({
+    Request: ThreadRowByIdLookupInput,
     Result: ProjectionThreadDbRowSchema,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, includeClosed }) =>
       sql`
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          COALESCE(workspace_task_id, thread_id) AS "workspaceTaskId",
+          tab_label AS "tabLabel",
+          tab_position AS "tabPosition",
+          tab_closed_at AS "tabClosedAt",
+          fork_provenance_json AS "forkProvenance",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -779,6 +806,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
           AND archived_at IS NULL
+          AND (${includeClosed ? 1 : 0} = 1 OR tab_closed_at IS NULL)
         LIMIT 1
       `,
   });
@@ -1192,6 +1220,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const threads: ReadonlyArray<OrchestrationThread> = threadRows.map((row) => ({
                 id: row.threadId,
                 projectId: row.projectId,
+                workspaceTaskId: row.workspaceTaskId,
+                tabLabel: row.tabLabel,
+                tabPosition: row.tabPosition,
+                tabClosedAt: row.tabClosedAt,
+                forkProvenance: row.forkProvenance,
                 title: row.title,
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
@@ -1394,6 +1427,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 threads.push({
                   id: row.threadId,
                   projectId: row.projectId,
+                  workspaceTaskId: row.workspaceTaskId,
+                  tabLabel: row.tabLabel,
+                  tabPosition: row.tabPosition,
+                  tabClosedAt: row.tabClosedAt,
+                  forkProvenance: row.forkProvenance,
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -1527,6 +1565,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ? Result.succeed({
                       id: row.threadId,
                       projectId: row.projectId,
+                      workspaceTaskId: row.workspaceTaskId,
+                      tabLabel: row.tabLabel,
+                      tabPosition: row.tabPosition,
+                      tabClosedAt: row.tabClosedAt,
+                      forkProvenance: row.forkProvenance,
                       title: row.title,
                       modelSelection: row.modelSelection,
                       runtimeMode: row.runtimeMode,
@@ -1665,6 +1708,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 (row): OrchestrationThreadShell => ({
                   id: row.threadId,
                   projectId: row.projectId,
+                  workspaceTaskId: row.workspaceTaskId,
+                  tabLabel: row.tabLabel,
+                  tabPosition: row.tabPosition,
+                  tabClosedAt: row.tabClosedAt,
+                  forkProvenance: row.forkProvenance,
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -1876,7 +1924,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        getThreadRowById({ threadId, includeClosed: false }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
@@ -1909,6 +1957,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       return Option.some({
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        workspaceTaskId: threadRow.value.workspaceTaskId,
+        tabLabel: threadRow.value.tabLabel,
+        tabPosition: threadRow.value.tabPosition,
+        tabClosedAt: threadRow.value.tabClosedAt,
+        forkProvenance: threadRow.value.forkProvenance,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
@@ -1942,7 +1995,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         latestTurnRow,
         sessionRow,
       ] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        getThreadRowById({ threadId, includeClosed: true }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",
@@ -2007,6 +2060,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
+        workspaceTaskId: threadRow.value.workspaceTaskId,
+        tabLabel: threadRow.value.tabLabel,
+        tabPosition: threadRow.value.tabPosition,
+        tabClosedAt: threadRow.value.tabClosedAt,
+        forkProvenance: threadRow.value.forkProvenance,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,

@@ -12,6 +12,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  WorkspaceTaskId,
   type ModelSelection,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
@@ -848,6 +849,46 @@ describe("composerDraftStore project draft thread mapping", () => {
     );
     expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
     expect(draftByKey(draftId)).toBeUndefined();
+  });
+
+  it("retains sibling task-tab drafts and their fork metadata when remapping the project", () => {
+    const store = useComposerDraftStore.getState();
+    const workspaceTaskId = WorkspaceTaskId.make("task-a");
+    store.setProjectDraftThreadId(projectRef, draftId, {
+      threadId,
+      workspaceTaskId,
+      tabPosition: 0,
+      retainPreviousDraft: true,
+    });
+    store.setPrompt(draftId, "main tab draft");
+
+    store.setProjectDraftThreadId(projectRef, otherDraftId, {
+      threadId: otherThreadId,
+      workspaceTaskId,
+      tabPosition: 1,
+      forkProvenance: {
+        mode: "portable",
+        sourceThreadId: threadId,
+        createdAt: "2026-07-24T00:00:00.000Z",
+      },
+      retainPreviousDraft: true,
+    });
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toMatchObject({
+      threadId,
+      workspaceTaskId,
+      tabPosition: 0,
+    });
+    expect(draftByKey(draftId)?.prompt).toBe("main tab draft");
+    expect(useComposerDraftStore.getState().getDraftThread(otherDraftId)).toMatchObject({
+      threadId: otherThreadId,
+      workspaceTaskId,
+      tabPosition: 1,
+      forkProvenance: {
+        mode: "portable",
+        sourceThreadId: threadId,
+      },
+    });
   });
 
   it("keeps composer drafts when the thread is still mapped by another project", () => {

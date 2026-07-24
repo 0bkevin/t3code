@@ -15,7 +15,9 @@ import {
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
+  ThreadForkProvenance,
   ThreadId,
+  WorkspaceTaskId,
 } from "@t3tools/contracts";
 import {
   parseScopedProjectKey,
@@ -55,6 +57,7 @@ import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewC
 const isRuntimeMode = Schema.is(RuntimeMode);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
+const isThreadForkProvenance = Schema.is(ThreadForkProvenance);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 8;
@@ -206,6 +209,10 @@ type LegacyPersistedComposerDraftStoreState = PersistedComposerDraftStoreState &
 
 const PersistedDraftThreadState = Schema.Struct({
   threadId: ThreadId,
+  workspaceTaskId: Schema.optionalKey(WorkspaceTaskId),
+  tabLabel: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  tabPosition: Schema.optionalKey(Schema.Number),
+  forkProvenance: Schema.optionalKey(Schema.NullOr(ThreadForkProvenance)),
   environmentId: Schema.String,
   projectId: ProjectId,
   logicalProjectKey: Schema.optionalKey(Schema.String),
@@ -285,6 +292,10 @@ export interface ComposerThreadDraftState {
  */
 export interface DraftSessionState {
   threadId: ThreadId;
+  workspaceTaskId?: WorkspaceTaskId | undefined;
+  tabLabel?: string | null | undefined;
+  tabPosition?: number | undefined;
+  forkProvenance?: ThreadForkProvenance | null | undefined;
   environmentId: EnvironmentId;
   projectId: ProjectId;
   logicalProjectKey: string;
@@ -359,6 +370,11 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      workspaceTaskId?: WorkspaceTaskId;
+      tabLabel?: string | null;
+      tabPosition?: number;
+      forkProvenance?: ThreadForkProvenance | null;
+      retainPreviousDraft?: boolean;
     },
   ) => void;
   /** Creates or updates the draft session tracked for a concrete project ref. */
@@ -374,6 +390,11 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      workspaceTaskId?: WorkspaceTaskId;
+      tabLabel?: string | null;
+      tabPosition?: number;
+      forkProvenance?: ThreadForkProvenance | null;
+      retainPreviousDraft?: boolean;
     },
   ) => void;
   /** Updates mutable draft-session metadata without touching composer content. */
@@ -1331,6 +1352,11 @@ function createDraftThreadState(
     startFromOrigin?: boolean;
     runtimeMode?: RuntimeMode;
     interactionMode?: ProviderInteractionMode;
+    workspaceTaskId?: WorkspaceTaskId;
+    tabLabel?: string | null;
+    tabPosition?: number;
+    forkProvenance?: ThreadForkProvenance | null;
+    retainPreviousDraft?: boolean;
   },
 ): DraftThreadState {
   const projectChanged =
@@ -1357,6 +1383,10 @@ function createDraftThreadState(
       : options.startFromOrigin;
   return {
     threadId,
+    workspaceTaskId: options?.workspaceTaskId ?? existingThread?.workspaceTaskId,
+    tabLabel: options?.tabLabel ?? existingThread?.tabLabel ?? null,
+    tabPosition: options?.tabPosition ?? existingThread?.tabPosition ?? 0,
+    forkProvenance: options?.forkProvenance ?? existingThread?.forkProvenance ?? null,
     environmentId: projectRef.environmentId,
     projectId: projectRef.projectId,
     logicalProjectKey,
@@ -1396,6 +1426,10 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
   return (
     !!left &&
     left.threadId === right.threadId &&
+    left.workspaceTaskId === right.workspaceTaskId &&
+    left.tabLabel === right.tabLabel &&
+    left.tabPosition === right.tabPosition &&
+    Equal.equals(left.forkProvenance, right.forkProvenance) &&
     left.environmentId === right.environmentId &&
     left.projectId === right.projectId &&
     left.logicalProjectKey === right.logicalProjectKey &&
@@ -1524,6 +1558,23 @@ function normalizePersistedDraftThreads(
       const normalizedEnvironmentId = environmentId as EnvironmentId;
       draftThreadsByThreadKey[threadKey] = {
         threadId,
+        ...(typeof candidateDraftThread.workspaceTaskId === "string" &&
+        candidateDraftThread.workspaceTaskId.length > 0
+          ? {
+              workspaceTaskId: WorkspaceTaskId.make(candidateDraftThread.workspaceTaskId),
+            }
+          : {}),
+        ...(typeof candidateDraftThread.tabLabel === "string"
+          ? { tabLabel: candidateDraftThread.tabLabel }
+          : {}),
+        ...(typeof candidateDraftThread.tabPosition === "number" &&
+        Number.isInteger(candidateDraftThread.tabPosition) &&
+        candidateDraftThread.tabPosition >= 0
+          ? { tabPosition: candidateDraftThread.tabPosition }
+          : {}),
+        ...(isThreadForkProvenance(candidateDraftThread.forkProvenance)
+          ? { forkProvenance: candidateDraftThread.forkProvenance }
+          : {}),
         environmentId: normalizedEnvironmentId,
         projectId: projectId as ProjectId,
         logicalProjectKey:
@@ -1907,9 +1958,32 @@ function partializeComposerDraftStoreState(
     };
     persistedDraftsByThreadKey[threadKey] = persistedDraft;
   }
+  const persistedDraftThreadsByThreadKey = Object.fromEntries(
+    Object.entries(state.draftThreadsByThreadKey).map(([draftId, draft]) => [
+      draftId,
+      {
+        threadId: draft.threadId,
+        ...(draft.workspaceTaskId !== undefined ? { workspaceTaskId: draft.workspaceTaskId } : {}),
+        ...(draft.tabLabel !== undefined ? { tabLabel: draft.tabLabel } : {}),
+        ...(draft.tabPosition !== undefined ? { tabPosition: draft.tabPosition } : {}),
+        ...(draft.forkProvenance !== undefined ? { forkProvenance: draft.forkProvenance } : {}),
+        environmentId: draft.environmentId,
+        projectId: draft.projectId,
+        logicalProjectKey: draft.logicalProjectKey,
+        createdAt: draft.createdAt,
+        runtimeMode: draft.runtimeMode,
+        interactionMode: draft.interactionMode,
+        branch: draft.branch,
+        worktreePath: draft.worktreePath,
+        envMode: draft.envMode,
+        startFromOrigin: draft.startFromOrigin,
+        ...(draft.promotedTo !== undefined ? { promotedTo: draft.promotedTo } : {}),
+      },
+    ]),
+  ) as PersistedComposerDraftStoreState["draftThreadsByThreadKey"];
   return {
     draftsByThreadKey: persistedDraftsByThreadKey,
-    draftThreadsByThreadKey: state.draftThreadsByThreadKey,
+    draftThreadsByThreadKey: persistedDraftThreadsByThreadKey,
     logicalProjectDraftThreadKeyByLogicalProjectKey:
       state.logicalProjectDraftThreadKeyByLogicalProjectKey,
     stickyModelSelectionByProvider: compactModelSelectionByProvider(
@@ -2149,6 +2223,10 @@ function toHydratedDraftThreadState(
 ): DraftThreadState {
   return {
     threadId: persistedDraftThread.threadId,
+    workspaceTaskId: persistedDraftThread.workspaceTaskId,
+    tabLabel: persistedDraftThread.tabLabel ?? null,
+    tabPosition: persistedDraftThread.tabPosition ?? 0,
+    forkProvenance: persistedDraftThread.forkProvenance ?? null,
     environmentId: persistedDraftThread.environmentId as EnvironmentId,
     projectId: persistedDraftThread.projectId,
     logicalProjectKey:
@@ -2288,6 +2366,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (
               previousThreadKeyForLogicalProject &&
               previousThreadKeyForLogicalProject !== draftId &&
+              options?.retainPreviousDraft !== true &&
               !isComposerThreadKeyInUse(
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
                 previousThreadKeyForLogicalProject,
@@ -2359,6 +2438,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 : options.startFromOrigin;
             const nextDraftThread: DraftThreadState = {
               threadId: existing.threadId,
+              workspaceTaskId: existing.workspaceTaskId,
+              tabLabel: existing.tabLabel,
+              tabPosition: existing.tabPosition,
+              forkProvenance: existing.forkProvenance,
               environmentId: nextProjectRef.environmentId,
               projectId: nextProjectRef.projectId,
               logicalProjectKey: existing.logicalProjectKey,
