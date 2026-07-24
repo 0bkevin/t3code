@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildThreadListV2Items,
+  resolveThreadListV2SwipeActions,
   resolveThreadListV2Status,
   sortThreadsForListV2,
 } from "./threadListV2";
@@ -62,6 +63,60 @@ describe("resolveThreadListV2Status", () => {
     expect(resolveThreadListV2Status(makeThread({ id: ThreadId.make("t"), title: "t" }))).toBe(
       "ready",
     );
+  });
+});
+
+describe("resolveThreadListV2SwipeActions", () => {
+  it("offers settle and snooze for an active snoozable thread", () => {
+    expect(
+      resolveThreadListV2SwipeActions({
+        variant: "card",
+        settlementSupported: true,
+        snoozeSupported: true,
+        snoozable: true,
+      }),
+    ).toEqual({ primary: "settle", secondary: "snooze" });
+  });
+
+  it("offers un-settle and snooze for settled history", () => {
+    expect(
+      resolveThreadListV2SwipeActions({
+        variant: "slim",
+        settlementSupported: true,
+        snoozeSupported: true,
+        snoozable: true,
+      }),
+    ).toEqual({ primary: "unsettle", secondary: "snooze" });
+  });
+
+  it("omits snooze when the server or thread does not allow it", () => {
+    expect(
+      resolveThreadListV2SwipeActions({
+        variant: "card",
+        settlementSupported: true,
+        snoozeSupported: false,
+        snoozable: true,
+      }),
+    ).toEqual({ primary: "settle", secondary: null });
+    expect(
+      resolveThreadListV2SwipeActions({
+        variant: "card",
+        settlementSupported: true,
+        snoozeSupported: true,
+        snoozable: false,
+      }),
+    ).toEqual({ primary: "settle", secondary: null });
+  });
+
+  it("falls back to archive only for a pre-lifecycle server", () => {
+    expect(
+      resolveThreadListV2SwipeActions({
+        variant: "card",
+        settlementSupported: false,
+        snoozeSupported: false,
+        snoozable: true,
+      }),
+    ).toEqual({ primary: "archive", secondary: null });
   });
 });
 

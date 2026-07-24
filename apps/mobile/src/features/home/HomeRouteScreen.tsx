@@ -29,7 +29,7 @@ export function HomeRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState("");
-  const { archiveThread, confirmDeleteThread, settleThread, unsettleThread } =
+  const { archiveThread, confirmDeleteThread, settleThread, snoozeThread, unsettleThread } =
     useThreadListActions();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
@@ -135,6 +135,7 @@ export function HomeRouteScreen() {
           onArchiveThread={archiveThread}
           onDeleteThread={confirmDeleteThread}
           onSettleThread={settleThread}
+          onSnoozeThread={snoozeThread}
           onUnsettleThread={unsettleThread}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}

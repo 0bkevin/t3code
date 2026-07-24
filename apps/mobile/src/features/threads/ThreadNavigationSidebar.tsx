@@ -194,7 +194,7 @@ function ThreadNavigationSidebarPane(
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const headerIsOverContentRef = useRef(false);
   const sidebarScrollGesture = useMemo(() => Gesture.Native(), []);
-  const { archiveThread, confirmDeleteThread, settleThread, unsettleThread } =
+  const { archiveThread, confirmDeleteThread, settleThread, snoozeThread, unsettleThread } =
     useThreadListActions();
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled =
@@ -800,6 +800,8 @@ function ThreadNavigationSidebarPane(
               onArchiveThread={archiveThread}
               settlementSupported={settlementEnvironmentIds.has(thread.environmentId)}
               onSettleThread={settleThread}
+              snoozeSupported={snoozeEnvironmentIds.has(thread.environmentId)}
+              onSnoozeThread={snoozeThread}
               onUnsettleThread={unsettleThread}
               onChangeRequestState={handleChangeRequestState}
               projectCwd={projectCwdByKey.get(scopeKey) ?? null}
@@ -915,6 +917,8 @@ function ThreadNavigationSidebarPane(
       settlementEnvironmentIds,
       showMoreSettled,
       sidebarScrollGesture,
+      snoozeEnvironmentIds,
+      snoozeThread,
       unsettleThread,
       updateGroupDisplay,
     ],

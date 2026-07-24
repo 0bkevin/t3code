@@ -11,6 +11,27 @@ import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
  * unlabeled resting state.
  */
 export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze";
+
+export function resolveThreadListV2SwipeActions(input: {
+  readonly variant: "card" | "slim";
+  readonly settlementSupported: boolean;
+  readonly snoozeSupported: boolean;
+  readonly snoozable: boolean;
+}): {
+  readonly primary: Exclude<ThreadListV2SwipeAction, "snooze">;
+  readonly secondary: "snooze" | null;
+} {
+  const primary = input.settlementSupported
+    ? input.variant === "slim"
+      ? "unsettle"
+      : "settle"
+    : "archive";
+  return {
+    primary,
+    secondary: input.snoozeSupported && input.snoozable ? "snooze" : null,
+  };
+}
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more. Shared by the compact Home list and

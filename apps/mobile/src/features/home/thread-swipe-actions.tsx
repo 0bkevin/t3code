@@ -47,11 +47,15 @@ export const THREAD_SWIPE_SPRING = {
   stiffness: 330,
 };
 
-interface ThreadSwipePrimaryAction {
+interface ThreadSwipeAction {
   readonly accessibilityLabel: string;
   readonly icon: ComponentProps<typeof SymbolView>["name"];
   readonly label: string;
   readonly onPress: () => void;
+}
+
+interface ThreadSwipeSecondaryAction extends ThreadSwipeAction {
+  readonly backgroundColor: string;
 }
 
 /**
@@ -183,7 +187,9 @@ export function ThreadSwipeable(props: {
   readonly onDelete: () => void;
   readonly onSwipeableClose?: (methods: SwipeableMethods) => void;
   readonly onSwipeableWillOpen?: (methods: SwipeableMethods) => void;
-  readonly primaryAction: ThreadSwipePrimaryAction;
+  readonly primaryAction: ThreadSwipeAction;
+  /** Optional second non-destructive action revealed nearest the row edge. */
+  readonly secondaryAction?: ThreadSwipeAction;
   /**
    * Identity of the content being wrapped. When a recycled list reuses this
    * component for a different item, the swipeable snaps back to closed so an
@@ -266,7 +272,6 @@ export function ThreadSwipeable(props: {
           compact={props.compactActions === true}
           fullSwipeAction={props.fullSwipeAction ?? "delete"}
           fullSwipeThreshold={fullSwipeThreshold}
-          onDelete={props.onDelete}
           onFullSwipeArmedChange={handleFullSwipeArmedChange}
           primaryAction={{
             ...props.primaryAction,
@@ -275,8 +280,27 @@ export function ThreadSwipeable(props: {
               props.primaryAction.onPress();
             },
           }}
-          swipeableMethods={methods}
-          threadTitle={props.threadTitle}
+          secondaryAction={
+            props.secondaryAction === undefined
+              ? {
+                  accessibilityLabel: `Delete ${props.threadTitle}`,
+                  backgroundColor: "#ff2d55",
+                  icon: "trash",
+                  label: "Delete",
+                  onPress: () => {
+                    methods.close();
+                    props.onDelete();
+                  },
+                }
+              : {
+                  ...props.secondaryAction,
+                  backgroundColor: "#5856d6",
+                  onPress: () => {
+                    methods.close();
+                    props.secondaryAction?.onPress();
+                  },
+                }
+          }
           translation={translation}
         />
       )}
@@ -446,11 +470,9 @@ export function ThreadSwipeActions(props: {
   readonly compact: boolean;
   readonly fullSwipeAction?: "delete" | "primary";
   readonly fullSwipeThreshold: number;
-  readonly onDelete: () => void;
   readonly onFullSwipeArmedChange: (armed: boolean) => void;
-  readonly primaryAction: ThreadSwipePrimaryAction;
-  readonly swipeableMethods: SwipeableMethods;
-  readonly threadTitle: string;
+  readonly primaryAction: ThreadSwipeAction;
+  readonly secondaryAction: ThreadSwipeSecondaryAction;
   readonly translation: SharedValue<number>;
 }) {
   const fullSwipeIsPrimary = props.fullSwipeAction === "primary";
@@ -486,17 +508,14 @@ export function ThreadSwipeActions(props: {
         translation={props.translation}
       />
       <SwipeActionButton
-        accessibilityLabel={`Delete ${props.threadTitle}`}
-        backgroundColor="#ff2d55"
+        accessibilityLabel={props.secondaryAction.accessibilityLabel}
+        backgroundColor={props.secondaryAction.backgroundColor}
         compact={props.compact}
         entryRange={[8, ACTION_ITEM_WIDTH * 0.72]}
         fullSwipeThreshold={props.fullSwipeThreshold}
-        icon="trash"
-        label="Delete"
-        onPress={() => {
-          props.swipeableMethods.close();
-          props.onDelete();
-        }}
+        icon={props.secondaryAction.icon}
+        label={props.secondaryAction.label}
+        onPress={props.secondaryAction.onPress}
         stretchesOnFullSwipe={!fullSwipeIsPrimary}
         translation={props.translation}
       />

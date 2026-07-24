@@ -1,5 +1,5 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { canSettle } from "@t3tools/client-runtime/state/thread-settled";
+import { canSettle, canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useCallback, useRef } from "react";
@@ -13,12 +13,21 @@ import { environmentServerConfigsAtom } from "../../state/server";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 
+const SWIPE_SNOOZE_DURATION_MS = 60 * 60 * 1_000;
+
 /** Version skew: never send settle/unsettle to a server that predates them
     (capability defaults false on decode for older servers). */
 function environmentSupportsSettlement(environmentId: EnvironmentThreadShell["environmentId"]) {
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
       .threadSettlement === true
+  );
+}
+
+function environmentSupportsSnooze(environmentId: EnvironmentThreadShell["environmentId"]) {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadSnooze === true
   );
 }
 
@@ -192,9 +201,11 @@ export function useThreadListActions(): {
   readonly archiveThread: (thread: EnvironmentThreadShell) => void;
   readonly confirmDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly settleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  readonly snoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unsettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
 } {
   const executeAction = useThreadActionExecutor();
+  const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
 
   const archiveThread = useCallback(
     (thread: EnvironmentThreadShell) => {
@@ -206,6 +217,45 @@ export function useThreadListActions(): {
     async (thread: EnvironmentThreadShell) => (await executeAction("settle", thread)) === true,
     [executeAction],
   );
+  const snoozeThread = useCallback(
+    async (thread: EnvironmentThreadShell) => {
+      if (!environmentSupportsSnooze(thread.environmentId)) {
+        Alert.alert(
+          "Could not snooze thread",
+          "This environment's server does not support snoozing yet. Update the server to use Snooze.",
+        );
+        return false;
+      }
+      if (!canSnooze(thread, { now: new Date().toISOString() })) {
+        Alert.alert(
+          "Could not snooze thread",
+          "This thread is waiting on you. Respond to the pending request before snoozing it.",
+        );
+        return false;
+      }
+
+      selectionHaptic();
+      const result = await snoozeMutation({
+        environmentId: thread.environmentId,
+        input: {
+          threadId: thread.id,
+          snoozedUntil: new Date(Date.now() + SWIPE_SNOOZE_DURATION_MS).toISOString(),
+        },
+      });
+      if (result._tag === "Failure") {
+        const error = Cause.squash(result.cause);
+        Alert.alert(
+          "Could not snooze thread",
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : "The thread could not be snoozed.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [snoozeMutation],
+  );
   const unsettleThread = useCallback(
     async (thread: EnvironmentThreadShell) => (await executeAction("unsettle", thread)) === true,
     [executeAction],
@@ -213,7 +263,7 @@ export function useThreadListActions(): {
 
   const confirmDeleteThread = useConfirmDeleteThread(executeAction);
 
-  return { archiveThread, confirmDeleteThread, settleThread, unsettleThread };
+  return { archiveThread, confirmDeleteThread, settleThread, snoozeThread, unsettleThread };
 }
 
 export function useArchivedThreadListActions(

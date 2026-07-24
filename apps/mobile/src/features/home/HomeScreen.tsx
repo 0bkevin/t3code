@@ -91,6 +91,8 @@ interface HomeScreenProps {
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   /** Resolves true iff the settle was dispatched and succeeded. */
   readonly onSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  /** Snoozes for the swipe action's one-hour default. */
+  readonly onSnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onUnsettleThread: (thread: EnvironmentThreadShell) => void;
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
@@ -451,6 +453,12 @@ export function HomeScreen(props: HomeScreenProps) {
     },
     [props.onSettleThread],
   );
+  const handleSnoozeThread = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      void props.onSnoozeThread(thread);
+    },
+    [props.onSnoozeThread],
+  );
   const handleDeleteThread = props.onDeleteThread;
   const handleUnsettleThread = props.onUnsettleThread;
   // The settled tail renders in pages; expansion resets when the filter
@@ -584,6 +592,8 @@ export function HomeScreen(props: HomeScreenProps) {
         onArchiveThread={props.onArchiveThread}
         settlementSupported={settlementEnvironmentIds.has(item.thread.environmentId)}
         onSettleThread={handleSettleThread}
+        snoozeSupported={snoozeEnvironmentIds.has(item.thread.environmentId)}
+        onSnoozeThread={handleSnoozeThread}
         onUnsettleThread={handleUnsettleThread}
         onChangeRequestState={handleChangeRequestState}
         projectCwd={
@@ -598,6 +608,7 @@ export function HomeScreen(props: HomeScreenProps) {
       handleChangeRequestState,
       handleDeleteThread,
       handleSettleThread,
+      handleSnoozeThread,
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleUnsettleThread,
@@ -608,6 +619,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.savedConnectionsById,
       serverConfigs,
       settlementEnvironmentIds,
+      snoozeEnvironmentIds,
       v2ProjectTitleByProjectKey,
     ],
   );
