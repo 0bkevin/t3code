@@ -590,6 +590,12 @@ export const ServerSelfUpdateResult = Schema.Struct({
 });
 export type ServerSelfUpdateResult = typeof ServerSelfUpdateResult.Type;
 
+/** Rejection reason when an update is dispatched while one is already
+    installing. Shared so clients can tell "nothing is happening" apart from
+    "a restart is already pending from an earlier request", which the update
+    UI must not treat as the end of the flow. */
+export const SERVER_SELF_UPDATE_ALREADY_RUNNING_REASON = "A server update is already in progress.";
+
 export class ServerSelfUpdateError extends Schema.TaggedErrorClass<ServerSelfUpdateError>()(
   "ServerSelfUpdateError",
   {
@@ -599,5 +605,10 @@ export class ServerSelfUpdateError extends Schema.TaggedErrorClass<ServerSelfUpd
 ) {
   override get message(): string {
     return `Server update failed: ${this.reason}`;
+  }
+
+  /** True when this rejection means an earlier update is still in flight. */
+  get isAlreadyRunning(): boolean {
+    return this.reason === SERVER_SELF_UPDATE_ALREADY_RUNNING_REASON;
   }
 }

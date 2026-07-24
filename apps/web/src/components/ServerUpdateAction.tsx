@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { EnvironmentId, ServerSelfUpdateCapability } from "@t3tools/contracts";
+import {
+  ServerSelfUpdateError,
+  type EnvironmentId,
+  type ServerSelfUpdateCapability,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -23,6 +28,18 @@ const UPDATE_PENDING_EXPIRY_MS = 12 * 60_000;
 
 function updateFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Server update failed.";
+}
+
+/**
+ * The server rejects a second update while one is already installing. That
+ * failure means a restart is still pending from the earlier request, so the
+ * restart expectation must survive it — unlike every other failure, which
+ * proves nothing is coming.
+ */
+const isServerSelfUpdateError = Schema.is(ServerSelfUpdateError);
+
+function isUpdateAlreadyRunning(error: unknown): boolean {
+  return isServerSelfUpdateError(error) && error.isAlreadyRunning;
 }
 
 /**
@@ -116,13 +133,17 @@ export function ServerUpdateAction({
         clearTimeout(expiry);
         expiry = armExpiry();
       }
+      // The install can consume most of the request window, so the window
+      // armed at click time may already have lapsed by the time the restart
+      // actually begins. Re-arm from the handoff, not from the click.
+      expectServerRestart(environmentId);
     };
     // Armed before dispatch: the boot-service path acknowledges and then
     // drops every connection, and even the respawn acknowledgement can lose
     // the race against the disconnect. An explicit RPC failure proves the
     // server stayed alive, so the expectation is withdrawn there; on
-    // success or interrupt it stays armed and expires on its own if the
-    // server never returns.
+    // success or interrupt it is re-armed from that point and expires on its
+    // own if the server never returns.
     expectServerRestart(environmentId);
     void Promise.resolve()
       .then(() =>
@@ -137,15 +158,21 @@ export function ServerUpdateAction({
           // An interrupt may be the expected boot-service disconnect, but it
           // can also be client-side cancellation before restart was accepted.
           // Release the action quietly; version sync will remove it when a
-          // successful replacement reconnects.
+          // successful replacement reconnects. Re-arm from here for the same
+          // reason as the success path: a long install may have outlasted the
+          // window armed at click time.
           if (isAtomCommandInterrupted(result)) {
+            expectServerRestart(environmentId);
             return;
           }
-          clearExpectedServerRestart(environmentId);
+          const failure = squashAtomCommandFailure(result);
+          if (!isUpdateAlreadyRunning(failure)) {
+            clearExpectedServerRestart(environmentId);
+          }
           toastManager.add({
             type: "error",
             title: "Server update failed",
-            description: updateFailureMessage(squashAtomCommandFailure(result)),
+            description: updateFailureMessage(failure),
           });
           return;
         }
@@ -161,7 +188,9 @@ export function ServerUpdateAction({
       })
       .catch((error: unknown) => {
         if (!ownsAttempt()) return;
-        clearExpectedServerRestart(environmentId);
+        if (!isUpdateAlreadyRunning(error)) {
+          clearExpectedServerRestart(environmentId);
+        }
         toastManager.add({
           type: "error",
           title: "Server update failed",

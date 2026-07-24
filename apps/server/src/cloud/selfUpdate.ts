@@ -3,6 +3,7 @@
 // detached fire-and-forget child that outlives this process, while Effect's
 // ChildProcessSpawner ties every child to a scope that kills it.
 import {
+  SERVER_SELF_UPDATE_ALREADY_RUNNING_REASON,
   ServerSelfUpdateError,
   type ServerSelfUpdateCapability,
   type ServerSelfUpdateInput,
@@ -18,6 +19,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -246,7 +248,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
 
     const alreadyRunning = yield* Ref.getAndSet(inFlight, true);
     if (alreadyRunning) {
-      return yield* failWith("A server update is already in progress.");
+      return yield* failWith(SERVER_SELF_UPDATE_ALREADY_RUNNING_REASON);
     }
 
     return yield* Effect.gen(function* () {
@@ -387,8 +389,23 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
                     "Server self-update could not restore the previous systemd unit after a rejected restart.",
                   ).pipe(Effect.annotateLogs({ targetVersion, error: String(rollbackError) })),
                 ),
+                // The process survived a rejected restart, so it must stay
+                // updatable — leaving the guard set would reject every retry
+                // until the server was restarted by other means.
                 Effect.ensuring(Ref.set(inFlight, false)),
               ),
+            ),
+            // The typed catch above cannot see defects or interrupts, which
+            // would otherwise strand the guard on a live process. A success
+            // deliberately leaves it set: systemd is about to stop this
+            // process and a second update would race the handoff.
+            Effect.onExit((exit) =>
+              Exit.isSuccess(exit)
+                ? Effect.void
+                : Effect.logError("Server self-update restart fiber ended unexpectedly.").pipe(
+                    Effect.annotateLogs({ targetVersion, exit: String(exit) }),
+                    Effect.ensuring(Ref.set(inFlight, false)),
+                  ),
             ),
           ),
         );

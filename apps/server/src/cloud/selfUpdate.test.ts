@@ -62,6 +62,8 @@ const makeRecordingRunnerLayer = (
     readonly stdoutFor?:
       | ((command: string, args: ReadonlyArray<string>) => string | undefined)
       | undefined;
+    /** Raises a defect (not a typed failure) to exercise unexpected-error paths. */
+    readonly dieWhen?: ((command: string, args: ReadonlyArray<string>) => boolean) | undefined;
   },
 ) =>
   Layer.succeed(
@@ -70,6 +72,9 @@ const makeRecordingRunnerLayer = (
       run: (input) =>
         Effect.sync(() => {
           commands.push({ command: input.command, args: input.args });
+          if (options?.dieWhen?.(input.command, input.args) === true) {
+            throw new Error(`${input.command} died unexpectedly`);
+          }
           const failed = options?.failWhen?.(input.command, input.args) === true;
           const versionFromPath =
             input.command === NODE_PATH && input.args[1] === "--version"
@@ -281,6 +286,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
     readonly failWhen?: (command: string, args: ReadonlyArray<string>) => boolean;
     readonly stdoutFor?: (command: string, args: ReadonlyArray<string>) => string | undefined;
     readonly failSpawn?: boolean;
+    readonly dieWhen?: (command: string, args: ReadonlyArray<string>) => boolean;
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -353,6 +359,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
           makeRecordingRunnerLayer(commands, {
             failWhen: options?.failWhen,
             stdoutFor: options?.stdoutFor,
+            dieWhen: options?.dieWhen,
           }),
           configLayer,
         ),
@@ -583,6 +590,32 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
         ],
       );
 
+      const retry = yield* context.service.update({ targetVersion: "0.0.30" });
+      assert.deepEqual(retry, { targetVersion: "0.0.30", method: "boot-service" });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("permits a retry when the deferred restart dies unexpectedly", () =>
+    Effect.gen(function* () {
+      let dieOnRestart = true;
+      const context = yield* makeContext({
+        bootService: true,
+        dieWhen: (command, args) => {
+          if (command !== "systemctl" || args[1] !== "restart" || !dieOnRestart) {
+            return false;
+          }
+          dieOnRestart = false;
+          return true;
+        },
+      });
+
+      const first = yield* context.service.update({ targetVersion: "0.0.29" });
+      assert.deepEqual(first, { targetVersion: "0.0.29", method: "boot-service" });
+      yield* TestClock.adjust(Duration.seconds(10));
+
+      // A defect bypasses the typed rollback handler, so the in-flight guard
+      // has to be released outside it — otherwise this live process would
+      // reject every further update until restarted by other means.
       const retry = yield* context.service.update({ targetVersion: "0.0.30" });
       assert.deepEqual(retry, { targetVersion: "0.0.30", method: "boot-service" });
     }).pipe(Effect.provide(TestClock.layer())),

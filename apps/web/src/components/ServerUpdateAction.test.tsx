@@ -2,11 +2,20 @@ import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
-import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  SERVER_SELF_UPDATE_ALREADY_RUNNING_REASON,
+  ServerSelfUpdateError,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 
 const testState = vi.hoisted(() => ({
   updateServer: vi.fn(),
   toast: vi.fn(),
+}));
+
+const restartStore = vi.hoisted(() => ({
+  expect: vi.fn(),
+  clear: vi.fn(),
 }));
 
 const hooks = vi.hoisted(() => {
@@ -78,6 +87,10 @@ vi.mock("~/state/use-atom-command", () => ({
 vi.mock("./ui/toast", () => ({
   toastManager: { add: testState.toast },
 }));
+vi.mock("~/serverRestartStore", () => ({
+  expectServerRestart: restartStore.expect,
+  clearExpectedServerRestart: restartStore.clear,
+}));
 
 import { ServerUpdateAction } from "./ServerUpdateAction";
 
@@ -118,6 +131,8 @@ describe("ServerUpdateAction", () => {
     hooks.reset();
     testState.updateServer.mockReset();
     testState.toast.mockReset();
+    restartStore.expect.mockReset();
+    restartStore.clear.mockReset();
   });
 
   afterEach(() => {
@@ -194,5 +209,72 @@ describe("ServerUpdateAction", () => {
     expect(testState.toast).not.toHaveBeenCalledWith(
       expect.objectContaining({ title: "Server update failed" }),
     );
+  });
+
+  it("re-arms the restart window when a slow install finally succeeds", async () => {
+    const update =
+      deferred<
+        ReturnType<typeof AsyncResult.success<{ targetVersion: string; method: "boot-service" }>>
+      >();
+    testState.updateServer.mockReturnValue(update.promise);
+
+    renderAction().props.onClick?.();
+    expect(restartStore.expect).toHaveBeenCalledTimes(1);
+
+    // An install can outlast the 90s restart window armed at click time, so
+    // the acknowledgement must restart the clock or the ensuing disconnect
+    // would be presented as an outage.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    update.resolve(AsyncResult.success({ targetVersion: "0.0.29", method: "boot-service" }));
+    await flushPromises();
+
+    expect(restartStore.expect).toHaveBeenCalledTimes(2);
+    expect(restartStore.clear).not.toHaveBeenCalled();
+  });
+
+  it("re-arms the restart window on an interrupted restart RPC", async () => {
+    testState.updateServer.mockResolvedValue(AsyncResult.failure(Cause.interrupt()));
+
+    renderAction().props.onClick?.();
+    await flushPromises();
+
+    expect(restartStore.expect).toHaveBeenCalledTimes(2);
+    expect(restartStore.clear).not.toHaveBeenCalled();
+  });
+
+  it("withdraws the restart expectation when the server reports a real failure", async () => {
+    testState.updateServer.mockResolvedValue(
+      AsyncResult.failure(
+        Cause.fail(
+          new ServerSelfUpdateError({ reason: "Could not install the requested t3 version." }),
+        ),
+      ),
+    );
+
+    renderAction().props.onClick?.();
+    await flushPromises();
+
+    // The server answered, so it is still alive and no restart is coming.
+    expect(restartStore.clear).toHaveBeenCalledTimes(1);
+    expect(testState.toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Server update failed" }),
+    );
+  });
+
+  it("keeps the restart expectation when an update is already in progress", async () => {
+    testState.updateServer.mockResolvedValue(
+      AsyncResult.failure(
+        Cause.fail(
+          new ServerSelfUpdateError({ reason: SERVER_SELF_UPDATE_ALREADY_RUNNING_REASON }),
+        ),
+      ),
+    );
+
+    renderAction().props.onClick?.();
+    await flushPromises();
+
+    // An earlier request is still installing, so a restart really is pending
+    // — clearing here would restore the harsh reconnect UI mid-restart.
+    expect(restartStore.clear).not.toHaveBeenCalled();
   });
 });
