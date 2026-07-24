@@ -26,7 +26,6 @@ import {
 } from "@t3tools/contracts/settings";
 import {
   getBackgroundActivityBaseProfile,
-  getBackgroundActivityPresetSettings,
   resolveServerBackgroundActivitySettings,
 } from "@t3tools/shared/backgroundActivitySettings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -257,7 +256,6 @@ export function PolicyTooltip({ children }: { readonly children: string }) {
     </Tooltip>
   );
 }
-
 
 function AboutVersionTitle() {
   return (
