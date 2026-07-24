@@ -1,6 +1,8 @@
 # Scripts
 
 - `vp run dev` — Starts contracts, server, and web in watch mode.
+- `vp run dev --share` (or `vp run dev:share`) — Same, plus publishes the web port on this machine's tailnet over HTTPS via `tailscale serve`. Prints the shareable URL, and the pairing URL is built against it so it can be opened from a phone or another laptop as-is. The mapping is removed on exit; if the tailnet is unavailable, the dev server still starts locally and logs a warning.
+- `vp run dev:pair` — Prints a fresh pairing URL for the dev server already running against this data directory, resolving its port and web origin from `server-runtime.json`. Add `--base-dir <path>` only when the server was started with `--home-dir`.
 - `vp run dev:server` — Starts just the WebSocket server. The server process runs on Bun (`@effect/platform-bun` + `BunPtyAdapter`), but task running uses `vp run`.
 - `vp run dev:web` — Starts just the Vite dev server for the web app.
 - Dev commands implicitly use `~/.t3/dev`, keeping development state separate from `~/.t3/userdata`. An explicit `--home-dir <path>` stores state under `<path>/userdata`; the base directory remains available for caches, worktrees, and other shared data.
@@ -38,10 +40,27 @@
 
 ## Running multiple dev instances
 
-Set `T3CODE_DEV_INSTANCE` to any value to deterministically shift all dev ports together.
+Ports resolve in this order, first match winning:
 
-- Default ports: server `13773`, web `5733`
-- Shifted ports: `base + offset` (offset is hashed from `T3CODE_DEV_INSTANCE`)
-- Example: `T3CODE_DEV_INSTANCE=branch-a vp run dev:desktop`
+1. `T3CODE_PORT_OFFSET=<n>` — exact numeric offset, full control.
+2. `T3CODE_DEV_INSTANCE=<value>` — numeric offset, or a hashed one for non-numeric values. Example: `T3CODE_DEV_INSTANCE=branch-a vp run dev:desktop`
+3. **Git worktree** — the offset is hashed from the worktree path, so every worktree gets its own stable pair that survives restarts and doesn't collide with its siblings.
+4. Otherwise the defaults: server `13773`, web `5733`.
 
-If you want full control instead of hashing, set `T3CODE_PORT_OFFSET` to a numeric offset.
+Whatever the source, both ports are then checked on loopback and shifted together if either is taken. The resolved values are printed on the `[dev-runner] …` line; `--dry-run` prints them without starting anything. Read them from there rather than assuming the defaults.
+
+## Browser dev is single-origin
+
+`dev` and `dev:web` deliberately leave `VITE_HTTP_URL` and `VITE_WS_URL` unset so
+the client resolves its backend from `window.location.origin`, with Vite proxying
+`/api`, `/ws`, `/oauth`, and `/.well-known` to the server. That is what lets a dev
+server work unchanged from a tailnet name, a LAN IP, or a phone.
+
+Setting those variables for web dev compiles absolute `localhost` URLs into the
+bundle, and any browser that isn't on this machine will then try to reach its own
+localhost. `dev:desktop` still sets them, because the Electron renderer talks to
+the backend directly.
+
+Non-`.ts.net` hostnames need `T3CODE_DEV_ALLOWED_HOSTS` (comma-separated) to pass
+Vite's host check; `T3CODE_DEV_ALLOWED_ORIGINS` does the same for the server's
+CORS allowlist.

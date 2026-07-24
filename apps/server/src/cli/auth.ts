@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
@@ -19,12 +20,26 @@ import {
   formatSessionList,
 } from "../cliAuthFormat.ts";
 import * as ServerConfig from "../config.ts";
+import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import {
   authLocationFlags,
   type CliAuthLocationFlags,
   DurationFromString,
   resolveCliAuthConfig,
 } from "./config.ts";
+
+class NoRunningServerError extends Schema.TaggedErrorClass<NoRunningServerError>()(
+  "NoRunningServerError",
+  { statePath: Schema.String },
+) {
+  override get message(): string {
+    return [
+      "No running T3 Code server was found for this data directory.",
+      `Looked for: ${this.statePath}`,
+      "Start one with `bun run dev`, or point at another directory with --base-dir.",
+    ].join("\n");
+  }
+}
 
 const runWithEnvironmentAuth = <A, E>(
   flags: CliAuthLocationFlags,
@@ -113,6 +128,58 @@ const pairingCreateCommand = Command.make("create", {
   ),
 );
 
+/**
+ * `t3 auth pairing url` — print a ready-to-open pairing link for a dev server
+ * that is already running, without having to know its port, its state
+ * directory, or which of those two the `--base-dir`/`--dev-url` combination
+ * happens to select. The running server records all of it in
+ * `server-runtime.json`; this reads that back.
+ *
+ * The startup link printed in the server's own log is usually enough. This is
+ * for when it has been consumed, scrolled away, or the log isn't at hand.
+ */
+const pairingUrlCommand = Command.make("url", {
+  ...authLocationFlags,
+  ttl: ttlFlag,
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription(
+    "Print a pairing URL for the dev server running against this data directory.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const logLevel = yield* GlobalFlag.LogLevel;
+      const config = yield* resolveCliAuthConfig(flags, logLevel);
+      const runtimeState = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+
+      if (Option.isNone(runtimeState)) {
+        return yield* new NoRunningServerError({ statePath: config.serverRuntimeStatePath });
+      }
+
+      // Prefer the web origin the user actually opens; a server with no dev URL
+      // serves the app itself, so its own origin is the right target.
+      const baseUrl = runtimeState.value.devUrl ?? runtimeState.value.origin;
+
+      return yield* runWithEnvironmentAuth(
+        flags,
+        (environmentAuth) =>
+          Effect.gen(function* () {
+            const issued = yield* environmentAuth.createPairingLink({
+              scopes: AuthStandardClientScopes,
+              subject: "one-time-token",
+              ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
+              label: "cli-issued pairing url",
+            });
+            yield* Console.log(
+              formatIssuedPairingCredential(issued, { json: flags.json, baseUrl }),
+            );
+          }),
+        { quietLogs: flags.json },
+      );
+    }),
+  ),
+);
+
 const pairingListCommand = Command.make("list", {
   ...authLocationFlags,
   json: jsonFlag,
@@ -156,7 +223,12 @@ const pairingRevokeCommand = Command.make("revoke", {
 
 const pairingCommand = Command.make("pairing").pipe(
   Command.withDescription("Manage one-time client pairing tokens."),
-  Command.withSubcommands([pairingCreateCommand, pairingListCommand, pairingRevokeCommand]),
+  Command.withSubcommands([
+    pairingCreateCommand,
+    pairingUrlCommand,
+    pairingListCommand,
+    pairingRevokeCommand,
+  ]),
 );
 
 const sessionIssueCommand = Command.make("issue", {

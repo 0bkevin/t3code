@@ -58,6 +58,7 @@ const devServerInput = {
   port: 13_773,
   devUrl: undefined,
   dryRun: false,
+  share: false,
   runArgs: ["--inspect", "secret-token-value"],
 } as const;
 
@@ -336,8 +337,58 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         });
 
         assert.equal(env.T3CODE_PORT, "13773");
-        assert.equal(env.VITE_HTTP_URL, "http://localhost:13773");
-        assert.equal(env.VITE_WS_URL, "ws://localhost:13773");
+        assert.equal(env.PORT, "5733");
+      }),
+    );
+
+    // Browser dev is single-origin: Vite proxies the backend, and the client
+    // resolves it from window.location.origin. Baking a localhost URL here is
+    // what breaks sharing a dev server to another device.
+    for (const mode of ["dev", "dev:web"] as const) {
+      it.effect(`leaves the client backend URLs unset in ${mode} mode`, () =>
+        Effect.gen(function* () {
+          const env = yield* createDevRunnerEnv({
+            mode,
+            baseEnv: {
+              VITE_HTTP_URL: "http://localhost:1234",
+              VITE_WS_URL: "ws://localhost:1234",
+            },
+            serverOffset: 0,
+            webOffset: 0,
+            t3Home: undefined,
+            browser: undefined,
+            autoBootstrapProjectFromCwd: undefined,
+            logWebSocketEvents: undefined,
+            host: undefined,
+            port: undefined,
+            devUrl: undefined,
+          });
+
+          assert.equal(env.VITE_HTTP_URL, undefined);
+          assert.equal(env.VITE_WS_URL, undefined);
+          assert.equal(env.T3CODE_PORT, "13773");
+        }),
+      );
+    }
+
+    it.effect("keeps explicit backend URLs for the desktop renderer", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({
+          mode: "dev:desktop",
+          baseEnv: {},
+          serverOffset: 0,
+          webOffset: 0,
+          t3Home: undefined,
+          browser: undefined,
+          autoBootstrapProjectFromCwd: undefined,
+          logWebSocketEvents: undefined,
+          host: undefined,
+          port: undefined,
+          devUrl: undefined,
+        });
+
+        assert.equal(env.VITE_HTTP_URL, "http://127.0.0.1:13773");
+        assert.equal(env.VITE_WS_URL, "ws://127.0.0.1:13773");
       }),
     );
   });

@@ -13,6 +13,14 @@
   - Subagents must not independently launch dev servers or repeat integrated client verification unless their delegated task explicitly requires it.
   - Stop dev servers, watchers, and other long-running verification processes when the focused verification is complete.
 
+## Dev Servers
+
+- Start the web stack with `bun run dev` (equivalently `vp run dev`). Never run `vp dev` from the repo root — that starts a bare Vite with no backend.
+- Ports are derived from the worktree path, so each worktree has its own stable pair. Read them from the `[dev-runner] …` line; `--dry-run` prints them without starting anything.
+- To let the user try a change on their own device, use `bun run dev:share`. It publishes the web port on the tailnet and logs a pairing URL already built against that origin — hand them that URL as-is. Details and troubleshooting live in the `test-t3-app` skill.
+- Dev is single-origin: Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` to the backend. Do not set `VITE_HTTP_URL`/`VITE_WS_URL` for `dev`/`dev:web` — they compile absolute localhost URLs into the bundle and break every non-localhost origin.
+- Need a pairing URL for a server that is already running? `bun run dev:pair`. It finds the server itself; no ports or flags to get wrong.
+
 ## Package Roles
 
 - `apps/server`: Node.js WebSocket server. Wraps Codex app-server (JSON-RPC over stdio), serves the React web app, and manages provider sessions.
