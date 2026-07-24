@@ -4,7 +4,7 @@ import type {
 } from "@t3tools/client-runtime/state/shell";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import type { MenuAction } from "@react-native-menu/menu";
-import { memo, useCallback, useEffect, useMemo, type ComponentProps } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
 import { Platform, Pressable, useWindowDimensions, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 
@@ -18,6 +18,7 @@ import { useThemeColor } from "../../lib/useThemeColor";
 import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import {
+  resolveThreadListV2SnoozeGateExpiryMs,
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
   type ThreadListV2Status,
@@ -187,6 +188,22 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   // row can un-settle — explicit settles clear the override, auto-settled
   // rows get pinned active until real activity clears the pin.
   const canUnsettle = variant === "slim";
+  // Snooze eligibility is time-gated (a user message no turn has adopted yet
+  // blocks it for the grace window), so the row re-renders itself the moment
+  // that window lapses — otherwise Snooze would stay hidden until unrelated
+  // props changed.
+  const [snoozeGateTick, bumpSnoozeGateTick] = useState(0);
+  const snoozeGateExpiryMs = props.snoozeSupported
+    ? resolveThreadListV2SnoozeGateExpiryMs(thread, { now: new Date().toISOString() })
+    : null;
+  useEffect(() => {
+    if (snoozeGateExpiryMs === null) return;
+    const delayMs = Math.min(Math.max(0, snoozeGateExpiryMs - Date.now()) + 50, 2_147_483_647);
+    const id = setTimeout(() => bumpSnoozeGateTick((tick) => tick + 1), delayMs);
+    return () => clearTimeout(id);
+    // snoozeGateTick re-arms after a clamped fire: for a far-future expiry the
+    // boundary is unchanged, so without it the timer chain would stop.
+  }, [snoozeGateExpiryMs, snoozeGateTick]);
   const swipeActions = resolveThreadListV2SwipeActions({
     variant,
     settlementSupported: props.settlementSupported,
@@ -228,11 +245,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             label: "Snooze 1h",
             onPress: handleSnooze,
           }
-        : undefined,
+        : null,
     [handleSnooze, swipeActions.secondary, thread.title],
   );
   const swipeAccessibilityHint =
-    secondaryAction === undefined
+    secondaryAction === null
       ? `Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`
       : `Opens the thread. Swipe left for ${primaryAction.label.toLowerCase()} and snooze actions.`;
 

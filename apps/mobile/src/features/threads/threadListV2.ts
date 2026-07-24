@@ -1,4 +1,9 @@
-import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  effectiveSettled,
+  effectiveSnoozed,
+  hasQueuedTurnStart,
+  QUEUED_TURN_START_GRACE_MS,
+} from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 
@@ -31,6 +36,31 @@ export function resolveThreadListV2SwipeActions(input: {
     primary,
     secondary: input.snoozeSupported && input.snoozable ? "snooze" : null,
   };
+}
+
+/**
+ * When a thread's snooze eligibility can flip on its own, as epoch ms — the
+ * moment the queued-turn-start grace window expires and `canSnooze` starts
+ * returning true. Null when nothing time-based gates it: either the thread is
+ * already snoozable, or it is blocked on the user and only fresh server data
+ * can clear that. Rows arm a one-shot timer on this so an unadopted turn's
+ * Snooze action appears when the grace period lapses instead of waiting for
+ * an unrelated re-render.
+ */
+export function resolveThreadListV2SnoozeGateExpiryMs(
+  thread: Pick<
+    EnvironmentThreadShell,
+    "hasPendingApprovals" | "hasPendingUserInput" | "latestUserMessageAt" | "latestTurn" | "session"
+  >,
+  options: { readonly now: string },
+): number | null {
+  // Blocked-on-user threads are not on a clock — leave them to data updates.
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return null;
+  if (!hasQueuedTurnStart(thread, options)) return null;
+  // hasQueuedTurnStart already rejected a null/unparseable message time.
+  const messageAtMs = Date.parse(thread.latestUserMessageAt ?? "");
+  if (Number.isNaN(messageAtMs)) return null;
+  return messageAtMs + QUEUED_TURN_START_GRACE_MS;
 }
 
 // Settled-tail paging: recent history is the common lookup; the deep tail

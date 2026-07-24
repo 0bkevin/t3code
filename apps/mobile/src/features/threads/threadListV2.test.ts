@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildThreadListV2Items,
+  resolveThreadListV2SnoozeGateExpiryMs,
   resolveThreadListV2SwipeActions,
   resolveThreadListV2Status,
   sortThreadsForListV2,
@@ -117,6 +118,34 @@ describe("resolveThreadListV2SwipeActions", () => {
         snoozable: true,
       }),
     ).toEqual({ primary: "archive", secondary: null });
+  });
+});
+
+describe("resolveThreadListV2SnoozeGateExpiryMs", () => {
+  it("reports when an unadopted turn's grace window lapses", () => {
+    const thread = makeThread({
+      id: ThreadId.make("t"),
+      title: "t",
+      latestUserMessageAt: "2026-06-02T00:00:30.000Z",
+    });
+    expect(resolveThreadListV2SnoozeGateExpiryMs(thread, { now: "2026-06-02T00:01:00.000Z" })).toBe(
+      Date.parse("2026-06-02T00:02:30.000Z"),
+    );
+  });
+
+  it("returns null once the thread is already snoozable", () => {
+    const thread = makeThread({ id: ThreadId.make("t"), title: "t" });
+    expect(resolveThreadListV2SnoozeGateExpiryMs(thread, { now: NOW })).toBe(null);
+  });
+
+  it("returns null for threads blocked on the user — only new data clears those", () => {
+    const thread = makeThread({
+      id: ThreadId.make("t"),
+      title: "t",
+      hasPendingApprovals: true,
+      latestUserMessageAt: NOW,
+    });
+    expect(resolveThreadListV2SnoozeGateExpiryMs(thread, { now: NOW })).toBe(null);
   });
 });
 
