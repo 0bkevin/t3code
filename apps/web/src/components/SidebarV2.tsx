@@ -32,6 +32,7 @@ import {
   SearchIcon,
   ServerIcon,
   SquarePenIcon,
+  SquareStackIcon,
   Trash2Icon,
   Undo2Icon,
 } from "lucide-react";
@@ -217,6 +218,23 @@ function WorkingDuration(props: { startedAt: string | null }) {
   return <span className="tabular-nums">{formatWorkingDurationLabel(Date.now() - startedMs)}</span>;
 }
 
+/**
+ * A task row stands for every tab of that task, so the count is a quiet glyph
+ * badge rather than a bare number — the icon carries the meaning without color,
+ * and the row tooltip explains what the tabs do and don't share.
+ */
+function TaskTabCountBadge(props: { count: number }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-0.5 rounded bg-sidebar-accent px-1 font-mono text-[10px] text-sidebar-muted-foreground"
+      aria-label={`${props.count} task tabs`}
+    >
+      <SquareStackIcon aria-hidden className="size-2.5" />
+      {props.count}
+    </span>
+  );
+}
+
 function SidebarV2ThreadTooltip({
   thread,
   projectTitle,
@@ -226,11 +244,13 @@ function SidebarV2ThreadTooltip({
   modelInstanceId,
   modelLabel,
   branchMismatch,
+  tabCount,
 }: {
   thread: SidebarThreadSummary;
   projectTitle: string | null;
   projectCwd: string | null;
   environmentLabel: string | null;
+  tabCount: number;
   driverKind: ProviderInstanceEntry["driverKind"] | null;
   modelInstanceId: string;
   modelLabel: string;
@@ -287,6 +307,15 @@ function SidebarV2ThreadTooltip({
                 iconClassName="size-4 shrink-0"
               />
               <div className="min-w-0 wrap-break-word text-foreground/90">{modelLabel}</div>
+            </div>
+          ) : null}
+          {tabCount > 1 ? (
+            <div className="flex min-w-0 items-start gap-2">
+              <SquareStackIcon aria-hidden className="mt-0.5 size-4 shrink-0 stroke-current" />
+              <div className="min-w-0 flex-1 wrap-break-word leading-5">
+                {tabCount} tabs sharing this worktree and branch. Each tab keeps its own
+                conversation.
+              </div>
             </div>
           ) : null}
           {thread.session?.lastError ? (
@@ -538,6 +567,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       modelInstanceId={modelInstanceId}
       modelLabel={modelLabel}
       branchMismatch={branchMismatch}
+      tabCount={props.tabCount}
     />
   );
 
@@ -771,14 +801,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               />
             </span>
             {title}
-            {props.tabCount > 1 ? (
-              <span
-                className="shrink-0 rounded bg-sidebar-accent px-1.5 font-mono text-[10px] text-sidebar-muted-foreground"
-                aria-label={`${props.tabCount} task tabs`}
-              >
-                {props.tabCount}
-              </span>
-            ) : null}
+            {props.tabCount > 1 ? <TaskTabCountBadge count={props.tabCount} /> : null}
             {/* The PR badge stays outside the hover-fading slot: it must
               remain visible AND clickable while the row is hovered. Only
               the time/jump label yields to the settle affordance. */}
@@ -956,14 +979,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
-              {props.tabCount > 1 ? (
-                <span
-                  className="shrink-0 rounded bg-sidebar-accent px-1.5 font-mono text-[10px] text-sidebar-muted-foreground"
-                  aria-label={`${props.tabCount} task tabs`}
-                >
-                  {props.tabCount}
-                </span>
-              ) : null}
+              {props.tabCount > 1 ? <TaskTabCountBadge count={props.tabCount} /> : null}
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/75">
               {thread.branch ? (
