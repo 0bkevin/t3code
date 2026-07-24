@@ -178,6 +178,8 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "thread.delete":
     case "thread.settle":
     case "thread.unsettle":
+    case "thread.snooze":
+    case "thread.unsnooze":
     case "thread.metadata.update":
     case "thread.runtime-mode.set":
     case "thread.interaction-mode.set":
@@ -771,6 +773,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       archivedAt: null,
       settledOverride: null,
       settledAt: null,
+      snoozedUntil: null,
+      snoozedAt: null,
       deletedAt: null,
     };
 
@@ -793,6 +797,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.delete"
           | "thread.settle"
           | "thread.unsettle"
+          | "thread.snooze"
+          | "thread.unsnooze"
           | "thread.metadata.update"
           | "thread.runtime-mode.set"
           | "thread.interaction-mode.set"
@@ -835,7 +841,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (
-      (command.type === "thread.settle" || command.type === "thread.unsettle") &&
+      (command.type === "thread.settle" ||
+        command.type === "thread.unsettle" ||
+        command.type === "thread.snooze" ||
+        command.type === "thread.unsnooze") &&
       thread.archivedAt !== null
     ) {
       return yield* new OrchestratorDispatchError({
@@ -881,6 +890,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : null;
 
     const now = yield* DateTime.now;
+    let snoozedUntil: DateTime.Utc | null = null;
+    if (command.type === "thread.snooze") {
+      const parsedSnoozedUntil = DateTime.make(command.snoozedUntil);
+      if (
+        Option.isNone(parsedSnoozedUntil) ||
+        DateTime.toEpochMillis(parsedSnoozedUntil.value) <= DateTime.toEpochMillis(now)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
+        });
+      }
+      if (projection.runtimeRequests.some((request) => request.status === "pending")) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} has a pending approval or user-input request and cannot be snoozed.`,
+        });
+      }
+      if (projection.runs.some((run) => run.status === "queued")) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} has a queued run and cannot be snoozed.`,
+        });
+      }
+      snoozedUntil = parsedSnoozedUntil.value;
+    }
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
         case "thread.archive":
@@ -905,6 +943,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             settledOverride: "active",
             settledAt: null,
             updatedAt: alreadyPinnedActive ? thread.updatedAt : now,
+          };
+        }
+        case "thread.snooze": {
+          const sameWakeTime =
+            thread.snoozedUntil != null &&
+            snoozedUntil !== null &&
+            DateTime.toEpochMillis(thread.snoozedUntil) === DateTime.toEpochMillis(snoozedUntil);
+          const existingSnoozedAt = sameWakeTime ? (thread.snoozedAt ?? null) : null;
+          return {
+            ...thread,
+            snoozedUntil,
+            snoozedAt: existingSnoozedAt ?? now,
+            updatedAt: existingSnoozedAt === null ? now : thread.updatedAt,
+          };
+        }
+        case "thread.unsnooze": {
+          const alreadyAwake = thread.snoozedUntil == null;
+          return {
+            ...thread,
+            snoozedUntil: null,
+            snoozedAt: null,
+            updatedAt: alreadyAwake ? thread.updatedAt : now,
           };
         }
         case "thread.metadata.update":
@@ -941,6 +1001,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.settled" as const;
         case "thread.unsettle":
           return "thread.unsettled" as const;
+        case "thread.snooze":
+          return "thread.snoozed" as const;
+        case "thread.unsnooze":
+          return "thread.unsnoozed" as const;
         case "thread.metadata.update":
           return "thread.metadata-updated" as const;
         case "thread.runtime-mode.set":
@@ -2045,6 +2109,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command,
         )({
           type: "thread.unsettled",
+          threadId: command.threadId,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: thread,
+        });
+        projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      }
+      if (projection.thread.snoozedUntil != null) {
+        const now = yield* DateTime.now;
+        const thread: OrchestrationV2AppThread = {
+          ...projection.thread,
+          snoozedUntil: null,
+          snoozedAt: null,
+          updatedAt: now,
+        };
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.unsnoozed",
           threadId: command.threadId,
           providerInstanceId: thread.providerInstanceId,
           occurredAt: now,
@@ -5056,6 +5140,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.delete":
       case "thread.settle":
       case "thread.unsettle":
+      case "thread.snooze":
+      case "thread.unsnooze":
       case "thread.metadata.update":
       case "thread.runtime-mode.set":
       case "thread.interaction-mode.set":

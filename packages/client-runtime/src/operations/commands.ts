@@ -77,6 +77,14 @@ export interface UnsettleThreadInput extends ThreadCommandInput {
   readonly reason: "user";
 }
 
+export interface SnoozeThreadInput extends ThreadCommandInput {
+  readonly snoozedUntil: string;
+}
+
+export interface UnsnoozeThreadInput extends ThreadCommandInput {
+  readonly reason: "user";
+}
+
 export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly title?: string;
   readonly modelSelection?: ModelSelection;
@@ -351,6 +359,28 @@ export const unsettleThread = Effect.fn("EnvironmentCommands.unsettleThread")(fu
 ) {
   return yield* dispatch({
     type: "thread.unsettle",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    reason: input.reason,
+  });
+});
+
+export const snoozeThread = Effect.fn("EnvironmentCommands.snoozeThread")(function* (
+  input: SnoozeThreadInput,
+) {
+  return yield* dispatch({
+    type: "thread.snooze",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    snoozedUntil: input.snoozedUntil,
+  });
+});
+
+export const unsnoozeThread = Effect.fn("EnvironmentCommands.unsnoozeThread")(function* (
+  input: UnsnoozeThreadInput,
+) {
+  return yield* dispatch({
+    type: "thread.unsnooze",
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     reason: input.reason,

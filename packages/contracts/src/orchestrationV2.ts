@@ -9,6 +9,7 @@ import {
   ContextHandoffId,
   ContextTransferId,
   EventId,
+  IsoDateTime,
   MessageId,
   NodeId,
   NonNegativeInt,
@@ -317,6 +318,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   settledAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   deletedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
 export type OrchestrationV2AppThread = typeof OrchestrationV2AppThread.Type;
@@ -989,6 +992,8 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.deleted",
       "thread.settled",
       "thread.unsettled",
+      "thread.snoozed",
+      "thread.unsnoozed",
       "thread.metadata-updated",
       "thread.runtime-mode-updated",
       "thread.interaction-mode-updated",
@@ -1173,6 +1178,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])),
   settledAt: Schema.NullOr(Schema.DateTimeUtc),
+  snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   deletedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
 export type OrchestrationV2ThreadShell = typeof OrchestrationV2ThreadShell.Type;
@@ -1245,6 +1252,8 @@ export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((
   settledAt: Schema.NullOr(Schema.DateTimeUtcFromString).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
+  snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   deletedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
 }));
 export type OrchestrationV2AppThreadJson = typeof OrchestrationV2AppThreadJson.Type;
@@ -1608,6 +1617,8 @@ export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFiel
   updatedAt: Schema.DateTimeUtcFromString,
   archivedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   settledAt: Schema.NullOr(Schema.DateTimeUtcFromString),
+  snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
+  snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   deletedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
 }));
 export type OrchestrationV2ThreadShellJson = typeof OrchestrationV2ThreadShellJson.Type;
@@ -1648,6 +1659,8 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.deleted",
       "thread.settled",
       "thread.unsettled",
+      "thread.snoozed",
+      "thread.unsnoozed",
       "thread.metadata-updated",
       "thread.runtime-mode-updated",
       "thread.interaction-mode-updated",
@@ -1802,6 +1815,18 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.unsettle"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    reason: Schema.Literal("user"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.snooze"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    snoozedUntil: IsoDateTime,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.unsnooze"),
     commandId: CommandId,
     threadId: ThreadId,
     reason: Schema.Literal("user"),

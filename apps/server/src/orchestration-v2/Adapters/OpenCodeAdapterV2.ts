@@ -550,7 +550,10 @@ export function openCodePermissionRules(
     })),
   );
 
-  if (runtimePolicy.runtimeMode === "auto-accept-edits" || sandboxType === "workspaceWrite") {
+  if (
+    runtimePolicy.runtimeMode === "auto-accept-edits" ||
+    (!requiresApproval && sandboxType === "workspaceWrite")
+  ) {
     rules.push({ permission: "edit", pattern: "*", action: "allow" });
   }
 

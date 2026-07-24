@@ -1294,7 +1294,7 @@ export const CodexAdapterV2Driver: ProviderAdapterDriver<CodexSettings, CodexAda
             new ProviderAdapterDriverCreateError({
               driver: CODEX_DRIVER_KIND,
               instanceId,
-              detail: cause.message,
+              detail: "Failed to materialize the Codex shadow home.",
               cause,
             }),
         ),

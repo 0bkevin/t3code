@@ -11,6 +11,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -440,6 +441,85 @@ it.layer(SharedApplicationDataPlaneTestLayer)("pending provider interruption", (
       );
       assert.deepEqual(interrupted.providerTurns, []);
       assert.isFalse(yield* effectWorker.runOnce);
+    }),
+  );
+});
+
+it.layer(SharedApplicationDataPlaneTestLayer)("snooze projection", (it) => {
+  it.effect("carries snooze state through the V2 shell projection", () =>
+    Effect.gen(function* () {
+      const applicationEngine = yield* OrchestrationEngineService;
+      const orchestrator = yield* OrchestratorV2;
+      const projectId = ProjectId.make("runtime-layer-snoozed-project");
+      const threadId = ThreadId.make("runtime-layer-snoozed-thread");
+      const snoozedUntil = "2099-07-25T09:00:00.000Z";
+
+      yield* applicationEngine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("runtime-layer-snoozed-project-create"),
+        projectId,
+        title: "Snoozed shell projection",
+        workspaceRoot: "/tmp/runtime-layer-snoozed-project",
+        defaultModelSelection: modelSelection,
+        scripts: [],
+        createdAt: "2026-07-24T00:00:00.000Z",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-snoozed-thread-create"),
+        threadId,
+        projectId,
+        title: "Snoozed thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.snooze",
+        commandId: CommandId.make("runtime-layer-snoozed-thread-snooze"),
+        threadId,
+        snoozedUntil,
+      });
+
+      const firstProjection = yield* orchestrator.getThreadProjection(threadId);
+      const firstSnoozedAt = firstProjection.thread.snoozedAt;
+      const firstUpdatedAt = firstProjection.thread.updatedAt;
+      assert.isNotNull(firstSnoozedAt);
+
+      yield* orchestrator.dispatch({
+        type: "thread.snooze",
+        commandId: CommandId.make("runtime-layer-snoozed-thread-snooze-again"),
+        threadId,
+        snoozedUntil,
+      });
+
+      const shell = yield* orchestrator.getShellSnapshot();
+      const thread = shell.threads.find((candidate) => candidate.id === threadId);
+      assert.isDefined(thread);
+      assert.equal(DateTime.formatIso(thread.snoozedUntil!), snoozedUntil);
+      assert.deepEqual(thread.snoozedAt, firstSnoozedAt);
+      assert.deepEqual(thread.updatedAt, firstUpdatedAt);
+
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-snoozed-message"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-snoozed-message"),
+        text: "Wake this thread.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+
+      const awakened = yield* orchestrator.getThreadProjection(threadId);
+      assert.isNull(awakened.thread.snoozedUntil);
+      assert.isNull(awakened.thread.snoozedAt);
     }),
   );
 });

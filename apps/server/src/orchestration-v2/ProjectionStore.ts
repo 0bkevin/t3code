@@ -179,6 +179,8 @@ export function applyToProjection(
     case "thread.deleted":
     case "thread.settled":
     case "thread.unsettled":
+    case "thread.snoozed":
+    case "thread.unsnoozed":
     case "thread.metadata-updated":
     case "thread.runtime-mode-updated":
     case "thread.interaction-mode-updated":
@@ -797,6 +799,8 @@ export function threadShellFromProjection(
     archivedAt: projection.thread.archivedAt,
     settledOverride: projection.thread.settledOverride,
     settledAt: projection.thread.settledAt,
+    snoozedUntil: projection.thread.snoozedUntil ?? null,
+    snoozedAt: projection.thread.snoozedAt ?? null,
     deletedAt: projection.thread.deletedAt,
   };
 }
@@ -955,6 +959,8 @@ function shellFromState(input: {
     archivedAt: input.state.thread.archivedAt,
     settledOverride: input.state.thread.settledOverride,
     settledAt: input.state.thread.settledAt,
+    snoozedUntil: input.state.thread.snoozedUntil ?? null,
+    snoozedAt: input.state.thread.snoozedAt ?? null,
     deletedAt: input.state.thread.deletedAt,
   };
 }
@@ -973,6 +979,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "thread.deleted":
           case "thread.settled":
           case "thread.unsettled":
+          case "thread.snoozed":
+          case "thread.unsnoozed":
           case "thread.metadata-updated":
           case "thread.runtime-mode-updated":
           case "thread.interaction-mode-updated":
@@ -1744,6 +1752,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           event.type !== "thread.deleted" &&
           event.type !== "thread.settled" &&
           event.type !== "thread.unsettled" &&
+          event.type !== "thread.snoozed" &&
+          event.type !== "thread.unsnoozed" &&
           event.type !== "thread.metadata-updated" &&
           event.type !== "thread.runtime-mode-updated" &&
           event.type !== "thread.interaction-mode-updated" &&

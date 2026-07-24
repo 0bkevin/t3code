@@ -93,6 +93,8 @@ export interface EnvironmentThreadShell {
   readonly archivedAt: string | null;
   readonly settledOverride: "settled" | "active" | null;
   readonly settledAt: string | null;
+  readonly snoozedUntil: string | null;
+  readonly snoozedAt: string | null;
   readonly deletedAt: string | null;
   readonly source: OrchestrationV2ThreadShell;
 }
@@ -181,6 +183,8 @@ export function presentThreadShell(
     archivedAt: nullableIso(thread.archivedAt),
     settledOverride: thread.settledOverride,
     settledAt: nullableIso(thread.settledAt),
+    snoozedUntil: nullableIso(thread.snoozedUntil ?? null),
+    snoozedAt: nullableIso(thread.snoozedAt ?? null),
     deletedAt: nullableIso(thread.deletedAt),
     source: thread,
   };

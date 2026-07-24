@@ -36,7 +36,6 @@ import {
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
-import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import {
   getRenderablePatch,
   resolveDiffThemeName,
@@ -48,12 +47,9 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  ChevronsDownUpIcon,
-  ChevronsUpDownIcon,
   ChevronUpIcon,
   CircleAlertIcon,
   EyeIcon,
-  FileDiffIcon,
   GitForkIcon,
   GlobeIcon,
   type LucideIcon,
@@ -71,8 +67,8 @@ import {
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
-import { ChangedFilesTree } from "./ChangedFilesTree";
-import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
+import { ChangedFilesCard } from "./ChangedFilesTree";
+import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
@@ -166,6 +162,7 @@ interface TimelineRowActivityState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
+  latestRunId: RunId | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -481,8 +478,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       isRevertingCheckpoint,
       activeTurnInProgress,
+      latestRunId: latestRun?.runId ?? null,
     }),
-    [activeTurnInProgress, isRevertingCheckpoint, isWorking],
+    [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestRun?.runId],
   );
   const listHeader = useMemo(
     () =>
@@ -948,7 +946,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           Sent by another agent
         </p>
       ) : null}
-      <div className="relative max-w-[80%] rounded-2xl bg-secondary p-3">
+      <div className="relative max-w-[80%] rounded-2xl bg-accent p-3">
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
             {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
@@ -1674,82 +1672,30 @@ function AssistantChangedFilesSectionInner({
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
 }) {
-  const allDirectoriesExpanded = useUiStateStore(
-    (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.runId] ?? true,
+  const activity = use(TimelineRowActivityCtx);
+  const isLatestRun = activity.latestRunId === turnSummary.runId;
+  const persistedExpanded = useUiStateStore(
+    (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.runId],
   );
   const setExpanded = useUiStateStore((store) => store.setThreadChangedFilesExpanded);
-  const summaryStat = summarizeTurnDiffStats(checkpointFiles);
+  const [autoExpanded] = useState(() => shouldAutoExpandChangedFiles(checkpointFiles, isLatestRun));
+  const [allDirectoriesExpanded, setAllDirectoriesExpanded] = useState(autoExpanded);
+  const expanded = persistedExpanded ?? (isLatestRun && autoExpanded);
+
   return (
-    <div className="mt-4 rounded-2xl border border-border/70 bg-secondary p-2 pt-4 dark:border-transparent dark:bg-input/32">
-      <div className="sticky top-2 z-10 mb-3 flex items-center justify-between gap-2 bg-secondary px-2 before:absolute before:inset-x-0 before:-top-4 before:h-4 before:bg-secondary before:content-[''] dark:bg-[color-mix(in_srgb,var(--foreground)_2.5%,var(--background))] dark:before:bg-[color-mix(in_srgb,var(--foreground)_2.5%,var(--background))]">
-        <p className="flex items-center gap-1 whitespace-nowrap font-medium text-foreground text-xs leading-4">
-          <span>
-            {checkpointFiles.length} changed file{checkpointFiles.length === 1 ? "" : "s"}
-          </span>
-          {hasNonZeroStat(summaryStat) && (
-            <DiffStatLabel
-              additions={summaryStat.additions}
-              className="text-xs leading-4"
-              deletions={summaryStat.deletions}
-              layout="inline"
-            />
-          )}
-        </p>
-        <div className="flex items-center gap-1.5">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="outline"
-                  className="!size-[22px]"
-                  aria-label={allDirectoriesExpanded ? "Collapse all" : "Expand all"}
-                  data-scroll-anchor-ignore
-                  onClick={() =>
-                    setExpanded(routeThreadKey, turnSummary.runId, !allDirectoriesExpanded)
-                  }
-                />
-              }
-            >
-              {allDirectoriesExpanded ? (
-                <ChevronsDownUpIcon className="size-3" />
-              ) : (
-                <ChevronsUpDownIcon className="size-3" />
-              )}
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
-            </TooltipPopup>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="outline"
-                  className="!size-[22px]"
-                  aria-label="View diff"
-                  onClick={() => onOpenTurnDiff(turnSummary.runId, checkpointFiles[0]?.path)}
-                />
-              }
-            >
-              <FileDiffIcon className="size-3" />
-            </TooltipTrigger>
-            <TooltipPopup side="top">View diff</TooltipPopup>
-          </Tooltip>
-        </div>
-      </div>
-      <ChangedFilesTree
-        key={`changed-files-tree:${turnSummary.runId}`}
-        runId={turnSummary.runId}
-        files={checkpointFiles}
-        allDirectoriesExpanded={allDirectoriesExpanded}
-        resolvedTheme={resolvedTheme}
-        onOpenTurnDiff={onOpenTurnDiff}
-      />
-    </div>
+    <ChangedFilesCard
+      runId={turnSummary.runId}
+      files={checkpointFiles}
+      expanded={expanded}
+      showCompactPreview={isLatestRun}
+      allDirectoriesExpanded={allDirectoriesExpanded}
+      resolvedTheme={resolvedTheme}
+      onExpandedChange={(nextExpanded) =>
+        setExpanded(routeThreadKey, turnSummary.runId, nextExpanded)
+      }
+      onToggleAllDirectories={() => setAllDirectoriesExpanded((current) => !current)}
+      onOpenTurnDiff={onOpenTurnDiff}
+    />
   );
 }
 

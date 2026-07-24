@@ -103,6 +103,8 @@ export function applyOrchestrationV2ProjectionEvent(
     case "thread.deleted":
     case "thread.settled":
     case "thread.unsettled":
+    case "thread.snoozed":
+    case "thread.unsnoozed":
     case "thread.metadata-updated":
     case "thread.runtime-mode-updated":
     case "thread.interaction-mode-updated":
