@@ -2363,10 +2363,15 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               previousThreadKeyForLogicalProject === undefined
                 ? undefined
                 : nextDraftThreadsByThreadKey[previousThreadKeyForLogicalProject];
+            const sharesWorkspaceTask =
+              previousDraftThread?.workspaceTaskId !== undefined &&
+              nextDraftThread.workspaceTaskId !== undefined &&
+              previousDraftThread.workspaceTaskId === nextDraftThread.workspaceTaskId;
             if (
               previousThreadKeyForLogicalProject &&
               previousThreadKeyForLogicalProject !== draftId &&
               options?.retainPreviousDraft !== true &&
+              !sharesWorkspaceTask &&
               !isComposerThreadKeyInUse(
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
                 previousThreadKeyForLogicalProject,

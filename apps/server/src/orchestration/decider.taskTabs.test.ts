@@ -75,6 +75,30 @@ const seededReadModel = Effect.gen(function* () {
   });
 });
 
+const seededReadModelWithSibling = Effect.gen(function* () {
+  const readModel = yield* seededReadModel;
+  const decided = yield* decideOrchestrationCommand({
+    readModel,
+    command: {
+      type: "thread.create",
+      commandId: CommandId.make("command-seed-child"),
+      threadId: ThreadId.make("thread-child"),
+      projectId,
+      workspaceTaskId: taskId,
+      tabPosition: 1,
+      title: "Alternative",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "feature/task",
+      worktreePath: "/tmp/project-task",
+      createdAt: now,
+    },
+  });
+  const event = Array.isArray(decided) ? decided[0]! : decided;
+  return yield* projectEvent(readModel, event);
+});
+
 it.layer(NodeServices.layer)("task tab invariants", (it) => {
   it.effect("accepts a sibling tab on the same project and worktree", () =>
     Effect.gen(function* () {
@@ -132,6 +156,61 @@ it.layer(NodeServices.layer)("task tab invariants", (it) => {
         }),
       );
       expect(failure.message).toContain("must keep project and worktree identity");
+    }),
+  );
+
+  it.effect("rejects moving one tab to another worktree after task creation", () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: yield* seededReadModelWithSibling,
+          command: {
+            type: "thread.meta.update",
+            commandId: CommandId.make("command-move-root"),
+            threadId: rootThreadId,
+            worktreePath: "/tmp/other-tree",
+          },
+        }),
+      );
+      expect(failure.message).toContain("must keep project and worktree identity");
+    }),
+  );
+
+  it.effect("rejects a deleted source for a portable fork", () =>
+    Effect.gen(function* () {
+      const readModel = yield* seededReadModel;
+      const withDeletedSource = {
+        ...readModel,
+        threads: readModel.threads.map((thread) =>
+          thread.id === rootThreadId ? { ...thread, deletedAt: now } : thread,
+        ),
+      };
+      const failure = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: withDeletedSource,
+          command: {
+            type: "thread.create",
+            commandId: CommandId.make("command-deleted-source"),
+            threadId: ThreadId.make("thread-from-deleted-source"),
+            projectId,
+            workspaceTaskId: taskId,
+            tabPosition: 1,
+            forkProvenance: {
+              mode: "portable",
+              sourceThreadId: rootThreadId,
+              createdAt: now,
+            },
+            title: "Deleted source",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "feature/task",
+            worktreePath: "/tmp/project-task",
+            createdAt: now,
+          },
+        }),
+      );
+      expect(failure.message).toContain("portable fork source must be an existing tab");
     }),
   );
 });

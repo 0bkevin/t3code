@@ -873,6 +873,12 @@ describe("composerDraftStore project draft thread mapping", () => {
       },
       retainPreviousDraft: true,
     });
+    store.setPrompt(otherDraftId, "fork tab draft");
+
+    // Other call sites remap an already-existing draft without passing the
+    // creation-only retention option. Task identity itself must keep the
+    // sibling registered and preserve its unsent composer.
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
 
     expect(useComposerDraftStore.getState().getDraftThread(draftId)).toMatchObject({
       threadId,
@@ -889,6 +895,7 @@ describe("composerDraftStore project draft thread mapping", () => {
         sourceThreadId: threadId,
       },
     });
+    expect(draftByKey(otherDraftId)?.prompt).toBe("fork tab draft");
   });
 
   it("keeps composer drafts when the thread is still mapped by another project", () => {

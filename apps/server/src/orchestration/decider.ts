@@ -25,6 +25,10 @@ import { projectEvent } from "./projector.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
+function workspaceTaskIdForThread(thread: OrchestrationReadModel["threads"][number]) {
+  return thread.workspaceTaskId ?? WorkspaceTaskId.make(String(thread.id));
+}
+
 // Session adoption takes seconds; a user message still unadopted after this
 // window is a failed/stale start, not pending work. Mirrors the client's
 // QUEUED_TURN_START_GRACE_MS in client-runtime threadSettled.ts.
@@ -360,8 +364,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.workspaceTaskId ?? WorkspaceTaskId.make(String(command.threadId));
       const sibling = readModel.threads.find(
         (thread) =>
-          thread.deletedAt === null &&
-          (thread.workspaceTaskId ?? WorkspaceTaskId.make(String(thread.id))) === workspaceTaskId,
+          thread.deletedAt === null && workspaceTaskIdForThread(thread) === workspaceTaskId,
       );
       if (
         sibling &&
@@ -387,7 +390,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         );
         if (
           !source ||
-          (source.workspaceTaskId ?? WorkspaceTaskId.make(String(source.id))) !== workspaceTaskId
+          source.deletedAt !== null ||
+          workspaceTaskIdForThread(source) !== workspaceTaskId ||
+          source.projectId !== command.projectId ||
+          source.worktreePath !== command.worktreePath
         ) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
@@ -687,6 +693,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.branch !== command.expectedBranch
           ? thread.branch
           : command.branch;
+      if (command.worktreePath !== undefined) {
+        const workspaceTaskId = workspaceTaskIdForThread(thread);
+        const sibling = readModel.threads.find(
+          (candidate) =>
+            candidate.id !== thread.id &&
+            candidate.deletedAt === null &&
+            workspaceTaskIdForThread(candidate) === workspaceTaskId,
+        );
+        if (
+          sibling &&
+          (sibling.projectId !== thread.projectId || sibling.worktreePath !== command.worktreePath)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `workspace task ${workspaceTaskId} must keep project and worktree identity from sibling thread ${sibling.id}`,
+          });
+        }
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
