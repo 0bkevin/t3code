@@ -93,10 +93,17 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
             ? { message: "Hermes is offline. Reconnect its T3 Code gateway plugin." }
             : {}),
           availability: "available",
+          // The slug stays `DEFAULT_HERMES_MODEL` no matter what the plugin
+          // reports: threads bind to it, and letting it follow Hermes' current
+          // config would orphan every thread whose model changed on the Hermes
+          // side. The reported model is used only as the human-facing name, so
+          // the picker says "gpt-5.6-terra" instead of a generic placeholder.
+          // Falls back to "Hermes" when no plugin has connected yet or the
+          // plugin predates the `model` field on `connection.hello`.
           models: [
             {
               slug: DEFAULT_HERMES_MODEL,
-              name: "Hermes",
+              name: status?.model ?? "Hermes",
               isCustom: false,
               isDefault: true,
               capabilities: null,

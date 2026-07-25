@@ -1,13 +1,52 @@
+/**
+ * HermesGatewayBroker — enrollment, authentication, and message routing for
+ * Hermes gateway plugin connections.
+ *
+ * State ownership
+ * ---------------
+ * The broker splits gateway state three ways, by durability:
+ *
+ *   - **Credential** → `ServerSecretStore`. A 0600 file is exactly the right
+ *     home for a secret, and nothing else needs to enumerate it.
+ *
+ *   - **Durable config** (display name, connector URL, revoked) → the Hermes
+ *     provider instance config in `ServerSettings`, written through
+ *     `updateSettingsWith` so the read-modify-write happens under the settings
+ *     write lock and concurrent edits to unrelated instances are preserved.
+ *     This replaced a JSON blob in the secret store, which had no listing API,
+ *     no index, and no transactions — and therefore forced O(N) secret-file
+ *     scans, whole-file rewrites on every connect, and hand-rolled
+ *     compensating writes.
+ *
+ *   - **Volatile liveness** (connection, transport, lastSeen, session count,
+ *     reported model, upgrade-required) → `HermesConnectionRegistry`, in
+ *     memory only. See that module for why persisting it would stop every live
+ *     Hermes session on every reconnect.
+ *
+ * After a T3 restart the UI reports "never connected" until the plugin dials
+ * back in. That is intended, and is the correct reading of the facts: T3 has
+ * no live connection until one is re-established.
+ *
+ * Locking
+ * -------
+ * There is no global broker lock. Enrollment mutations serialize per-instance;
+ * `registerConnection` takes no enrollment lock at all, so a slow credential
+ * write during one instance's enrollment cannot block another instance's
+ * WebSocket handshake. Where two writers could still race — token redemption,
+ * connection replacement — correctness comes from compare-and-swap and
+ * generation fencing rather than from a mutex.
+ *
+ * @module HermesGatewayBroker
+ */
 import * as NodeCrypto from "node:crypto";
 import {
   HERMES_GATEWAY_PROTOCOL_VERSION,
   HERMES_DRIVER_KIND,
   defaultInstanceIdForDriver,
   HermesGatewayCredential,
-  HermesGatewayEnrollmentToken,
   HermesGatewayCapabilities,
-  HermesGatewayHelloCapabilities,
   HermesGatewayManagementError,
+  ProviderInstanceId,
   type HermesGatewayConnectionHello,
   type HermesGatewayCreateEnrollmentInput,
   type HermesGatewayEnrollmentResult,
@@ -18,24 +57,26 @@ import {
   type HermesGatewayRenameInstanceResult,
   type HermesGatewayRevokeInstanceResult,
   type HermesGatewayT3ToPluginMessage,
-  type ProviderInstanceId,
+  type ProviderInstanceConfig,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import * as ServerConfig from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import {
@@ -45,66 +86,84 @@ import {
   type HermesGatewayTransport,
   type HermesGatewayBrokerShape,
 } from "../Services/HermesGatewayBroker.ts";
+import type { HermesObservedConnection } from "../Services/HermesConnectionRegistry.ts";
+import type { PendingEnrollment } from "../Services/HermesEnrollmentStore.ts";
+import { livenessStatusFields, makeHermesConnectionRegistry } from "./HermesConnectionRegistry.ts";
+import { makeHermesEnrollmentStore } from "./HermesEnrollmentStore.ts";
+import { makeRequestCorrelator } from "./RequestCorrelator.ts";
 
 const ENROLLMENT_TTL = Duration.minutes(10);
 const REQUEST_TIMEOUT = Duration.seconds(30);
+/** Safety net for pending requests whose awaiting fiber died abnormally. */
+const REQUEST_MAX_AGE = Duration.seconds(90);
+/** How often expired enrollment tokens and abandoned requests are reaped. */
+const SWEEP_INTERVAL = Duration.minutes(1);
+/**
+ * Server→plugin liveness probe. Without it a half-open socket reads as
+ * "connected" indefinitely: `send` succeeds into the void and the failure only
+ * surfaces when some unrelated request times out.
+ *
+ * These are sized so worst-case detection (first probe immediately, then
+ * `PING_MAX_MISSED` failures) lands inside `REQUEST_TIMEOUT`. That ordering is
+ * the whole point: an in-flight request over a dead socket should fail with
+ * "the connection stopped responding" rather than sit out a generic timeout.
+ */
+const PING_INTERVAL = Duration.seconds(10);
+/** How long a single ping may go unanswered before it counts as missed. */
+const PING_TIMEOUT = Duration.seconds(4);
+/** Consecutive missed pings tolerated before the connection is torn down. */
+const PING_MAX_MISSED = 2;
+
+const CREDENTIAL_BYTES = 32;
+
 const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
 const isStrictCapabilities = Schema.is(HermesGatewayCapabilities);
-
-interface PendingEnrollment {
-  readonly input: HermesGatewayCreateEnrollmentInput;
-  readonly expiresAtMillis: number;
-}
-
-const InstanceMetadata = Schema.Struct({
-  nickname: Schema.String,
-  connectorUrl: Schema.String,
-  revoked: Schema.Boolean,
-  removed: Schema.optionalKey(Schema.Boolean),
-  lastSeen: Schema.optionalKey(
-    Schema.Struct({
-      pluginVersion: Schema.String,
-      hermesVersion: Schema.String,
-      capabilities: HermesGatewayHelloCapabilities,
-      connectedAt: Schema.String,
-      activeSessionCount: Schema.Number,
-    }),
-  ),
-});
-type InstanceMetadata = typeof InstanceMetadata.Type;
-const decodeInstanceMetadata = Schema.decodeUnknownEffect(Schema.fromJsonString(InstanceMetadata));
-
-interface ActiveConnection {
-  readonly generation: number;
-  readonly transport: HermesGatewayTransport;
-  readonly pluginVersion: string;
-  readonly hermesVersion: string;
-  readonly capabilities: NonNullable<HermesGatewayInstanceStatus["capabilities"]>;
-  readonly connectedAt: string;
-  readonly activeSessionCount: number;
-}
-
-interface InstanceState {
-  readonly metadata: InstanceMetadata;
-  readonly connection?: ActiveConnection;
-  readonly lastSeen?: Omit<ActiveConnection, "transport" | "generation" | "activeSessionCount"> & {
-    readonly activeSessionCount: number;
-  };
-  readonly upgradeRequired?: {
-    readonly pluginVersion: string;
-    readonly hermesVersion: string;
-    readonly protocolVersion: number;
-  };
-}
+const isProviderInstanceId = Schema.is(ProviderInstanceId);
 
 type PluginMessage = Exclude<HermesGatewayPluginToT3Message, HermesGatewayConnectionHello>;
+
+/**
+ * Durable enrollment facts, read from and written to the Hermes provider
+ * instance config in settings.
+ */
+interface InstanceRecord {
+  readonly nickname: string;
+  readonly connectorUrl: string;
+  readonly revoked: boolean;
+}
+
+/**
+ * A Hermes instance can be *configured* (someone added the envelope) without
+ * being *enrolled* (no plugin has ever been paired). Only enrollment produces
+ * a connector URL, so its presence is what distinguishes the two. Status,
+ * rename, and revoke all require an enrolled instance; create-enrollment and
+ * remove deliberately accept a merely-configured one.
+ */
+const isEnrolled = (record: InstanceRecord) => record.connectorUrl !== "";
 
 const credentialSecretName = (instanceId: ProviderInstanceId) =>
   `hermes-gateway-credential-${Buffer.from(instanceId, "utf8").toString("base64url")}`;
 
-const metadataSecretName = (instanceId: ProviderInstanceId) =>
+/** Legacy metadata blob location, read once at boot then deleted. */
+const legacyMetadataSecretName = (instanceId: ProviderInstanceId) =>
   `hermes-gateway-metadata-${Buffer.from(instanceId, "utf8").toString("base64url")}`;
+
+/**
+ * Schema for the legacy secret-store metadata blob. Retained only so boot can
+ * migrate pre-existing files into settings and delete them; nothing writes it.
+ */
+const LegacyInstanceMetadata = Schema.Struct({
+  nickname: Schema.String,
+  connectorUrl: Schema.String,
+  revoked: Schema.Boolean,
+  removed: Schema.optionalKey(Schema.Boolean),
+});
+type LegacyInstanceMetadata = typeof LegacyInstanceMetadata.Type;
+const decodeLegacyMetadata = Schema.decodeUnknownEffect(
+  // The blob also carried a `lastSeen` liveness object. It is intentionally
+  // dropped: liveness is no longer persisted at all.
+  Schema.fromJsonString(LegacyInstanceMetadata),
+);
 
 const managementError = (
   operation: HermesGatewayManagementError["operation"],
@@ -133,6 +192,11 @@ const rejection = (
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+/**
+ * Constant-time credential comparison. The length pre-check is required:
+ * `timingSafeEqual` throws on mismatched lengths, and comparing lengths first
+ * leaks only the length, which is not secret.
+ */
 const credentialsEqual = (left: Uint8Array, right: string) => {
   const rightBytes = textEncoder.encode(right);
   return left.byteLength === rightBytes.byteLength && NodeCrypto.timingSafeEqual(left, rightBytes);
@@ -140,181 +204,203 @@ const credentialsEqual = (left: Uint8Array, right: string) => {
 
 const normalizeNickname = (nickname: string) => nickname.trim();
 
-const nicknameComparisonKey = (nickname: string) =>
-  normalizeNickname(nickname).normalize("NFKC").toLocaleLowerCase("en-US");
+/** Read a Hermes instance's durable config out of a settings envelope. */
+const readHermesConfig = (config: ProviderInstanceConfig | undefined) => {
+  if (!config || config.driver !== HERMES_DRIVER_KIND) return undefined;
+  const raw = config.config;
+  const blob = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    displayName: config.displayName,
+    connectorUrl: typeof blob.connectorUrl === "string" ? blob.connectorUrl : undefined,
+    revoked: blob.revoked === true,
+  };
+};
 
-const statusFromState = (
+const recordFrom = (
   instanceId: ProviderInstanceId,
-  state: InstanceState,
-): HermesGatewayInstanceStatus => ({
-  ...(() => {
-    const observed = state.connection ?? state.lastSeen ?? state.metadata.lastSeen;
-    return {
-      lastConnectedAt: observed?.connectedAt ?? null,
-      pluginVersion: observed?.pluginVersion ?? state.upgradeRequired?.pluginVersion ?? null,
-      hermesVersion: observed?.hermesVersion ?? state.upgradeRequired?.hermesVersion ?? null,
-      activeSessionCount: state.connection?.activeSessionCount ?? 0,
-      protocolVersion:
-        observed?.capabilities.protocolVersion ?? state.upgradeRequired?.protocolVersion ?? null,
-      capabilities:
-        observed?.capabilities !== undefined && isStrictCapabilities(observed.capabilities)
-          ? observed.capabilities
-          : null,
-    };
-  })(),
-  instanceId,
-  nickname: state.metadata.nickname,
-  status: state.metadata.revoked
-    ? "revoked"
-    : state.upgradeRequired
-      ? "upgrade-required"
-      : state.connection
-        ? "connected"
-        : "offline",
-  connectorUrl: state.metadata.connectorUrl,
-});
+  config: ProviderInstanceConfig | undefined,
+): InstanceRecord | undefined => {
+  const hermes = readHermesConfig(config);
+  if (!hermes) return undefined;
+  return {
+    nickname: hermes.displayName ?? instanceId,
+    connectorUrl: hermes.connectorUrl ?? "",
+    revoked: hermes.revoked,
+  };
+};
+
+/** Merge durable config edits into an existing Hermes envelope. */
+const withHermesConfig = (
+  existing: ProviderInstanceConfig,
+  patch: {
+    readonly nickname?: string | undefined;
+    readonly connectorUrl?: string | undefined;
+    readonly revoked?: boolean | undefined;
+  },
+): ProviderInstanceConfig => {
+  const currentConfig =
+    existing.config && typeof existing.config === "object"
+      ? (existing.config as Record<string, unknown>)
+      : {};
+  return {
+    ...existing,
+    ...(patch.nickname !== undefined ? { displayName: patch.nickname } : {}),
+    config: {
+      ...currentConfig,
+      ...(patch.connectorUrl !== undefined ? { connectorUrl: patch.connectorUrl } : {}),
+      ...(patch.revoked !== undefined ? { revoked: patch.revoked } : {}),
+    },
+  };
+};
 
 export const makeHermesGatewayBroker = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const settings = yield* ServerSettingsService;
-  const states = yield* Ref.make(new Map<ProviderInstanceId, InstanceState>());
-  const enrollments = yield* Ref.make(new Map<string, PendingEnrollment>());
-  const pendingRequests = yield* Ref.make(
-    new Map<
-      string,
-      {
-        readonly instanceId: ProviderInstanceId;
-        readonly deferred: Deferred.Deferred<PluginMessage, ProviderAdapterRequestError>;
-      }
-    >(),
-  );
+
+  const connections = yield* makeHermesConnectionRegistry;
+  const enrollmentStore = yield* makeHermesEnrollmentStore({ ttl: ENROLLMENT_TTL });
+  const correlator = yield* makeRequestCorrelator<ProviderInstanceId, PluginMessage>({
+    provider: HERMES_DRIVER_KIND,
+    timeout: REQUEST_TIMEOUT,
+    maxAge: REQUEST_MAX_AGE,
+  });
+
   const events = yield* PubSub.unbounded<HermesGatewayEnvelope>();
   const statusEvents = yield* PubSub.unbounded<HermesGatewayInstanceStatus>();
-  const generation = yield* Ref.make(0);
-  const enrollmentSemaphore = yield* Semaphore.make(1);
 
-  const publishStatus = (instanceId: ProviderInstanceId, state: InstanceState) =>
-    PubSub.publish(statusEvents, statusFromState(instanceId, state)).pipe(Effect.asVoid);
-
-  const failPendingRequests = (instanceId: ProviderInstanceId, detail: string) =>
+  /**
+   * Per-instance enrollment lock. Serializes the read-modify-write of one
+   * instance's durable config against itself without coupling unrelated
+   * instances — and, critically, without gating the WebSocket handshake.
+   */
+  const enrollmentLocks = yield* Ref.make(new Map<ProviderInstanceId, Semaphore.Semaphore>());
+  const withInstanceLock = <A, E, R>(
+    instanceId: ProviderInstanceId,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
     Effect.gen(function* () {
-      const affected = yield* Ref.modify(pendingRequests, (current) => {
-        const next = new Map(current);
-        const found = Array.from(current.entries()).filter(
-          ([, pending]) => pending.instanceId === instanceId,
-        );
-        for (const [requestId] of found) next.delete(requestId);
-        return [found.map(([, pending]) => pending.deferred), next] as const;
-      });
-      yield* Effect.forEach(
-        affected,
-        (deferred) =>
-          Deferred.fail(
-            deferred,
-            new ProviderAdapterRequestError({
-              provider: HERMES_DRIVER_KIND,
-              method: "connection",
-              detail,
-            }),
-          ),
-        { discard: true },
-      );
+      const existing = (yield* Ref.get(enrollmentLocks)).get(instanceId);
+      const semaphore = existing ?? (yield* Semaphore.make(1));
+      if (!existing) {
+        // Two fibers can reach here concurrently for a new instance; the
+        // modify below keeps whichever landed first so both share one lock.
+        const winner = yield* Ref.modify(enrollmentLocks, (current) => {
+          const found = current.get(instanceId);
+          if (found) return [found, current] as const;
+          return [semaphore, new Map(current).set(instanceId, semaphore)] as const;
+        });
+        return yield* winner.withPermits(1)(effect);
+      }
+      return yield* semaphore.withPermits(1)(effect);
     });
 
-  const persistMetadata = (instanceId: ProviderInstanceId, metadata: InstanceMetadata) =>
-    secretStore
-      .set(metadataSecretName(instanceId), textEncoder.encode(JSON.stringify(metadata)))
-      .pipe(
-        Effect.mapError(() =>
-          managementError(
-            "create-enrollment",
-            "persistence-failed",
-            "Failed to persist Hermes gateway metadata.",
-            instanceId,
-          ),
-        ),
-      );
-
-  const readMetadata = (instanceId: ProviderInstanceId) =>
-    secretStore.get(metadataSecretName(instanceId)).pipe(
-      Effect.flatMap((stored) => {
-        if (Option.isNone(stored)) return Effect.succeed(undefined);
-        return decodeInstanceMetadata(textDecoder.decode(stored.value)).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ServerSecretStore.SecretStoreDecodeError({
-                resource: `Hermes gateway metadata for ${instanceId}`,
-                cause,
-              }),
-          ),
-        );
-      }),
+  const readSettings = (operation: HermesGatewayManagementError["operation"]) =>
+    settings.getSettings.pipe(
+      Effect.mapError(() =>
+        managementError(operation, "internal-error", "Failed to read server settings."),
+      ),
     );
 
-  const getState = (instanceId: ProviderInstanceId) =>
-    Ref.get(states).pipe(
-      Effect.map((current) => current.get(instanceId)),
-      Effect.flatMap((state) => {
-        if (state) {
-          return state.metadata.removed
-            ? Effect.fail(
-                managementError(
-                  "get-status",
-                  "instance-not-found",
-                  `Hermes gateway instance '${instanceId}' has been removed.`,
-                  instanceId,
-                ),
-              )
-            : Effect.succeed(state);
-        }
-        return readMetadata(instanceId).pipe(
-          Effect.mapError(() =>
-            managementError(
-              "get-status",
-              "persistence-failed",
-              "Failed to read Hermes gateway metadata.",
-              instanceId,
+  /** Durable record for one instance, or `undefined` if not a Hermes instance. */
+  const readRecord = (
+    instanceId: ProviderInstanceId,
+    operation: HermesGatewayManagementError["operation"],
+  ) =>
+    readSettings(operation).pipe(
+      Effect.map((current) => recordFrom(instanceId, current.providerInstances[instanceId])),
+    );
+
+  const requireRecord = (
+    instanceId: ProviderInstanceId,
+    operation: HermesGatewayManagementError["operation"],
+  ) =>
+    readRecord(instanceId, operation).pipe(
+      Effect.flatMap((record) =>
+        record && isEnrolled(record)
+          ? Effect.succeed(record)
+          : Effect.fail(
+              managementError(
+                operation,
+                "instance-not-found",
+                record
+                  ? `Hermes gateway instance '${instanceId}' has not been enrolled.`
+                  : `Hermes gateway instance '${instanceId}' is not configured.`,
+                instanceId,
+              ),
             ),
-          ),
-          Effect.flatMap((metadata) => {
-            if (!metadata || metadata.removed) {
-              return Effect.fail(
-                managementError(
-                  "get-status",
-                  "instance-not-found",
-                  `Hermes gateway instance '${instanceId}' has not been enrolled.`,
-                  instanceId,
-                ),
-              );
-            }
-            const loaded: InstanceState = { metadata };
-            return Ref.update(states, (current) => new Map(current).set(instanceId, loaded)).pipe(
-              Effect.as(loaded),
-            );
-          }),
-        );
+      ),
+    );
+
+  /**
+   * Compose a public status from the durable record plus volatile liveness.
+   * `revoked` wins over everything: a revoked instance is revoked even if a
+   * stale connection object has not been reaped yet.
+   */
+  const statusOf = (instanceId: ProviderInstanceId, record: InstanceRecord) =>
+    connections.liveness(instanceId).pipe(
+      Effect.map((liveness) => {
+        const fields = livenessStatusFields(liveness);
+        const { connected, upgradeRequired, capabilities, ...rest } = fields;
+        return {
+          ...rest,
+          // A capability shape from a newer protocol is reported as null
+          // rather than passed through as if T3 understood it.
+          capabilities:
+            capabilities !== null && isStrictCapabilities(capabilities) ? capabilities : null,
+          instanceId,
+          nickname: record.nickname,
+          connectorUrl: record.connectorUrl,
+          status: record.revoked
+            ? "revoked"
+            : upgradeRequired
+              ? "upgrade-required"
+              : connected
+                ? "connected"
+                : "offline",
+        } satisfies HermesGatewayInstanceStatus;
       }),
     );
+
+  const publishStatus = (instanceId: ProviderInstanceId, record: InstanceRecord) =>
+    statusOf(instanceId, record).pipe(
+      Effect.flatMap((status) => PubSub.publish(statusEvents, status)),
+      Effect.asVoid,
+    );
+
+  /** Publish using whatever durable record settings currently holds. */
+  const publishCurrentStatus = (
+    instanceId: ProviderInstanceId,
+    operation: HermesGatewayManagementError["operation"],
+  ) =>
+    readRecord(instanceId, operation).pipe(
+      Effect.flatMap((record) => (record ? publishStatus(instanceId, record) : Effect.void)),
+      Effect.ignore,
+    );
+
+  const failPendingRequests = (instanceId: ProviderInstanceId, detail: string) =>
+    correlator.failOwner(instanceId, detail);
+
+  /**
+   * Tear down a connection: fail its in-flight requests, then close the
+   * socket. Ordering matters — callers waiting on a request should see the
+   * specific reason rather than a generic disconnect.
+   */
+  const teardownConnection = (
+    instanceId: ProviderInstanceId,
+    transport: HermesGatewayTransport,
+    code: number,
+    reason: string,
+  ) => failPendingRequests(instanceId, reason).pipe(Effect.andThen(transport.close(code, reason)));
+
+  // ── Management operations ─────────────────────────────────────────
 
   const createEnrollment = (input: HermesGatewayCreateEnrollmentInput) =>
-    enrollmentSemaphore.withPermits(1)(
+    withInstanceLock(
+      input.instanceId,
       Effect.gen(function* () {
-        const normalizedNickname = normalizeNickname(input.nickname);
-        const normalizedInput = {
-          ...input,
-          nickname: normalizedNickname,
-        } satisfies HermesGatewayCreateEnrollmentInput;
-        const currentSettings = yield* settings.getSettings.pipe(
-          Effect.mapError(() =>
-            managementError(
-              "create-enrollment",
-              "internal-error",
-              "Failed to read server settings.",
-              input.instanceId,
-            ),
-          ),
-        );
+        const nickname = normalizeNickname(input.nickname);
+        const currentSettings = yield* readSettings("create-enrollment");
         const configured = currentSettings.providerInstances[input.instanceId];
         if (!configured || configured.driver !== HERMES_DRIVER_KIND) {
           return yield* managementError(
@@ -325,113 +411,9 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
           );
         }
 
-        const existingInputState =
-          (yield* Ref.get(states)).get(input.instanceId) ??
-          (yield* readMetadata(input.instanceId).pipe(
-            Effect.map((metadata) => (metadata ? { metadata } : undefined)),
-            Effect.mapError(() =>
-              managementError(
-                "create-enrollment",
-                "persistence-failed",
-                "Failed to read Hermes gateway metadata.",
-                input.instanceId,
-              ),
-            ),
-          ));
-        if (existingInputState?.metadata.removed) {
-          yield* settings
-            .updateSettingsWith((latest) => {
-              if (latest.providerInstances[input.instanceId]?.driver !== HERMES_DRIVER_KIND) {
-                return {};
-              }
-              const providerInstances = { ...latest.providerInstances };
-              delete providerInstances[input.instanceId];
-              return { providerInstances };
-            })
-            .pipe(
-              Effect.mapError(() =>
-                managementError(
-                  "create-enrollment",
-                  "persistence-failed",
-                  `Failed to clean up the reconfigured tombstoned Hermes instance '${input.instanceId}'.`,
-                  input.instanceId,
-                ),
-              ),
-            );
-          return yield* managementError(
-            "create-enrollment",
-            "instance-removed",
-            `Hermes gateway instance id '${input.instanceId}' was permanently removed. Create a new instance with a fresh id.`,
-            input.instanceId,
-          );
-        }
-
-        const configuredHermesIds = Object.entries(currentSettings.providerInstances)
-          .filter(([, config]) => config.driver === HERMES_DRIVER_KIND)
-          .map(([instanceId]) => instanceId as ProviderInstanceId);
-        const existingStates = yield* Ref.get(states);
-        for (const instanceId of new Set(configuredHermesIds)) {
-          const persistedMetadata = existingStates.has(instanceId)
-            ? undefined
-            : yield* readMetadata(instanceId).pipe(
-                Effect.mapError(() =>
-                  managementError(
-                    "create-enrollment",
-                    "persistence-failed",
-                    "Failed to read Hermes gateway metadata.",
-                    input.instanceId,
-                  ),
-                ),
-              );
-          const state =
-            existingStates.get(instanceId) ??
-            (persistedMetadata ? { metadata: persistedMetadata } : undefined);
-          const candidateNickname =
-            state?.metadata.removed === true
-              ? undefined
-              : (state?.metadata.nickname ??
-                currentSettings.providerInstances[instanceId]?.displayName);
-          if (
-            instanceId !== input.instanceId &&
-            candidateNickname !== undefined &&
-            nicknameComparisonKey(candidateNickname) === nicknameComparisonKey(normalizedNickname)
-          ) {
-            return yield* managementError(
-              "create-enrollment",
-              "nickname-conflict",
-              `A Hermes gateway named '${normalizedNickname}' already exists.`,
-              input.instanceId,
-            );
-          }
-        }
-
-        const token = HermesGatewayEnrollmentToken.make(
-          Encoding.encodeBase64Url(
-            yield* crypto
-              .randomBytes(32)
-              .pipe(
-                Effect.mapError(() =>
-                  managementError(
-                    "create-enrollment",
-                    "internal-error",
-                    "Failed to generate an enrollment token.",
-                    input.instanceId,
-                  ),
-                ),
-              ),
-          ),
-        );
-        const expiresAtMillis =
-          (yield* Clock.currentTimeMillis) + Duration.toMillis(ENROLLMENT_TTL);
-        const previousState = existingStates.get(input.instanceId);
-        const metadata = {
-          nickname: normalizedNickname,
-          connectorUrl: input.connectorUrl,
-          revoked: false,
-          ...(previousState?.metadata.lastSeen
-            ? { lastSeen: previousState.metadata.lastSeen }
-            : {}),
-        } satisfies InstanceMetadata;
+        // Invalidate the outgoing credential before anything else: from here
+        // on the old credential must not authenticate, even if a later step
+        // fails.
         yield* secretStore
           .remove(credentialSecretName(input.instanceId))
           .pipe(
@@ -444,186 +426,118 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
               ),
             ),
           );
-        if (previousState?.connection) {
-          yield* failPendingRequests(
-            input.instanceId,
-            "A new enrollment replaced the active Hermes gateway credential.",
+
+        yield* settings
+          .updateSettingsWith((latest) => {
+            const latestConfigured = latest.providerInstances[input.instanceId];
+            if (!latestConfigured || latestConfigured.driver !== HERMES_DRIVER_KIND) return {};
+            return {
+              providerInstances: {
+                ...latest.providerInstances,
+                [input.instanceId]: withHermesConfig(latestConfigured, {
+                  nickname,
+                  connectorUrl: input.connectorUrl,
+                  revoked: false,
+                }),
+              },
+            };
+          })
+          .pipe(
+            Effect.mapError(() =>
+              managementError(
+                "create-enrollment",
+                "persistence-failed",
+                "Failed to persist the Hermes gateway enrollment.",
+                input.instanceId,
+              ),
+            ),
           );
-          yield* previousState.connection.transport.close(
+
+        // Any live connection is authenticating with the credential we just
+        // invalidated, so it can no longer be trusted.
+        const displaced = yield* connections.clearConnection(input.instanceId);
+        if (displaced) {
+          yield* teardownConnection(
+            input.instanceId,
+            displaced.transport,
             4001,
             "A new enrollment was created for this instance",
           );
         }
-        yield* persistMetadata(input.instanceId, metadata);
-        const enrolledState: InstanceState = {
-          metadata,
-          ...(previousState?.lastSeen ? { lastSeen: previousState.lastSeen } : {}),
+
+        const { token, expiresAtMillis } = yield* enrollmentStore.mint({ ...input, nickname });
+
+        const record: InstanceRecord = {
+          nickname,
+          connectorUrl: input.connectorUrl,
+          revoked: false,
         };
-        yield* Ref.update(states, (current) =>
-          new Map(current).set(input.instanceId, enrolledState),
-        );
-        yield* publishStatus(input.instanceId, enrolledState);
-        yield* Ref.update(enrollments, (current) => {
-          const next = new Map(current);
-          for (const [pendingToken, pending] of current) {
-            if (pending.input.instanceId === input.instanceId) {
-              next.delete(pendingToken);
-            }
-          }
-          return next.set(token, { input: normalizedInput, expiresAtMillis });
-        });
+        yield* publishStatus(input.instanceId, record);
 
         return {
           instanceId: input.instanceId,
           expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAtMillis)),
           connectorUrl: input.connectorUrl,
           command: `hermes t3 connect --url ${shellQuote(input.connectorUrl)} --token ${shellQuote(token)}`,
+          // The long-lived credential is structurally absent here: it only
+          // ever exists on the server→plugin `connection.accepted` frame.
           oneTimeToken: token,
         } satisfies HermesGatewayEnrollmentResult;
       }),
     );
 
   const getInstanceStatus = (instanceId: ProviderInstanceId) =>
-    getState(instanceId).pipe(Effect.map((state) => statusFromState(instanceId, state)));
-
-  const listInstances = Effect.gen(function* () {
-    const currentSettings = yield* settings.getSettings.pipe(
-      Effect.mapError(() =>
-        managementError("list-instances", "internal-error", "Failed to read server settings."),
-      ),
+    requireRecord(instanceId, "get-status").pipe(
+      Effect.flatMap((record) => statusOf(instanceId, record)),
     );
-    const ids = Object.entries(currentSettings.providerInstances)
-      .filter(([, config]) => config.driver === HERMES_DRIVER_KIND)
-      .map(([id]) => id as ProviderInstanceId);
-    return yield* Effect.forEach(
-      ids,
-      (instanceId) =>
-        getInstanceStatus(instanceId).pipe(
-          Effect.catchTag("HermesGatewayManagementError", () => Effect.succeed(undefined)),
+
+  const listInstances = readSettings("list-instances").pipe(
+    Effect.flatMap((currentSettings) =>
+      Effect.forEach(
+        Object.entries(currentSettings.providerInstances).filter(
+          ([, config]) => config.driver === HERMES_DRIVER_KIND,
         ),
-      { concurrency: "unbounded" },
-    ).pipe(Effect.map((values) => values.filter((value) => value !== undefined)));
-  });
+        ([rawId, config]) => {
+          const instanceId = rawId as ProviderInstanceId;
+          const record = recordFrom(instanceId, config);
+          // Configured-but-never-enrolled instances have no gateway status to
+          // report, so they are omitted rather than listed as offline.
+          return record && isEnrolled(record)
+            ? statusOf(instanceId, record)
+            : Effect.succeed(undefined);
+        },
+        { concurrency: "unbounded" },
+      ).pipe(Effect.map((values) => values.filter((value) => value !== undefined))),
+    ),
+  );
 
+  /**
+   * Rename is a pure display-name edit. Instance id is identity; the label is
+   * free text like every other provider, so there is no uniqueness scan.
+   */
   const renameInstance = (input: HermesGatewayRenameInstanceInput) =>
-    enrollmentSemaphore.withPermits(1)(
+    withInstanceLock(
+      input.instanceId,
       Effect.gen(function* () {
-        const state = yield* getState(input.instanceId).pipe(
+        const nickname = normalizeNickname(input.nickname);
+        yield* requireRecord(input.instanceId, "rename-instance").pipe(
           Effect.mapError((error) =>
             managementError("rename-instance", error.code, error.message, input.instanceId),
           ),
         );
-        const normalizedNickname = normalizeNickname(input.nickname);
-        const currentSettings = yield* settings.getSettings.pipe(
-          Effect.mapError(() =>
-            managementError(
-              "rename-instance",
-              "internal-error",
-              "Failed to read server settings.",
-              input.instanceId,
-            ),
-          ),
-        );
-        const configured = currentSettings.providerInstances[input.instanceId];
-        if (!configured || configured.driver !== HERMES_DRIVER_KIND) {
-          return yield* managementError(
-            "rename-instance",
-            "instance-not-found",
-            `Provider instance '${input.instanceId}' is not configured with the Hermes driver.`,
-            input.instanceId,
-          );
-        }
 
-        const existingStates = yield* Ref.get(states);
-        for (const [candidateId, candidateConfig] of Object.entries(
-          currentSettings.providerInstances,
-        )) {
-          if (candidateId === input.instanceId || candidateConfig.driver !== HERMES_DRIVER_KIND) {
-            continue;
-          }
-          const candidateInstanceId = candidateId as ProviderInstanceId;
-          const persistedMetadata = existingStates.has(candidateInstanceId)
-            ? undefined
-            : yield* readMetadata(candidateInstanceId).pipe(
-                Effect.mapError(() =>
-                  managementError(
-                    "rename-instance",
-                    "persistence-failed",
-                    "Failed to read Hermes gateway metadata.",
-                    input.instanceId,
-                  ),
-                ),
-              );
-          const candidateState =
-            existingStates.get(candidateInstanceId) ??
-            (persistedMetadata ? { metadata: persistedMetadata } : undefined);
-          const candidateNickname =
-            candidateState?.metadata.removed === true
-              ? undefined
-              : (candidateState?.metadata.nickname ?? candidateConfig.displayName);
-          if (
-            candidateNickname !== undefined &&
-            nicknameComparisonKey(candidateNickname) === nicknameComparisonKey(normalizedNickname)
-          ) {
-            return yield* managementError(
-              "rename-instance",
-              "nickname-conflict",
-              `A Hermes gateway named '${normalizedNickname}' already exists.`,
-              input.instanceId,
-            );
-          }
-        }
-
-        const metadata: InstanceMetadata = {
-          ...state.metadata,
-          nickname: normalizedNickname,
-        };
-        yield* persistMetadata(input.instanceId, metadata).pipe(
-          Effect.mapError((error) =>
-            managementError("rename-instance", error.code, error.message, input.instanceId),
-          ),
-        );
-        let settingsUpdate: "pending" | "updated" | "instance-not-found" | "nickname-conflict" =
-          "pending";
-        const readSettingsUpdate = () => settingsUpdate;
-        yield* settings
+        const updated = yield* settings
           .updateSettingsWith((latest) => {
             const latestConfigured = latest.providerInstances[input.instanceId];
-            if (!latestConfigured || latestConfigured.driver !== HERMES_DRIVER_KIND) {
-              settingsUpdate = "instance-not-found";
-              return { providerInstances: latest.providerInstances };
-            }
-            for (const [candidateId, candidateConfig] of Object.entries(latest.providerInstances)) {
-              if (
-                candidateId === input.instanceId ||
-                candidateConfig.driver !== HERMES_DRIVER_KIND ||
-                candidateConfig.displayName === undefined
-              ) {
-                continue;
-              }
-              if (
-                nicknameComparisonKey(candidateConfig.displayName) ===
-                nicknameComparisonKey(normalizedNickname)
-              ) {
-                settingsUpdate = "nickname-conflict";
-                return { providerInstances: latest.providerInstances };
-              }
-            }
-            settingsUpdate = "updated";
+            if (!latestConfigured || latestConfigured.driver !== HERMES_DRIVER_KIND) return {};
             return {
               providerInstances: {
                 ...latest.providerInstances,
-                [input.instanceId]: {
-                  ...latestConfigured,
-                  displayName: normalizedNickname,
-                },
+                [input.instanceId]: withHermesConfig(latestConfigured, { nickname }),
               },
             };
           })
           .pipe(
-            Effect.tapError(() =>
-              persistMetadata(input.instanceId, state.metadata).pipe(Effect.ignore),
-            ),
             Effect.mapError(() =>
               managementError(
                 "rename-instance",
@@ -633,51 +547,76 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
               ),
             ),
           );
-        const settingsUpdateResult = readSettingsUpdate();
-        if (settingsUpdateResult !== "updated") {
-          yield* persistMetadata(input.instanceId, state.metadata).pipe(Effect.ignore);
+
+        // The update callback is a pure function of `latest`, so the committed
+        // settings are the single source of truth for whether it applied —
+        // no side-channel flag needed.
+        const record = recordFrom(input.instanceId, updated.providerInstances[input.instanceId]);
+        if (!record) {
           return yield* managementError(
             "rename-instance",
-            settingsUpdateResult === "pending" ? "internal-error" : settingsUpdateResult,
-            settingsUpdateResult === "nickname-conflict"
-              ? `A Hermes gateway named '${normalizedNickname}' already exists.`
-              : settingsUpdateResult === "instance-not-found"
-                ? `Provider instance '${input.instanceId}' is no longer configured with the Hermes driver.`
-                : "Failed to determine the Hermes provider settings update result.",
+            "instance-not-found",
+            `Provider instance '${input.instanceId}' is no longer configured with the Hermes driver.`,
             input.instanceId,
           );
         }
 
-        const next: InstanceState = {
-          ...state,
-          metadata,
-        };
-        yield* Ref.update(states, (current) => new Map(current).set(input.instanceId, next));
-        yield* publishStatus(input.instanceId, next);
-        return statusFromState(input.instanceId, next) satisfies HermesGatewayRenameInstanceResult;
+        yield* publishStatus(input.instanceId, record);
+        return (yield* statusOf(
+          input.instanceId,
+          record,
+        )) satisfies HermesGatewayRenameInstanceResult;
       }),
     );
 
   const revokeInstance = (instanceId: ProviderInstanceId) =>
-    enrollmentSemaphore.withPermits(1)(
+    withInstanceLock(
+      instanceId,
       Effect.gen(function* () {
-        const state = yield* getState(instanceId);
-        const metadata: InstanceMetadata = { ...state.metadata, revoked: true };
-        yield* persistMetadata(instanceId, metadata).pipe(
+        const existing = yield* requireRecord(instanceId, "revoke-instance").pipe(
           Effect.mapError((error) =>
             managementError("revoke-instance", error.code, error.message, instanceId),
           ),
         );
-        const next: InstanceState = {
-          metadata,
-          ...(state.lastSeen ? { lastSeen: state.lastSeen } : {}),
-        };
-        yield* Ref.update(states, (current) => new Map(current).set(instanceId, next));
-        if (state.connection) {
-          yield* failPendingRequests(instanceId, "The Hermes gateway credential was revoked.");
-          yield* state.connection.transport.close(4003, "Hermes gateway credential revoked");
+
+        yield* settings
+          .updateSettingsWith((latest) => {
+            const latestConfigured = latest.providerInstances[instanceId];
+            if (!latestConfigured || latestConfigured.driver !== HERMES_DRIVER_KIND) return {};
+            return {
+              providerInstances: {
+                ...latest.providerInstances,
+                [instanceId]: withHermesConfig(latestConfigured, { revoked: true }),
+              },
+            };
+          })
+          .pipe(
+            Effect.mapError(() =>
+              managementError(
+                "revoke-instance",
+                "persistence-failed",
+                "Failed to persist the Hermes gateway revocation.",
+                instanceId,
+              ),
+            ),
+          );
+
+        const record: InstanceRecord = { ...existing, revoked: true };
+        yield* enrollmentStore.forget(instanceId);
+
+        const cleared = yield* connections.clearConnection(instanceId);
+        if (cleared) {
+          yield* teardownConnection(
+            instanceId,
+            cleared.transport,
+            4003,
+            "The Hermes gateway credential was revoked.",
+          );
         }
-        yield* publishStatus(instanceId, next);
+        yield* publishStatus(instanceId, record);
+
+        // Credential removal is last and is allowed to fail loudly: revocation
+        // is already durable in settings, so a reconnect is refused either way.
         yield* secretStore
           .remove(credentialSecretName(instanceId))
           .pipe(
@@ -690,39 +629,17 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
               ),
             ),
           );
-        return statusFromState(instanceId, next) satisfies HermesGatewayRevokeInstanceResult;
+
+        return (yield* statusOf(instanceId, record)) satisfies HermesGatewayRevokeInstanceResult;
       }),
     );
 
   const removeInstance = (instanceId: ProviderInstanceId) =>
-    enrollmentSemaphore.withPermits(1)(
+    withInstanceLock(
+      instanceId,
       Effect.gen(function* () {
-        const currentSettings = yield* settings.getSettings.pipe(
-          Effect.mapError(() =>
-            managementError(
-              "remove-instance",
-              "internal-error",
-              "Failed to read server settings.",
-              instanceId,
-            ),
-          ),
-        );
-        const configured = currentSettings.providerInstances[instanceId];
-        const cachedState = (yield* Ref.get(states)).get(instanceId);
-        const metadata =
-          cachedState?.metadata ??
-          (yield* readMetadata(instanceId).pipe(
-            Effect.mapError(() =>
-              managementError(
-                "remove-instance",
-                "persistence-failed",
-                "Failed to read Hermes gateway metadata.",
-                instanceId,
-              ),
-            ),
-          ));
-
-        if (!metadata && configured?.driver !== HERMES_DRIVER_KIND) {
+        const record = yield* readRecord(instanceId, "remove-instance");
+        if (!record) {
           return yield* managementError(
             "remove-instance",
             "instance-not-found",
@@ -730,7 +647,9 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
             instanceId,
           );
         }
-        if (metadata && !metadata.removed && !metadata.revoked) {
+        // An enrolled instance must be revoked first so its credential is
+        // invalidated before the config that describes it disappears.
+        if (isEnrolled(record) && !record.revoked) {
           return yield* managementError(
             "remove-instance",
             "instance-not-revoked",
@@ -739,37 +658,14 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
           );
         }
 
-        const tombstone =
-          metadata && !metadata.removed
-            ? ({
-                ...metadata,
-                revoked: true,
-                removed: true,
-              } satisfies InstanceMetadata)
-            : metadata;
-        if (tombstone && !metadata?.removed) {
-          yield* persistMetadata(instanceId, tombstone).pipe(
-            Effect.mapError((error) =>
-              managementError("remove-instance", error.code, error.message, instanceId),
-            ),
-          );
-        }
-
-        const updatedSettings = yield* settings
+        const updated = yield* settings
           .updateSettingsWith((current) => {
-            if (current.providerInstances[instanceId]?.driver !== HERMES_DRIVER_KIND) {
-              return {};
-            }
+            if (current.providerInstances[instanceId]?.driver !== HERMES_DRIVER_KIND) return {};
             const providerInstances = { ...current.providerInstances };
             delete providerInstances[instanceId];
             return { providerInstances };
           })
           .pipe(
-            Effect.tapError(() =>
-              metadata && tombstone !== metadata
-                ? persistMetadata(instanceId, metadata).pipe(Effect.ignore)
-                : Effect.void,
-            ),
             Effect.mapError(() =>
               managementError(
                 "remove-instance",
@@ -779,10 +675,7 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
               ),
             ),
           );
-        if (updatedSettings.providerInstances[instanceId]?.driver === HERMES_DRIVER_KIND) {
-          if (metadata && tombstone !== metadata) {
-            yield* persistMetadata(instanceId, metadata).pipe(Effect.ignore);
-          }
+        if (updated.providerInstances[instanceId]?.driver === HERMES_DRIVER_KIND) {
           return yield* managementError(
             "remove-instance",
             "instance-not-found",
@@ -790,22 +683,21 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
             instanceId,
           );
         }
-        yield* Ref.update(enrollments, (current) => {
-          const next = new Map(current);
-          for (const [token, enrollment] of current) {
-            if (enrollment.input.instanceId === instanceId) next.delete(token);
-          }
-          return next;
-        });
-        yield* Ref.update(states, (current) => {
-          const next = new Map(current);
-          if (tombstone) {
-            next.set(instanceId, { metadata: tombstone });
-          } else {
-            next.delete(instanceId);
-          }
-          return next;
-        });
+
+        yield* enrollmentStore.forget(instanceId);
+        const cleared = yield* connections.clearConnection(instanceId);
+        if (cleared) {
+          yield* teardownConnection(
+            instanceId,
+            cleared.transport,
+            4003,
+            "The Hermes gateway instance was removed.",
+          );
+        }
+        yield* connections.forget(instanceId);
+
+        // Removing the instance config is the authoritative act; a failure to
+        // delete the now-unreferenced credential is logged, not surfaced.
         yield* secretStore.remove(credentialSecretName(instanceId)).pipe(
           Effect.catch((error) =>
             Effect.logWarning("Failed to clean up a removed Hermes gateway credential", {
@@ -818,7 +710,80 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
       }),
     );
 
-  const registerConnectionEffect = (
+  // ── Connection lifecycle ──────────────────────────────────────────
+
+  /**
+   * Ping loop for one connection. Forked into the connection's scope, so it is
+   * interrupted precisely when that connection is retired or replaced.
+   *
+   * A missed pong is not immediately fatal — a busy plugin can be slow — but
+   * `PING_MAX_MISSED` consecutive misses mean the socket is half-open, and we
+   * stop pretending otherwise.
+   */
+  const pingLoop = (
+    registration: HermesGatewayConnectionRegistration,
+    transport: HermesGatewayTransport,
+  ) =>
+    Effect.gen(function* () {
+      const missed = yield* Ref.make(0);
+
+      const probe = Effect.gen(function* () {
+        const requestId = `hermes-ping-${registration.instanceId}-${registration.generation}-${yield* Clock.currentTimeMillis}`;
+        const outcome = yield* correlator
+          .request({
+            owner: registration.instanceId,
+            requestId,
+            method: "ping",
+            timeout: PING_TIMEOUT,
+            send: transport.send({
+              type: "ping",
+              protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+              requestId: requestId as HermesGatewayConnectionHello["requestId"],
+              sentAt: DateTime.formatIso(yield* DateTime.now),
+            }),
+          })
+          .pipe(Effect.result);
+
+        if (outcome._tag === "Success") {
+          yield* Ref.set(missed, 0);
+          // Healthy: wait a full interval before probing again.
+          return yield* Effect.sleep(PING_INTERVAL);
+        }
+
+        const missedCount = yield* Ref.updateAndGet(missed, (value) => value + 1);
+        // Once a ping is missed, re-probe immediately rather than idling for
+        // another interval: the point is to confirm or clear the suspicion
+        // fast enough that in-flight requests get the real reason instead of
+        // a generic timeout.
+        if (missedCount < PING_MAX_MISSED) return;
+
+        yield* Effect.logWarning("Hermes gateway connection failed liveness checks", {
+          instanceId: registration.instanceId,
+          missedCount,
+        });
+        // Retire before closing: `disconnect` is generation-fenced, so if a
+        // replacement already landed this is a no-op and we leave it alone.
+        const retired = yield* connections.disconnect(registration);
+        if (retired) {
+          yield* publishCurrentStatus(registration.instanceId, "get-status");
+          yield* teardownConnection(
+            registration.instanceId,
+            transport,
+            4008,
+            "The Hermes gateway connection stopped responding.",
+          );
+        }
+      });
+
+      // First probe runs after one interval — long enough that a plugin which
+      // just completed the handshake is not immediately re-interrogated. The
+      // pacing of subsequent probes lives inside `probe` itself, because a
+      // healthy connection and a suspected-dead one warrant different delays.
+      yield* Effect.sleep(PING_INTERVAL);
+      yield* probe.pipe(Effect.forever, Effect.ignoreCause({ log: true }));
+    });
+
+  const registerConnection = (
     hello: HermesGatewayConnectionHello,
     transport: HermesGatewayTransport,
   ) =>
@@ -827,14 +792,19 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
         ? hello.capabilities
         : undefined;
 
+      // ── Phase 1: authenticate. Nothing below this line mutates connection
+      // state, and nothing above it is allowed to. An earlier bug applied
+      // "incompatible version" state before checking the credential, letting
+      // an unauthenticated caller knock a healthy instance offline; the test
+      // "authenticates before applying incompatible connection state" guards
+      // this ordering.
       let instanceId: ProviderInstanceId;
-      let credential: HermesGatewayCredential | undefined;
       let authenticatedEnrollment: PendingEnrollment | undefined;
-      let state: InstanceState;
+
       if (hello.authentication.type === "enrollment-token") {
         const authentication = hello.authentication;
-        const enrollment = (yield* Ref.get(enrollments)).get(authentication.token);
-        if (!enrollment || enrollment.expiresAtMillis < (yield* Clock.currentTimeMillis)) {
+        const enrollment = yield* enrollmentStore.peek(authentication.token);
+        if (!enrollment) {
           return yield* Effect.fail(
             rejection(
               hello.requestId,
@@ -845,36 +815,9 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
         }
         instanceId = enrollment.input.instanceId;
         authenticatedEnrollment = enrollment;
-        state = yield* getState(instanceId).pipe(
-          Effect.mapError(() =>
-            rejection(
-              hello.requestId,
-              "invalid-authentication",
-              "Unknown Hermes gateway instance.",
-            ),
-          ),
-        );
       } else {
         const authentication = hello.authentication;
         instanceId = authentication.instanceId;
-        state = yield* getState(instanceId).pipe(
-          Effect.mapError(() =>
-            rejection(
-              hello.requestId,
-              "invalid-authentication",
-              "Unknown Hermes gateway instance.",
-            ),
-          ),
-        );
-        if (state.metadata.revoked) {
-          return yield* Effect.fail(
-            rejection(
-              hello.requestId,
-              "instance-revoked",
-              "This Hermes gateway instance has been revoked.",
-            ),
-          );
-        }
         const stored = yield* secretStore
           .get(credentialSecretName(instanceId))
           .pipe(
@@ -897,16 +840,7 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
         }
       }
 
-      if (state.metadata.revoked) {
-        return yield* Effect.fail(
-          rejection(
-            hello.requestId,
-            "instance-revoked",
-            "This Hermes gateway instance has been revoked.",
-          ),
-        );
-      }
-      const currentSettings = yield* settings.getSettings.pipe(
+      const record = yield* readRecord(instanceId, "get-status").pipe(
         Effect.mapError(() =>
           rejection(
             hello.requestId,
@@ -915,7 +849,7 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
           ),
         ),
       );
-      if (currentSettings.providerInstances[instanceId]?.driver !== HERMES_DRIVER_KIND) {
+      if (!record) {
         return yield* Effect.fail(
           rejection(
             hello.requestId,
@@ -924,32 +858,39 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
           ),
         );
       }
+      if (record.revoked) {
+        return yield* Effect.fail(
+          rejection(
+            hello.requestId,
+            "instance-revoked",
+            "This Hermes gateway instance has been revoked.",
+          ),
+        );
+      }
 
+      // ── Phase 2: the caller is authenticated. State changes may begin.
       if (
         hello.protocolVersion !== HERMES_GATEWAY_PROTOCOL_VERSION ||
         strictCapabilities === undefined
       ) {
-        if (state.connection) {
-          yield* failPendingRequests(
-            instanceId,
-            "The Hermes gateway plugin requires a protocol upgrade.",
-          );
-          yield* state.connection.transport.close(
-            4004,
-            "Hermes gateway protocol version is incompatible",
-          );
-        }
-        const upgradeState: InstanceState = {
-          metadata: state.metadata,
-          ...(state.lastSeen ? { lastSeen: state.lastSeen } : {}),
+        const displaced = yield* connections.markUpgradeRequired({
+          instanceId,
           upgradeRequired: {
             pluginVersion: hello.pluginVersion,
             hermesVersion: hello.hermesVersion,
             protocolVersion: hello.protocolVersion,
+            model: hello.model ?? null,
           },
-        };
-        yield* Ref.update(states, (current) => new Map(current).set(instanceId, upgradeState));
-        yield* publishStatus(instanceId, upgradeState);
+        });
+        if (displaced) {
+          yield* teardownConnection(
+            instanceId,
+            displaced.transport,
+            4004,
+            "The Hermes gateway plugin requires a protocol upgrade.",
+          );
+        }
+        yield* publishStatus(instanceId, record);
         return yield* Effect.fail(
           rejection(
             hello.requestId,
@@ -959,18 +900,14 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
         );
       }
 
+      let credential: HermesGatewayCredential | undefined;
       if (hello.authentication.type === "enrollment-token" && authenticatedEnrollment) {
         const authentication = hello.authentication;
-        const enrollment = yield* Ref.modify(enrollments, (current) => {
-          const found = current.get(authentication.token);
-          const next = new Map(current);
-          if (found === authenticatedEnrollment) next.delete(authentication.token);
-          return [found, next] as const;
-        });
-        if (
-          enrollment !== authenticatedEnrollment ||
-          enrollment.expiresAtMillis < (yield* Clock.currentTimeMillis)
-        ) {
+        const consumed = yield* enrollmentStore.consume(
+          authentication.token,
+          authenticatedEnrollment,
+        );
+        if (!consumed) {
           return yield* Effect.fail(
             rejection(
               hello.requestId,
@@ -979,11 +916,11 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
             ),
           );
         }
-        instanceId = enrollment.input.instanceId;
+        instanceId = consumed.input.instanceId;
         credential = HermesGatewayCredential.make(
           Encoding.encodeBase64Url(
             yield* crypto
-              .randomBytes(32)
+              .randomBytes(CREDENTIAL_BYTES)
               .pipe(
                 Effect.mapError(() =>
                   rejection(
@@ -1008,237 +945,254 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
           );
       }
 
-      const nextGeneration = yield* Ref.getAndUpdate(generation, (value) => value + 1);
-      const connectedAt = DateTime.formatIso(yield* DateTime.now);
-      const connection = {
-        generation: nextGeneration,
-        transport,
+      const observed: HermesObservedConnection = {
         pluginVersion: hello.pluginVersion,
         hermesVersion: hello.hermesVersion,
         capabilities: strictCapabilities,
-        connectedAt,
+        model: hello.model ?? null,
+        connectedAt: DateTime.formatIso(yield* DateTime.now),
         activeSessionCount: 0,
-      } satisfies ActiveConnection;
-      const lastSeen = {
-        pluginVersion: connection.pluginVersion,
-        hermesVersion: connection.hermesVersion,
-        capabilities: connection.capabilities,
-        connectedAt: connection.connectedAt,
-        activeSessionCount: connection.activeSessionCount,
       };
-      const connectedMetadata: InstanceMetadata = {
-        ...state.metadata,
-        lastSeen,
-      };
-      yield* persistMetadata(instanceId, connectedMetadata).pipe(
-        Effect.mapError(() =>
-          rejection(
-            hello.requestId,
-            "internal-error",
-            "Failed to persist Hermes gateway connection metadata.",
-          ),
-        ),
-      );
-      if (state.connection) {
-        yield* failPendingRequests(
+      const accepted = yield* connections.accept({ instanceId, transport, observed });
+      if (accepted.displaced) {
+        yield* teardownConnection(
           instanceId,
+          accepted.displaced.transport,
+          4001,
           "The Hermes gateway connection was replaced by a newer connection.",
         );
-        yield* state.connection.transport.close(4001, "Replaced by a newer connection");
       }
-      yield* Ref.update(states, (current) =>
-        new Map(current).set(instanceId, {
-          metadata: connectedMetadata,
-          connection,
-          lastSeen,
-        }),
-      );
-      yield* publishStatus(instanceId, {
-        metadata: connectedMetadata,
-        connection,
-        lastSeen,
-      });
 
-      const accepted = {
-        type: "connection.accepted",
-        requestId: hello.requestId,
-        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      const registration = {
         instanceId,
-        nickname: state.metadata.nickname,
-        ...(credential ? { credential } : {}),
-      } as const;
-      return {
-        instanceId,
-        generation: nextGeneration,
-        accepted,
-      } satisfies HermesGatewayConnectionRegistration;
+        generation: accepted.generation,
+        accepted: {
+          type: "connection.accepted",
+          requestId: hello.requestId,
+          protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+          instanceId,
+          nickname: record.nickname,
+          ...(credential ? { credential } : {}),
+        },
+      } as const satisfies HermesGatewayConnectionRegistration;
+
+      // Liveness probing belongs to this connection's scope, so it is
+      // interrupted the moment the connection is retired.
+      const liveness = yield* connections.liveness(instanceId);
+      if (liveness?.connection?.generation === accepted.generation) {
+        yield* pingLoop(registration, transport).pipe(Effect.forkIn(liveness.connection.scope));
+      }
+
+      yield* publishStatus(instanceId, record);
+      return registration;
     });
-
-  const registerConnection = (
-    hello: HermesGatewayConnectionHello,
-    transport: HermesGatewayTransport,
-  ) => enrollmentSemaphore.withPermits(1)(registerConnectionEffect(hello, transport));
 
   const receive = (registration: HermesGatewayConnectionRegistration, message: PluginMessage) =>
     Effect.gen(function* () {
-      const state = (yield* Ref.get(states)).get(registration.instanceId);
-      if (state?.connection?.generation !== registration.generation) return;
       if (message.type === "connection.status") {
-        yield* Ref.update(states, (current) => {
-          const found = current.get(registration.instanceId);
-          if (found?.connection?.generation !== registration.generation) return current;
-          return new Map(current).set(registration.instanceId, {
-            ...found,
-            connection: {
-              ...found.connection,
-              activeSessionCount: message.activeSessionCount,
-            },
-          });
-        });
-        const updated = (yield* Ref.get(states)).get(registration.instanceId);
-        if (updated) yield* publishStatus(registration.instanceId, updated);
+        // Generation-fenced inside the Ref update; a stale registration is a
+        // no-op rather than an overwrite.
+        const applied = yield* connections.recordSessionCount(
+          registration,
+          message.activeSessionCount,
+        );
+        if (!applied) return;
+        yield* publishCurrentStatus(registration.instanceId, "get-status");
+      } else {
+        const liveness = yield* connections.liveness(registration.instanceId);
+        if (liveness?.connection?.generation !== registration.generation) return;
       }
+
       if ("requestId" in message && message.requestId) {
-        const correlatedRequestId = message.requestId;
-        const pending = yield* Ref.modify(pendingRequests, (current) => {
-          const found = current.get(correlatedRequestId);
-          if (!found) return [undefined, current] as const;
-          const next = new Map(current);
-          next.delete(correlatedRequestId);
-          return [found, next] as const;
-        });
-        if (pending) {
-          yield* Deferred.succeed(pending.deferred, message);
-        }
+        yield* correlator.complete(message.requestId, message);
       }
-      yield* PubSub.publish(events, {
-        instanceId: registration.instanceId,
-        message,
-      });
+      yield* PubSub.publish(events, { instanceId: registration.instanceId, message });
     });
 
   const disconnect = (registration: HermesGatewayConnectionRegistration) =>
     Effect.gen(function* () {
-      let disconnected: InstanceState | undefined;
-      yield* Ref.update(states, (current) => {
-        const found = current.get(registration.instanceId);
-        if (found?.connection?.generation !== registration.generation) return current;
-        const next = new Map(current);
-        const lastSeen = {
-          pluginVersion: found.connection.pluginVersion,
-          hermesVersion: found.connection.hermesVersion,
-          capabilities: found.connection.capabilities,
-          connectedAt: found.connection.connectedAt,
-          activeSessionCount: found.connection.activeSessionCount,
-        };
-        disconnected = {
-          metadata: { ...found.metadata, lastSeen },
-          lastSeen,
-        };
-        next.set(registration.instanceId, disconnected);
-        return next;
-      });
-      if (disconnected) {
-        yield* persistMetadata(registration.instanceId, disconnected.metadata).pipe(Effect.ignore);
-      }
-      if (disconnected) yield* publishStatus(registration.instanceId, disconnected);
-      if (disconnected) {
-        yield* failPendingRequests(
-          registration.instanceId,
-          "The Hermes gateway connection disconnected.",
-        );
-      }
+      const retired = yield* connections.disconnect(registration);
+      if (!retired) return;
+      yield* publishCurrentStatus(registration.instanceId, "get-status");
+      yield* failPendingRequests(
+        registration.instanceId,
+        "The Hermes gateway connection disconnected.",
+      );
     });
+
+  // ── Messaging ─────────────────────────────────────────────────────
 
   const send = (instanceId: ProviderInstanceId, message: HermesGatewayT3ToPluginMessage) =>
-    Effect.gen(function* () {
-      const state = (yield* Ref.get(states)).get(instanceId);
-      if (!state?.connection) {
-        return yield* new ProviderAdapterRequestError({
-          provider: "hermes",
-          method: message.type,
-          detail: `Hermes gateway instance '${instanceId}' is offline.`,
-        });
-      }
-      yield* state.connection.transport.send(message);
-    });
-
-  const request = (instanceId: ProviderInstanceId, message: HermesGatewayT3ToPluginMessage) =>
-    Effect.gen(function* () {
-      if (!("requestId" in message) || !message.requestId) {
-        return yield* new ProviderAdapterRequestError({
-          provider: "hermes",
-          method: message.type,
-          detail: "A correlated Hermes gateway request requires a request id.",
-        });
-      }
-      const deferred = yield* Deferred.make<PluginMessage, ProviderAdapterRequestError>();
-      yield* Ref.update(pendingRequests, (current) =>
-        new Map(current).set(message.requestId as string, {
-          instanceId,
-          deferred,
-        }),
-      );
-      yield* send(instanceId, message).pipe(
-        Effect.tapError(() =>
-          Ref.update(pendingRequests, (current) => {
-            const next = new Map(current);
-            next.delete(message.requestId as string);
-            return next;
-          }),
-        ),
-      );
-      return yield* Deferred.await(deferred).pipe(
-        Effect.timeout(REQUEST_TIMEOUT),
-        Effect.mapError((error) =>
-          error._tag === "TimeoutError"
-            ? new ProviderAdapterRequestError({
-                provider: "hermes",
+    connections.transport(instanceId).pipe(
+      Effect.flatMap((transport) =>
+        transport
+          ? transport.send(message)
+          : Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: HERMES_DRIVER_KIND,
                 method: message.type,
-                detail: "Hermes gateway request timed out.",
-              })
-            : error,
-        ),
-        Effect.ensuring(
-          Ref.update(pendingRequests, (current) => {
-            const next = new Map(current);
-            next.delete(message.requestId as string);
-            return next;
-          }),
-        ),
-      );
-    });
-
-  const isConnected = (instanceId: ProviderInstanceId) =>
-    Ref.get(states).pipe(
-      Effect.map((current) => current.get(instanceId)?.connection !== undefined),
+                detail: `Hermes gateway instance '${instanceId}' is offline.`,
+              }),
+            ),
+      ),
     );
 
-  const defaultInstanceId = defaultInstanceIdForDriver(HERMES_DRIVER_KIND);
-  yield* Effect.gen(function* () {
-    const metadata = yield* readMetadata(defaultInstanceId);
-    if (!metadata || metadata.removed) return;
-    yield* settings.updateSettingsWith((current) => {
-      if (current.providerInstances[defaultInstanceId] !== undefined) return {};
-      return {
-        providerInstances: {
-          ...current.providerInstances,
-          [defaultInstanceId]: {
-            driver: HERMES_DRIVER_KIND,
-            displayName: metadata.nickname,
-            enabled: true,
-            config: {},
-          },
-        },
-      };
+  const request = (instanceId: ProviderInstanceId, message: HermesGatewayT3ToPluginMessage) => {
+    if (!("requestId" in message) || !message.requestId) {
+      return Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: HERMES_DRIVER_KIND,
+          method: message.type,
+          detail: "A correlated Hermes gateway request requires a request id.",
+        }),
+      );
+    }
+    return correlator.request({
+      owner: instanceId,
+      requestId: message.requestId,
+      method: message.type,
+      send: send(instanceId, message),
     });
+  };
+
+  // ── Boot: migrate legacy metadata, then start sweepers ────────────
+
+  const LEGACY_METADATA_PREFIX = "hermes-gateway-metadata-";
+
+  /**
+   * Recover instance ids from legacy metadata filenames in the secrets
+   * directory. `ServerSecretStore` has no listing API, and an orphaned blob is
+   * by definition one that settings no longer references — so without this
+   * scan the exact files we most need to clean up are unreachable.
+   *
+   * Entirely best-effort: no config, no filesystem, or an unreadable directory
+   * all degrade to "found nothing" rather than failing boot.
+   */
+  const discoverLegacyMetadataInstanceIds = Effect.gen(function* () {
+    const config = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+    const fs = yield* Effect.serviceOption(FileSystem.FileSystem);
+    if (Option.isNone(config) || Option.isNone(fs)) return [];
+
+    const entries = yield* fs.value
+      .readDirectory(config.value.secretsDir)
+      .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+
+    return entries.flatMap((entry) => {
+      const base = entry.endsWith(".bin") ? entry.slice(0, -".bin".length) : entry;
+      if (!base.startsWith(LEGACY_METADATA_PREFIX)) return [];
+      const encoded = base.slice(LEGACY_METADATA_PREFIX.length);
+      const decodedId = Buffer.from(encoded, "base64url").toString("utf8");
+      // Round-trip guard: only accept names this scheme could have produced.
+      if (Buffer.from(decodedId, "utf8").toString("base64url") !== encoded) return [];
+      return isProviderInstanceId(decodedId) ? [decodedId] : [];
+    });
+  }).pipe(Effect.orElseSucceed(() => [] as Array<ProviderInstanceId>));
+
+  /**
+   * Fold pre-existing secret-store metadata blobs into settings and delete
+   * them. Ordering is deliberate: the settings write must succeed before the
+   * secret file is deleted, so a crash in between re-runs the migration rather
+   * than losing the enrollment facts.
+   */
+  const migrateLegacyMetadata = Effect.gen(function* () {
+    const currentSettings = yield* settings.getSettings;
+    const defaultInstanceId = defaultInstanceIdForDriver(HERMES_DRIVER_KIND);
+    const candidates = new Set<ProviderInstanceId>([
+      defaultInstanceId,
+      ...Object.entries(currentSettings.providerInstances)
+        .filter(([, config]) => config.driver === HERMES_DRIVER_KIND)
+        .map(([rawId]) => rawId as ProviderInstanceId),
+      // The real orphans are precisely the ones settings no longer mentions,
+      // so scanning the secrets directory is the only way to find them. The
+      // store has no listing API; reading the directory directly is
+      // best-effort and never fatal.
+      ...(yield* discoverLegacyMetadataInstanceIds),
+    ]);
+
+    for (const instanceId of candidates) {
+      const secretName = legacyMetadataSecretName(instanceId);
+      const stored = yield* secretStore.get(secretName);
+      if (Option.isNone(stored)) continue;
+
+      const decoded = yield* decodeLegacyMetadata(new TextDecoder().decode(stored.value)).pipe(
+        Effect.result,
+      );
+      if (decoded._tag === "Failure") {
+        yield* Effect.logWarning("Discarding unreadable legacy Hermes gateway metadata", {
+          instanceId,
+        });
+        yield* secretStore.remove(secretName).pipe(Effect.ignore);
+        continue;
+      }
+      const metadata: LegacyInstanceMetadata = decoded.success;
+
+      const configured = currentSettings.providerInstances[instanceId];
+      const isHermesInstance = configured?.driver === HERMES_DRIVER_KIND;
+
+      // A tombstone, or a blob for an instance nobody configures any more, has
+      // nothing to fold into. Drop the file and the orphaned credential — this
+      // is the leak the old code never cleaned up, because the tombstone name
+      // was only ever passed to get/set and never to remove.
+      if (metadata.removed || !isHermesInstance) {
+        yield* secretStore.remove(secretName).pipe(Effect.ignore);
+        yield* secretStore.remove(credentialSecretName(instanceId)).pipe(Effect.ignore);
+        continue;
+      }
+
+      const committed = yield* settings
+        .updateSettingsWith((latest) => {
+          const latestConfigured = latest.providerInstances[instanceId];
+          if (!latestConfigured || latestConfigured.driver !== HERMES_DRIVER_KIND) return {};
+          const existing = readHermesConfig(latestConfigured);
+          return {
+            providerInstances: {
+              ...latest.providerInstances,
+              [instanceId]: withHermesConfig(latestConfigured, {
+                // Settings already win where they carry a value; the blob only
+                // fills gaps.
+                nickname: latestConfigured.displayName ?? metadata.nickname,
+                connectorUrl: existing?.connectorUrl ?? metadata.connectorUrl,
+                revoked: existing?.revoked === true ? true : metadata.revoked,
+              }),
+            },
+          };
+        })
+        .pipe(Effect.result);
+
+      if (committed._tag === "Failure") {
+        yield* Effect.logWarning("Deferring Hermes gateway metadata migration", { instanceId });
+        continue;
+      }
+
+      const migrated = recordFrom(instanceId, committed.success.providerInstances[instanceId]);
+      if (!migrated) {
+        yield* Effect.logWarning("Deferring Hermes gateway metadata migration", { instanceId });
+        continue;
+      }
+
+      // Only now, with the durable equivalent committed, is the blob
+      // redundant. The credential is kept: this instance is still configured
+      // and its plugin must be able to reconnect.
+      yield* secretStore.remove(secretName).pipe(Effect.ignore);
+      if (migrated.revoked) {
+        yield* secretStore.remove(credentialSecretName(instanceId)).pipe(Effect.ignore);
+      }
+    }
   }).pipe(
-    Effect.catch((error) =>
-      Effect.logWarning("Failed to migrate a legacy Hermes gateway instance into settings", {
-        instanceId: defaultInstanceId,
-        error,
-      }),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Failed to migrate legacy Hermes gateway metadata", { cause }),
     ),
+  );
+
+  yield* migrateLegacyMetadata;
+
+  // Bounded memory: expired tokens and abandoned request entries are reaped
+  // on a timer rather than only lazily at redemption.
+  yield* enrollmentStore.sweep.pipe(
+    Effect.andThen(correlator.sweep),
+    Effect.repeat(Schedule.spaced(SWEEP_INTERVAL)),
+    Effect.ignoreCause({ log: true }),
+    Effect.forkScoped,
   );
 
   return {
@@ -1253,10 +1207,14 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
     disconnect,
     request,
     send,
-    isConnected,
+    isConnected: connections.isConnected,
     stream: Stream.fromPubSub(events),
     streamStatuses: Stream.fromPubSub(statusEvents),
   } satisfies HermesGatewayBrokerShape;
 });
 
 export const HermesGatewayBrokerLive = Layer.effect(HermesGatewayBroker, makeHermesGatewayBroker);
+
+/** Exported so tests can seed and assert on migration inputs by exact name. */
+export const hermesGatewayLegacyMetadataSecretName = legacyMetadataSecretName;
+export const hermesGatewayCredentialSecretName = credentialSecretName;

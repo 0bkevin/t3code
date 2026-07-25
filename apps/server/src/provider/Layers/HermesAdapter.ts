@@ -9,6 +9,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnId,
+  type CanonicalRequestType,
   type HermesGatewayPluginToT3Message,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
@@ -32,13 +33,48 @@ import { HermesGatewayBroker } from "../Services/HermesGatewayBroker.ts";
 const PROVIDER = ProviderDriverKind.make("hermes");
 const isResumeCursor = Schema.is(HermesGatewayResumeCursor);
 
+/**
+ * Hermes never queues. When the gateway socket is down there is nothing on the
+ * far side to accept work, and a queued turn would silently start minutes later
+ * against a thread the user has moved on from. Every send path fails
+ * immediately with this text so the failure names the fix rather than showing
+ * up as a generic protocol error or a 30s request timeout.
+ */
+const offlineDetail = (instanceId: ProviderInstanceId) =>
+  `Hermes is offline — the '${instanceId}' gateway plugin is not connected. Start the gateway on the Hermes host (\`hermes gateway restart\`), then retry.`;
+
+/**
+ * `turns` exists only to answer `readThread`, which no Hermes call site reaches
+ * today. Retaining every completed item for the life of the process is an
+ * unbounded leak in service of that dead path, so the accumulator keeps a
+ * hard-capped tail of the most recent turns/items and `readThread` reports what
+ * it still holds. Raising these bounds is a deliberate decision, not something
+ * that should drift with thread length.
+ */
+const MAX_RETAINED_TURNS = 8;
+const MAX_RETAINED_ITEMS_PER_TURN = 32;
+
 type HermesAdapterShape = ProviderAdapterShape<
   ProviderAdapterRequestError | ProviderAdapterSessionNotFoundError | ProviderAdapterValidationError
 >;
 
+interface PendingInteraction {
+  readonly requestId: string;
+  readonly turnId: TurnId;
+  readonly requestType: CanonicalRequestType;
+}
+
 interface SessionContext {
-  readonly hermesSessionId: HermesGatewaySessionId;
+  hermesSessionId: HermesGatewaySessionId;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
+  /**
+   * Approval and user-input requests T3 has shown but Hermes has not resolved.
+   * The plugin holds its side in plain dicts, so a plugin restart forgets them
+   * and any decision sent afterwards comes back `request-not-found`, parking
+   * the turn forever. Tracking them here lets a reconnect close them out.
+   */
+  readonly pendingApprovals: Map<string, PendingInteraction>;
+  readonly pendingUserInputs: Map<string, PendingInteraction>;
   session: ProviderSession;
 }
 
@@ -162,6 +198,18 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       return context;
     });
 
+  const requireConnected = (method: string) =>
+    Effect.gen(function* (): Effect.fn.Return<void, ProviderAdapterRequestError> {
+      const connected = yield* broker.isConnected(input.instanceId);
+      if (!connected) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method,
+          detail: offlineDetail(input.instanceId),
+        });
+      }
+    });
+
   const updateSession = (context: SessionContext, patch: Partial<ProviderSession>) => {
     context.session = {
       ...context.session,
@@ -170,6 +218,40 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     };
   };
 
+  const clearActiveTurn = (
+    context: SessionContext,
+    patch: Omit<Partial<ProviderSession>, "activeTurnId">,
+  ) => {
+    const { activeTurnId: _activeTurnId, ...session } = context.session;
+    context.session = { ...session, ...patch, updatedAt: nowIso() };
+  };
+
+  const trackTurn = (context: SessionContext, turnId: TurnId) => {
+    if (context.turns.some((turn) => turn.id === turnId)) return;
+    context.turns.push({ id: turnId, items: [] });
+    while (context.turns.length > MAX_RETAINED_TURNS) context.turns.shift();
+  };
+
+  const recordCompletedItem = (context: SessionContext, turnId: string, payload: unknown) => {
+    const turn = context.turns.find((entry) => entry.id === turnId);
+    if (!turn) return;
+    turn.items.push(payload);
+    while (turn.items.length > MAX_RETAINED_ITEMS_PER_TURN) turn.items.shift();
+  };
+
+  /**
+   * Every session-scoped plugin frame names the session it belongs to. If we do
+   * not hold that session — because the thread was stopped, or the plugin is
+   * still emitting for a session we already tore down — the frame has no thread
+   * context on this side, and forwarding it would inject deltas and item rows
+   * into a thread T3 no longer tracks. `session.exited` always guarded this;
+   * the guard belongs on every session-scoped frame.
+   */
+  const contextMatchesSession = (
+    context: SessionContext | undefined,
+    message: { readonly sessionId: HermesGatewaySessionId },
+  ): context is SessionContext => context?.hermesSessionId === message.sessionId;
+
   const toRuntimeEvent = (message: PluginMessage) =>
     Effect.gen(function* (): Effect.fn.Return<
       ProviderRuntimeEvent | undefined,
@@ -177,29 +259,26 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     > {
       if (!("threadId" in message)) return undefined;
       const context = sessions.get(message.threadId);
-      const base = yield* eventBase(message);
       switch (message.type) {
         case "session.ready":
           return undefined;
         case "turn.started": {
-          if (context) {
-            updateSession(context, {
-              status: "running",
-              activeTurnId: TurnId.make(message.turnId),
-            });
-            if (!context.turns.some((turn) => turn.id === message.turnId)) {
-              context.turns.push({ id: TurnId.make(message.turnId), items: [] });
-            }
-          }
+          if (!contextMatchesSession(context, message)) return undefined;
+          updateSession(context, {
+            status: "running",
+            activeTurnId: TurnId.make(message.turnId),
+          });
+          trackTurn(context, TurnId.make(message.turnId));
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "turn.started",
             payload: {},
           };
         }
-        case "content.delta":
+        case "content.delta": {
+          if (!contextMatchesSession(context, message)) return undefined;
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "content.delta",
             payload: {
               streamKind: message.streamKind,
@@ -207,9 +286,11 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
               ...(message.contentIndex !== undefined ? { contentIndex: message.contentIndex } : {}),
             },
           };
-        case "content.snapshot":
+        }
+        case "content.snapshot": {
+          if (!contextMatchesSession(context, message)) return undefined;
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "content.snapshot",
             payload: {
               streamKind: message.streamKind,
@@ -217,9 +298,11 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
               ...(message.contentIndex !== undefined ? { contentIndex: message.contentIndex } : {}),
             },
           };
+        }
         case "item.started":
         case "item.updated":
         case "item.completed": {
+          if (!contextMatchesSession(context, message)) return undefined;
           const data = sanitizeHermesItemData(message.itemType, message.data);
           const payload = {
             itemType: message.itemType,
@@ -228,14 +311,21 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             ...(message.detail ? { detail: message.detail } : {}),
             ...(data ? { data } : {}),
           };
-          const turn = context?.turns.find((entry) => entry.id === message.turnId);
-          if (turn && message.type === "item.completed") turn.items.push(payload);
-          return { ...base, type: message.type, payload };
+          if (message.type === "item.completed") {
+            recordCompletedItem(context, message.turnId, payload);
+          }
+          return { ...(yield* eventBase(message)), type: message.type, payload };
         }
         case "request.opened": {
+          if (!contextMatchesSession(context, message)) return undefined;
+          context.pendingApprovals.set(message.requestId, {
+            requestId: message.requestId,
+            turnId: TurnId.make(message.turnId),
+            requestType: message.requestType,
+          });
           const args = sanitizeHermesRequestArgs(message.requestType, message.args);
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "request.opened",
             payload: {
               requestType: message.requestType,
@@ -244,35 +334,47 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             },
           };
         }
-        case "request.resolved":
+        case "request.resolved": {
+          if (!contextMatchesSession(context, message)) return undefined;
+          context.pendingApprovals.delete(message.requestId);
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "request.resolved",
             payload: {
               requestType: message.requestType,
               ...(message.decision ? { decision: message.decision } : {}),
             },
           };
-        case "user-input.requested":
+        }
+        case "user-input.requested": {
+          if (!contextMatchesSession(context, message)) return undefined;
+          context.pendingUserInputs.set(message.requestId, {
+            requestId: message.requestId,
+            turnId: TurnId.make(message.turnId),
+            requestType: "tool_user_input",
+          });
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "user-input.requested",
             payload: { questions: message.questions },
           };
-        case "user-input.resolved":
+        }
+        case "user-input.resolved": {
+          if (!contextMatchesSession(context, message)) return undefined;
+          context.pendingUserInputs.delete(message.requestId);
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "user-input.resolved",
             payload: { answers: message.answers },
           };
-        case "turn.completed":
-          if (context?.session.activeTurnId === message.turnId) {
-            updateSession(context, { status: message.state === "failed" ? "error" : "ready" });
-            const { activeTurnId: _activeTurnId, ...session } = context.session;
-            context.session = session;
+        }
+        case "turn.completed": {
+          if (!contextMatchesSession(context, message)) return undefined;
+          if (context.session.activeTurnId === message.turnId) {
+            clearActiveTurn(context, { status: message.state === "failed" ? "error" : "ready" });
           }
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "turn.completed",
             payload: {
               state: message.state,
@@ -280,26 +382,26 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
               ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
             },
           };
-        case "turn.aborted":
-          if (context?.session.activeTurnId === message.turnId) {
-            const { activeTurnId: _activeTurnId, ...session } = context.session;
-            context.session = { ...session, status: "ready", updatedAt: nowIso() };
+        }
+        case "turn.aborted": {
+          if (!contextMatchesSession(context, message)) return undefined;
+          if (context.session.activeTurnId === message.turnId) {
+            clearActiveTurn(context, { status: "ready" });
           }
           return {
-            ...base,
+            ...(yield* eventBase(message)),
             type: "turn.aborted",
             payload: { reason: message.reason },
           };
-        case "session.exited":
-          if (!context || context.hermesSessionId !== message.sessionId) {
-            return undefined;
-          }
-          const { activeTurnId: _activeTurnId, ...session } = context.session;
-          context.session = {
-            ...session,
-            status: message.recoverable ? "error" : "closed",
-            updatedAt: nowIso(),
-          };
+        }
+        case "session.exited": {
+          if (!contextMatchesSession(context, message)) return undefined;
+          clearActiveTurn(context, { status: message.recoverable ? "error" : "closed" });
+          const base = yield* eventBase(message);
+          // A session Hermes has exited is gone on both sides. Dropping it here
+          // is what keeps the sessions map from growing without bound across a
+          // long-lived process's reconnect cycles.
+          sessions.delete(message.threadId);
           return {
             ...base,
             type: "session.exited",
@@ -309,6 +411,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
               exitKind: message.recoverable ? "error" : "graceful",
             },
           };
+        }
         default:
           return undefined;
       }
@@ -324,16 +427,183 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     Effect.forkScoped,
   );
 
-  const startSession: HermesAdapterShape["startSession"] = Effect.fn("startSession")(
-    function* (sessionInput) {
-      const connected = yield* broker.isConnected(input.instanceId);
-      if (!connected) {
-        return yield* new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "session.ensure",
-          detail: `Hermes gateway instance '${input.instanceId}' is offline.`,
+  /**
+   * Close out every interaction the user could still be looking at.
+   *
+   * The plugin keeps `_approval_requests` / `_user_input_requests` in plain
+   * dicts, so a plugin restart forgets them: any decision the user makes
+   * afterwards is answered `request-not-found` and the turn waits on a reply
+   * that can never arrive. We deliberately do not decide on the user's behalf —
+   * each request is marked resolved with no decision, which clears the pending
+   * badge, and a warning row explains why it disappeared.
+   */
+  const cancelPendingInteractions = (context: SessionContext, reason: string) =>
+    Effect.gen(function* () {
+      const approvals = Array.from(context.pendingApprovals.values());
+      const userInputs = Array.from(context.pendingUserInputs.values());
+      context.pendingApprovals.clear();
+      context.pendingUserInputs.clear();
+      if (approvals.length === 0 && userInputs.length === 0) return;
+      for (const pending of approvals) {
+        yield* emit({
+          ...(yield* eventBase({
+            threadId: context.session.threadId,
+            turnId: pending.turnId,
+            requestId: pending.requestId,
+          })),
+          type: "request.resolved",
+          payload: { requestType: pending.requestType },
         });
       }
+      for (const pending of userInputs) {
+        yield* emit({
+          ...(yield* eventBase({
+            threadId: context.session.threadId,
+            turnId: pending.turnId,
+            requestId: pending.requestId,
+          })),
+          type: "user-input.resolved",
+          payload: { answers: {} },
+        });
+      }
+      yield* emit({
+        ...(yield* eventBase({ threadId: context.session.threadId })),
+        type: "runtime.warning",
+        payload: {
+          message: `${approvals.length + userInputs.length} pending Hermes request(s) were cancelled without a decision: ${reason} Nothing was approved or denied on your behalf — ask again to re-run the step.`,
+        },
+      });
+    });
+
+  /**
+   * Settle a thread whose turn did not survive the reconnect.
+   *
+   * Without this the turn stays "running" forever: Hermes never sends a
+   * terminal frame for a turn its restarted plugin no longer knows about, and
+   * orchestration's conflict gate rejects any later frame naming it. A failed
+   * `turn.completed` is the terminal event orchestration already folds into
+   * thread state.
+   */
+  const settleDeadTurn = (context: SessionContext, turnId: TurnId, message: string) =>
+    Effect.gen(function* () {
+      clearActiveTurn(context, { status: "error", lastError: message });
+      yield* emit({
+        ...(yield* eventBase({ threadId: context.session.threadId, turnId })),
+        type: "turn.completed",
+        payload: { state: "failed", errorMessage: message },
+      });
+    });
+
+  const resumeSessionAfterReconnect = (context: SessionContext) =>
+    Effect.gen(function* () {
+      const threadId = context.session.threadId;
+      const previousTurnId = context.session.activeTurnId;
+      yield* cancelPendingInteractions(
+        context,
+        "the Hermes gateway reconnected and the plugin no longer holds them.",
+      );
+      const outcome = yield* broker
+        .request(input.instanceId, {
+          type: "session.ensure",
+          protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+          requestId: yield* requestId,
+          threadId,
+          resumeSessionId: context.hermesSessionId,
+        })
+        .pipe(Effect.result);
+
+      // Anything other than a clean session.ready leaves us unable to tell
+      // whether Hermes is still generating, with no channel to ask. Leaving the
+      // thread "running" would hang it, so it settles with the reason spelled
+      // out instead.
+      const failure =
+        outcome._tag === "Failure"
+          ? `Hermes could not resume this thread after reconnecting: ${outcome.failure.detail}`
+          : outcome.success.type === "protocol.error"
+            ? `Hermes rejected the resume for this thread: ${outcome.success.message}`
+            : outcome.success.type !== "session.ready" || outcome.success.threadId !== threadId
+              ? `Hermes returned '${outcome.success.type}' instead of session.ready while resuming this thread.`
+              : undefined;
+      if (failure !== undefined) {
+        if (previousTurnId) return yield* settleDeadTurn(context, previousTurnId, failure);
+        updateSession(context, { status: "error", lastError: failure });
+        return;
+      }
+      if (outcome._tag !== "Success" || outcome.success.type !== "session.ready") return;
+      const ready = outcome.success;
+
+      // The session may have been stopped or exited while the request was in
+      // flight; do not resurrect it.
+      if (sessions.get(threadId) !== context) return;
+
+      // Hermes owns the session id and a restarted plugin mints a new one.
+      // Adopting it is what keeps the inbound context guard matching.
+      context.hermesSessionId = ready.sessionId;
+      updateSession(context, {
+        resumeCursor: {
+          protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+          sessionId: ready.sessionId,
+        } satisfies HermesGatewayResumeCursor,
+      });
+
+      const activeTurnId = ready.activeTurnId;
+      if (activeTurnId !== undefined) {
+        // The turn outlived the socket. Keep streaming into it and emit nothing
+        // disruptive — what follows belongs to the turn the UI already renders.
+        updateSession(context, { status: "running", activeTurnId });
+        trackTurn(context, activeTurnId);
+        return;
+      }
+
+      if (previousTurnId) {
+        yield* settleDeadTurn(
+          context,
+          previousTurnId,
+          "The Hermes gateway reconnected without this turn — it did not survive the disconnect.",
+        );
+        return;
+      }
+      updateSession(context, { status: "ready" });
+    });
+
+  /**
+   * The reconnect trigger. Protocol v2 already carries `activeTurnId` on
+   * `session.ready` for exactly this case, but nothing re-issued
+   * `session.ensure` after a drop — so a surviving turn's eventual
+   * `turn.completed` arrived for a turn orchestration had written off, was
+   * rejected by its conflict gate, and the thread never settled.
+   */
+  let connected = yield* broker.isConnected(input.instanceId);
+  yield* broker.streamStatuses.pipe(
+    Stream.filter((status) => status.instanceId === input.instanceId),
+    Stream.runForEach((status) =>
+      Effect.gen(function* () {
+        const nowConnected = status.status === "connected";
+        const reconnected = nowConnected && !connected;
+        connected = nowConnected;
+        if (!reconnected) return;
+        yield* Effect.forEach(
+          Array.from(sessions.values()),
+          (context) =>
+            resumeSessionAfterReconnect(context).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.hermes.resume-after-reconnect-failed", {
+                  instanceId: input.instanceId,
+                  threadId: context.session.threadId,
+                  cause,
+                }),
+              ),
+            ),
+          { discard: true },
+        );
+      }),
+    ),
+    Effect.forkScoped,
+  );
+
+  const startSession: HermesAdapterShape["startSession"] = Effect.fn("startSession")(
+    function* (sessionInput) {
+      yield* requireConnected("session.ensure");
       if (sessionInput.providerInstanceId && sessionInput.providerInstanceId !== input.instanceId) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
@@ -393,6 +663,8 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
         session,
         hermesSessionId: response.sessionId,
         turns: activeTurnId === undefined ? [] : [{ id: activeTurnId, items: [] }],
+        pendingApprovals: new Map(),
+        pendingUserInputs: new Map(),
       });
       yield* emit({
         ...(yield* eventBase({ threadId: sessionInput.threadId })),
@@ -429,6 +701,10 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       });
     }
     const activeTurnId = context.session.activeTurnId;
+    const method = activeTurnId ? "turn.steer" : "turn.start";
+    // Checked before the request so an offline gateway fails immediately with
+    // an actionable message instead of parking on the broker's request timeout.
+    yield* requireConnected(method);
     const turnId = activeTurnId ?? TurnId.make(`hermes-turn-${yield* randomId}`);
     const outboundRequestId = yield* requestId;
     const response = yield* broker.request(input.instanceId, {
@@ -443,7 +719,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     if (response.type !== "turn.started") {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
-        method: activeTurnId ? "turn.steer" : "turn.start",
+        method,
         detail:
           response.type === "protocol.error"
             ? response.message
@@ -451,6 +727,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       });
     }
     updateSession(context, { status: "running", activeTurnId: turnId });
+    trackTurn(context, turnId);
     return {
       threadId: turnInput.threadId,
       turnId,
@@ -468,6 +745,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
         const context = yield* findContext(threadId);
         const turnId = selectedTurnId ?? context.session.activeTurnId;
         if (!turnId) return;
+        yield* requireConnected("turn.interrupt");
         yield* broker.send(input.instanceId, {
           type: "turn.interrupt",
           protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
@@ -487,6 +765,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             issue: "The Hermes session has no active turn.",
           });
         }
+        yield* requireConnected("approval.respond");
         yield* broker.send(input.instanceId, {
           type: "approval.respond",
           protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
@@ -496,6 +775,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
           turnId: context.session.activeTurnId,
           decision,
         });
+        context.pendingApprovals.delete(selectedRequestId);
       }),
     respondToUserInput: (threadId, selectedRequestId, answers) =>
       Effect.gen(function* () {
@@ -507,6 +787,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             issue: "The Hermes session has no active turn.",
           });
         }
+        yield* requireConnected("user-input.respond");
         yield* broker.send(input.instanceId, {
           type: "user-input.respond",
           protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
@@ -516,19 +797,31 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
           turnId: context.session.activeTurnId,
           answers,
         });
+        context.pendingUserInputs.delete(selectedRequestId);
       }),
     stopSession: (threadId) =>
       Effect.gen(function* () {
         const context = yield* findContext(threadId);
-        if (yield* broker.isConnected(input.instanceId)) {
-          yield* broker.send(input.instanceId, {
-            type: "session.stop",
-            protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
-            requestId: yield* requestId,
-            threadId,
-            sessionId: context.hermesSessionId,
+        if (!(yield* broker.isConnected(input.instanceId))) {
+          // The stop was never delivered: Hermes still owns this thread and
+          // keeps generating. Deleting our state here would orphan it — frames
+          // arriving after a reconnect would have no session to match, and the
+          // user would have no way to stop it. Keep the session so the reconnect
+          // path can resume it and a later stop can actually land.
+          updateSession(context, { status: "error", lastError: offlineDetail(input.instanceId) });
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session.stop",
+            detail: offlineDetail(input.instanceId),
           });
         }
+        yield* broker.send(input.instanceId, {
+          type: "session.stop",
+          protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+          requestId: yield* requestId,
+          threadId,
+          sessionId: context.hermesSessionId,
+        });
         updateSession(context, { status: "closed" });
         sessions.delete(threadId);
       }),
@@ -538,6 +831,8 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       findContext(threadId).pipe(
         Effect.map((context) => ({
           threadId,
+          // Bounded to the most recent turns/items — older history lives in the
+          // orchestration projections, not in adapter memory.
           turns: context.turns,
         })),
       ),
@@ -554,9 +849,23 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
         ),
       ),
     stopAll: () =>
-      Effect.forEach(Array.from(sessions.keys()), (threadId) => adapter.stopSession(threadId), {
-        discard: true,
-      }),
+      Effect.forEach(
+        Array.from(sessions.keys()),
+        (threadId) =>
+          // A stop that could not be delivered (typically: the gateway is
+          // offline) must not abort the sweep or fail shutdown. The session is
+          // deliberately left in place rather than orphaned.
+          adapter.stopSession(threadId).pipe(
+            Effect.catchTag("ProviderAdapterRequestError", (error) =>
+              Effect.logWarning("provider.hermes.stop-session-undeliverable", {
+                instanceId: input.instanceId,
+                threadId,
+                detail: error.detail,
+              }),
+            ),
+          ),
+        { discard: true },
+      ),
     streamEvents: Stream.fromPubSub(events),
   };
 

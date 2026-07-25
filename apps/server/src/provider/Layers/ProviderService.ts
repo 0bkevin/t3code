@@ -330,14 +330,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         event.turnId !== undefined &&
         persistedActiveTurnId === event.turnId;
       const isSessionExit = event.type === "session.exited";
+      // `turn.started` and a terminal event that closes the active turn are
+      // opposite transitions and must not share a branch. Folded together they
+      // persisted "running" for every settled turn — including a *failed* one,
+      // which is the lie this split removes.
+      //
+      // A non-failed terminal still writes "running": this status describes the
+      // session, not the turn (`toRuntimeStatus` maps both ready and running to
+      // it), and the settled turn is expressed by `activeTurnId: null` below.
+      // "stopped" is reserved for sessions that are actually gone — the reaper
+      // skips those, so using it for an idle session would strand it.
       const status =
-        event.type === "turn.started" || terminalMatchesActiveTurn
+        event.type === "turn.started"
           ? "running"
-          : isSessionExit
-            ? event.payload.recoverable === true || event.payload.exitKind === "error"
+          : terminalMatchesActiveTurn
+            ? event.type === "turn.completed" && event.payload.state === "failed"
               ? "error"
-              : "stopped"
-            : undefined;
+              : "running"
+            : isSessionExit
+              ? event.payload.recoverable === true || event.payload.exitKind === "error"
+                ? "error"
+                : "stopped"
+              : undefined;
       const activeTurnId =
         event.type === "turn.started"
           ? (event.turnId ?? persistedActiveTurnId)

@@ -393,10 +393,40 @@ export type OpenCodeSettings = typeof OpenCodeSettings.Type;
  * Hermes is a remotely managed runtime. Its model, process, and session
  * configuration remain on the paired Hermes instance, so T3 exposes no
  * binary, home, working-directory, or model settings.
+ *
+ * What this config *does* carry is the durable half of a paired gateway:
+ * `connectorUrl` and `revoked`. Together with the envelope's `displayName`
+ * they are the enrollment facts that must survive a restart. They live here —
+ * a normal read-modify-write settings field — rather than in the secret store,
+ * which has no listing API, no index, and no transactions.
+ *
+ * The credential itself deliberately stays in `ServerSecretStore`; that is
+ * what it is for. And volatile liveness (last connection time, session count,
+ * plugin/Hermes versions, reported model) is deliberately **absent**: it lives
+ * only in broker memory, because the provider instance registry closes an
+ * instance's scope whenever this envelope changes, which would stop every live
+ * Hermes session on every reconnect.
+ *
+ * Both fields are hidden from the provider settings form: they are managed
+ * through the Hermes enrollment flow, not hand-edited.
  */
 export const HermesSettings = makeProviderSettingsSchema({
   enabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
+    Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+  ),
+  /**
+   * The connector URL shown in the enrollment command. Optional so an
+   * instance that has been configured but never enrolled decodes cleanly.
+   */
+  connectorUrl: Schema.optionalKey(TrimmedString).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+  ),
+  /**
+   * Whether the gateway credential has been revoked. Absent means "not
+   * revoked", so pre-existing envelopes decode without migration.
+   */
+  revoked: Schema.optionalKey(Schema.Boolean).pipe(
     Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
   ),
 });
@@ -552,6 +582,8 @@ const OpenCodeSettingsPatch = Schema.Struct({
 
 const HermesSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
+  connectorUrl: Schema.optionalKey(TrimmedString),
+  revoked: Schema.optionalKey(Schema.Boolean),
 });
 
 export const ServerSettingsPatch = Schema.Struct({

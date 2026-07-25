@@ -1346,6 +1346,75 @@ routing.layer("ProviderServiceLive routing", (it) => {
         }
       }
 
+      // A *failed* completion of the active turn must persist "error". This
+      // shared a ternary branch with turn.started and wrote "running" for every
+      // settled turn, failed ones included.
+      yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "hello again",
+        attachments: [],
+      });
+      yield* advanceTestClock(50);
+      routing.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-runtime-status-failed-completion"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:02.500Z",
+        threadId: session.threadId,
+        turnId: asTurnId(`turn-${String(session.threadId)}`),
+        payload: {
+          state: "failed",
+          errorMessage: "Hermes could not resume this thread after reconnecting.",
+        },
+      });
+      yield* advanceTestClock(50);
+
+      const afterFailedCompletion = yield* runtimeRepository.getByThreadId({
+        threadId: session.threadId,
+      });
+      assert.equal(Option.isSome(afterFailedCompletion), true);
+      if (Option.isSome(afterFailedCompletion)) {
+        assert.equal(afterFailedCompletion.value.status, "error");
+        const payload = afterFailedCompletion.value.runtimePayload;
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          assert.equal("activeTurnId" in payload ? payload.activeTurnId : undefined, null);
+        }
+      }
+
+      // A matching turn.aborted settles the same way, minus the error.
+      yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "hello once more",
+        attachments: [],
+      });
+      yield* advanceTestClock(50);
+      routing.codex.emit({
+        type: "turn.aborted",
+        eventId: asEventId("evt-runtime-status-active-abort"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:02.750Z",
+        threadId: session.threadId,
+        turnId: asTurnId(`turn-${String(session.threadId)}`),
+        payload: { reason: "interrupted" },
+      });
+      yield* advanceTestClock(50);
+
+      const afterAbort = yield* runtimeRepository.getByThreadId({
+        threadId: session.threadId,
+      });
+      assert.equal(Option.isSome(afterAbort), true);
+      if (Option.isSome(afterAbort)) {
+        assert.equal(afterAbort.value.status, "running");
+        const payload = afterAbort.value.runtimePayload;
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          assert.equal("activeTurnId" in payload ? payload.activeTurnId : undefined, null);
+          assert.equal(
+            "lastRuntimeEvent" in payload ? payload.lastRuntimeEvent : undefined,
+            "turn.aborted",
+          );
+        }
+      }
+
       routing.codex.emit({
         type: "session.exited",
         eventId: asEventId("evt-runtime-status-session-exit"),
