@@ -16,7 +16,11 @@ const testState = vi.hoisted(() => ({
 const restartStore = vi.hoisted(() => ({
   expect: vi.fn(),
   clear: vi.fn(),
-  expectation: vi.fn(() => ({ expected: false, sawDisconnect: false })),
+  expected: vi.fn(() => false),
+}));
+
+const environmentState = vi.hoisted(() => ({
+  useEnvironment: vi.fn(() => ({ connection: { phase: "connected" } })),
 }));
 
 const hooks = vi.hoisted(() => {
@@ -94,9 +98,12 @@ vi.mock("~/serverRestartStore", async (importOriginal) => {
     ...actual,
     expectServerRestart: restartStore.expect,
     clearExpectedServerRestart: restartStore.clear,
-    useServerRestartExpectation: restartStore.expectation,
+    useServerRestartExpected: restartStore.expected,
   };
 });
+vi.mock("~/state/environments", () => ({
+  useEnvironment: environmentState.useEnvironment,
+}));
 
 import { ServerUpdateAction } from "./ServerUpdateAction";
 
@@ -139,8 +146,10 @@ describe("ServerUpdateAction", () => {
     testState.toast.mockReset();
     restartStore.expect.mockReset();
     restartStore.clear.mockReset();
-    restartStore.expectation.mockReset();
-    restartStore.expectation.mockReturnValue({ expected: false, sawDisconnect: false });
+    restartStore.expected.mockReset();
+    restartStore.expected.mockReturnValue(false);
+    environmentState.useEnvironment.mockReset();
+    environmentState.useEnvironment.mockReturnValue({ connection: { phase: "connected" } });
   });
 
   afterEach(() => {

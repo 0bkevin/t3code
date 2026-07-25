@@ -25,12 +25,7 @@ import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
-import {
-  clearExpectedServerRestart,
-  isServerRestarting,
-  markServerRestartDisconnected,
-  useServerRestartExpectation,
-} from "~/serverRestartStore";
+import { isServerRestarting, useServerRestartExpected } from "~/serverRestartStore";
 import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   parseScopedThreadKey,
@@ -1630,28 +1625,25 @@ function ChatViewContent(props: ChatViewProps) {
   // present them calmly and retry fast instead of letting exponential
   // backoff strand the client asleep when the server comes back.
   const activeEnvironmentId = activeEnvironment?.environmentId ?? null;
-  const activeEnvironmentRestartExpectation = useServerRestartExpectation(activeEnvironmentId);
-  const activeEnvironmentRestartExpected = activeEnvironmentRestartExpectation.expected;
-  const activeEnvironmentRestartSawDisconnect = activeEnvironmentRestartExpectation.sawDisconnect;
+  const activeEnvironmentRestartExpected = useServerRestartExpected(activeEnvironmentId);
   const activeEnvironmentRestarting = isServerRestarting({
-    expectation: activeEnvironmentRestartExpectation,
+    restartExpected: activeEnvironmentRestartExpected,
     environmentUnavailable: activeEnvironmentUnavailable,
   });
+  // While the restart is expected, poke the supervisor on a flat cadence so a
+  // 16-second backoff sleep cannot outlast the server's return. The window is
+  // never cleared here: it is armed while the old server is still connected,
+  // so nothing observed on the connection distinguishes "before the restart"
+  // from "after it". Presentation already gates on the environment being
+  // away, which makes a lingering window inert once the replacement is back.
   useEffect(() => {
-    if (activeEnvironmentId === null || !activeEnvironmentRestartExpected) {
+    if (
+      activeEnvironmentId === null ||
+      !activeEnvironmentRestartExpected ||
+      activeEnvironmentConnectionPhase === "connected"
+    ) {
       return;
     }
-    if (activeEnvironmentConnectionPhase === "connected") {
-      // The window is armed while the old server is still connected, so a
-      // healthy connection only ends it once the restart's disconnect has
-      // actually been seen. Clearing on any connected render would destroy
-      // the window before the restart it exists to cover.
-      if (activeEnvironmentRestartSawDisconnect) {
-        clearExpectedServerRestart(activeEnvironmentId);
-      }
-      return;
-    }
-    markServerRestartDisconnected(activeEnvironmentId);
     // Only wake the supervisor out of a backoff sleep; while an attempt is
     // live, retryNow would interrupt and restart it.
     if (activeEnvironment?.connection.retryAt == null) {
@@ -1666,7 +1658,6 @@ function ChatViewContent(props: ChatViewProps) {
     activeEnvironmentConnectionPhase,
     activeEnvironmentId,
     activeEnvironmentRestartExpected,
-    activeEnvironmentRestartSawDisconnect,
     retryEnvironment,
   ]);
   const handleReconnectActiveEnvironment = useCallback(

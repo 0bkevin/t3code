@@ -14,9 +14,10 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import {
   clearExpectedServerRestart,
   expectServerRestart,
-  isServerRestartSettled,
-  useServerRestartExpectation,
+  isExpectedRestartResolved,
+  useServerRestartExpected,
 } from "~/serverRestartStore";
+import { useEnvironment } from "~/state/environments";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { manualServerUpdateCommand } from "~/versionSkew";
@@ -104,17 +105,46 @@ export function ServerUpdateAction({
   );
 
   // The restart is scheduled after the RPC is acknowledged, so a rejected
-  // restart (or a replacement that comes back on the old version) can no
-  // longer be reported through the call. Without this, the mismatch banner
-  // would keep its only action disabled for the full safety window. Once the
-  // restart window has closed and this component is still mounted — meaning
-  // the skew is unresolved and the server is answering again — release the
-  // action so the user can retry immediately.
-  const restartSettled = isServerRestartSettled(useServerRestartExpectation(environmentId));
+  // restart — or a replacement that comes back on the old version — can no
+  // longer be reported through the call. Without a release path the mismatch
+  // banner would keep its only action disabled for the full safety window.
+  //
+  // The signal is the environment going away and then answering again while
+  // this component is still mounted: still mounted means the skew is
+  // unresolved, so whatever restarted did not deliver the new version.
+  // Deliberately independent of the restart window, which is UI presentation
+  // state and can lapse or be re-armed for unrelated reasons.
+  // Two ways that resolves, because a rejected restart may or may not have
+  // taken the connection down with it:
+  //   - the environment went away and came back, so something restarted but
+  //     did not deliver the new version; or
+  //   - the restart window lapsed with the connection never dropping, so no
+  //     restart ever happened (systemd refused it and rolled back).
+  const connectionPhase = useEnvironment(environmentId)?.connection.phase ?? null;
+  const connectionUnavailable = connectionPhase !== null && connectionPhase !== "connected";
+  const restartExpected = useServerRestartExpected(environmentId);
+  const wentAwayRef = useRef(false);
+  const sawWindowRef = useRef(false);
+  if (connectionUnavailable) {
+    wentAwayRef.current = true;
+  }
+  if (restartExpected) {
+    // Guards against reading a not-yet-rendered window as "already lapsed"
+    // in the render between the click and the store update landing.
+    sawWindowRef.current = true;
+  }
+  const restartResolved = isExpectedRestartResolved({
+    sawRestartWindow: sawWindowRef.current,
+    restartExpected,
+    wentAway: wentAwayRef.current,
+    environmentUnavailable: connectionUnavailable,
+  });
   useEffect(() => {
-    if (!restartSettled || !inFlightRef.current) {
+    if (!restartResolved || !inFlightRef.current) {
       return;
     }
+    wentAwayRef.current = false;
+    sawWindowRef.current = false;
     if (expiryRef.current !== null) {
       clearTimeout(expiryRef.current);
       expiryRef.current = null;
@@ -122,7 +152,7 @@ export function ServerUpdateAction({
     attemptRef.current += 1;
     inFlightRef.current = false;
     setPending(false);
-  }, [restartSettled]);
+  }, [restartResolved]);
 
   const handleUpdate = () => {
     // Synchronous re-entry guard: setPending is async, so a rapid
