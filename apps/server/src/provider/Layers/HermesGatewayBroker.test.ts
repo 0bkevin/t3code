@@ -87,7 +87,7 @@ const hello = (
   type: "connection.hello",
   requestId: HermesGatewayRequestId.make(`hello-${protocolVersion}`),
   protocolVersion,
-  pluginVersion: "0.1.0",
+  pluginVersion: "0.2.0",
   hermesVersion: "1.0.0",
   capabilities: { ...capabilities, protocolVersion },
   authentication,
@@ -157,7 +157,7 @@ it.effect("authenticates before applying incompatible connection state", () =>
             instanceId,
             credential: HermesGatewayCredential.make("not-the-real-credential"),
           },
-          2,
+          3,
         ),
         secondTransport,
       ),
@@ -185,7 +185,7 @@ it.effect("authenticates before applying incompatible connection state", () =>
             instanceId,
             credential: first.accepted.credential!,
           },
-          2,
+          3,
         ),
         secondTransport,
       ),
@@ -201,7 +201,7 @@ it.effect("authenticates before applying incompatible connection state", () =>
     });
     const incompatibleEnrollment = yield* Effect.flip(
       broker.registerConnection(
-        hello({ type: "enrollment-token", token: otherEnrollment.oneTimeToken }, 2),
+        hello({ type: "enrollment-token", token: otherEnrollment.oneTimeToken }, 3),
         secondTransport,
       ),
     );

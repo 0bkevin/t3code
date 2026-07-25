@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
@@ -304,6 +305,44 @@ function requestKindFromCanonicalRequestType(
     default:
       return undefined;
   }
+}
+
+function genericProviderActivityId(event: ProviderRuntimeEvent): EventId {
+  return EventId.make(
+    event.itemId
+      ? `provider:${event.provider}:item:${event.itemId}`
+      : `provider:${event.provider}:event:${event.eventId}`,
+  );
+}
+
+function genericProviderActivity(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+  maybeSequence: { readonly sequence?: number },
+): OrchestrationThreadActivity {
+  const title = event.payload.title ? truncateDetail(event.payload.title, 120) : undefined;
+  const detail = event.payload.detail ? truncateDetail(event.payload.detail) : undefined;
+  const status =
+    event.payload.status ?? (event.type === "item.completed" ? "completed" : "inProgress");
+
+  return {
+    id: genericProviderActivityId(event),
+    createdAt: event.createdAt,
+    tone: "info",
+    kind: "provider.activity",
+    summary: title ?? (detail ? truncateDetail(detail, 120) : "Provider activity"),
+    payload: {
+      itemType: event.payload.itemType,
+      status,
+      ...(event.itemId ? { providerItemId: event.itemId } : {}),
+      ...(title ? { title } : {}),
+      ...(detail ? { detail } : {}),
+    },
+    turnId: toTurnId(event.turnId) ?? null,
+    ...maybeSequence,
+  };
 }
 
 export function runtimeEventToActivities(
@@ -614,6 +653,9 @@ export function runtimeEventToActivities(
     }
 
     case "item.updated": {
+      if (event.payload.itemType === "unknown") {
+        return [genericProviderActivity(event, maybeSequence)];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -637,6 +679,9 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
+      if (event.payload.itemType === "unknown") {
+        return [genericProviderActivity(event, maybeSequence)];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -659,6 +704,9 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
+      if (event.payload.itemType === "unknown") {
+        return [genericProviderActivity(event, maybeSequence)];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -898,6 +946,9 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+
+  const replaceBufferedAssistantText = (messageId: MessageId, text: string) =>
+    Cache.set(bufferedAssistantTextByMessageId, messageId, text);
 
   const takeBufferedAssistantText = (messageId: MessageId) =>
     Cache.getOption(bufferedAssistantTextByMessageId, messageId).pipe(
@@ -1463,6 +1514,10 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      const assistantSnapshot =
+        event.type === "content.snapshot" && event.payload.streamKind === "assistant_text"
+          ? event.payload.text
+          : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
@@ -1504,6 +1559,53 @@ const make = Effect.gen(function* () {
             ...(turnId ? { turnId } : {}),
             createdAt: now,
           });
+        }
+      }
+
+      if (assistantSnapshot !== undefined) {
+        const turnId = toTurnId(event.turnId);
+        const assistantMessageId = yield* getOrCreateAssistantMessageId({
+          threadId: thread.id,
+          event,
+          ...(turnId ? { turnId } : {}),
+        });
+        if (turnId) {
+          yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
+        }
+
+        const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
+          serverSettingsService.getSettings,
+          (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
+        );
+        if (assistantDeliveryMode === "buffered") {
+          const detailedThread = yield* getLoadedThreadDetail();
+          const hasProjectedMessage =
+            findMessageById(detailedThread?.messages ?? [], assistantMessageId) !== undefined;
+          if (hasProjectedMessage) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.message.assistant.replace",
+              commandId: yield* providerCommandId(event, "assistant-snapshot-buffer-spill"),
+              threadId: thread.id,
+              messageId: assistantMessageId,
+              text: assistantSnapshot,
+              ...(turnId ? { turnId } : {}),
+              createdAt: now,
+            });
+            yield* clearBufferedAssistantText(assistantMessageId);
+          } else {
+            yield* replaceBufferedAssistantText(assistantMessageId, assistantSnapshot);
+          }
+        } else {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.assistant.replace",
+            commandId: yield* providerCommandId(event, "assistant-snapshot"),
+            threadId: thread.id,
+            messageId: assistantMessageId,
+            text: assistantSnapshot,
+            ...(turnId ? { turnId } : {}),
+            createdAt: now,
+          });
+          yield* clearBufferedAssistantText(assistantMessageId);
         }
       }
 

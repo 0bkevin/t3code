@@ -1280,6 +1280,101 @@ routing.layer("ProviderServiceLive routing", (it) => {
           assert.equal(runtimePayload.lastRuntimeEvent, "provider.sendTurn");
         }
       }
+
+      yield* advanceTestClock(50);
+      routing.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-runtime-status-stale-completion"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: session.threadId,
+        turnId: asTurnId("turn-from-an-older-request"),
+        payload: {
+          state: "completed",
+        },
+      });
+      yield* advanceTestClock(50);
+
+      const afterStaleCompletion = yield* runtimeRepository.getByThreadId({
+        threadId: session.threadId,
+      });
+      assert.equal(Option.isSome(afterStaleCompletion), true);
+      if (Option.isSome(afterStaleCompletion)) {
+        assert.equal(afterStaleCompletion.value.status, "running");
+        const payload = afterStaleCompletion.value.runtimePayload;
+        assert.equal(payload !== null && typeof payload === "object", true);
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          assert.equal(
+            "activeTurnId" in payload ? payload.activeTurnId : undefined,
+            `turn-${String(session.threadId)}`,
+          );
+          assert.equal(
+            "lastRuntimeEvent" in payload ? payload.lastRuntimeEvent : undefined,
+            "turn.completed",
+          );
+        }
+      }
+
+      routing.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-runtime-status-active-completion"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        threadId: session.threadId,
+        turnId: asTurnId(`turn-${String(session.threadId)}`),
+        payload: {
+          state: "completed",
+        },
+      });
+      yield* advanceTestClock(50);
+
+      const afterActiveCompletion = yield* runtimeRepository.getByThreadId({
+        threadId: session.threadId,
+      });
+      assert.equal(Option.isSome(afterActiveCompletion), true);
+      if (Option.isSome(afterActiveCompletion)) {
+        assert.equal(afterActiveCompletion.value.status, "running");
+        const payload = afterActiveCompletion.value.runtimePayload;
+        assert.equal(payload !== null && typeof payload === "object", true);
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          assert.equal("activeTurnId" in payload ? payload.activeTurnId : undefined, null);
+          assert.equal("cwd" in payload ? payload.cwd : undefined, session.cwd);
+          assert.equal(
+            "lastRuntimeEvent" in payload ? payload.lastRuntimeEvent : undefined,
+            "turn.completed",
+          );
+        }
+      }
+
+      routing.codex.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-runtime-status-session-exit"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:03.000Z",
+        threadId: session.threadId,
+        payload: {
+          exitKind: "error",
+          recoverable: true,
+        },
+      });
+      yield* advanceTestClock(50);
+
+      const afterSessionExit = yield* runtimeRepository.getByThreadId({
+        threadId: session.threadId,
+      });
+      assert.equal(Option.isSome(afterSessionExit), true);
+      if (Option.isSome(afterSessionExit)) {
+        assert.equal(afterSessionExit.value.status, "error");
+        const payload = afterSessionExit.value.runtimePayload;
+        assert.equal(payload !== null && typeof payload === "object", true);
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          assert.equal("activeTurnId" in payload ? payload.activeTurnId : undefined, null);
+          assert.equal(
+            "lastRuntimeEvent" in payload ? payload.lastRuntimeEvent : undefined,
+            "session.exited",
+          );
+        }
+      }
     }),
   );
 

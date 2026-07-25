@@ -67,12 +67,12 @@ describe("Hermes gateway management contracts", () => {
       status: "connected",
       connectorUrl: "wss://siva.davis7.space/hermes",
       lastConnectedAt: "2026-07-23T12:00:00.000Z",
-      pluginVersion: "0.1.0",
+      pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
       activeSessionCount: 2,
-      protocolVersion: 1,
+      protocolVersion: 2,
       capabilities: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         streaming: true,
         activity: true,
         approvals: true,
@@ -86,10 +86,10 @@ describe("Hermes gateway management contracts", () => {
     const upgradeRequired = decodeInstanceStatus({
       ...connected,
       status: "upgrade-required",
-      protocolVersion: 2,
+      protocolVersion: 3,
       capabilities: null,
     });
-    expect(upgradeRequired.protocolVersion).toBe(2);
+    expect(upgradeRequired.protocolVersion).toBe(3);
     expect(upgradeRequired.capabilities).toBeNull();
   });
 });
@@ -99,11 +99,11 @@ describe("Hermes gateway handshake", () => {
     const hello = decodeHello({
       type: "connection.hello",
       requestId: "hello-1",
-      protocolVersion: 1,
-      pluginVersion: "0.1.0",
+      protocolVersion: 2,
+      pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
       capabilities: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         streaming: true,
         activity: true,
         approvals: true,
@@ -123,11 +123,11 @@ describe("Hermes gateway handshake", () => {
     const hello = decodeHello({
       type: "connection.hello",
       requestId: "hello-2",
-      protocolVersion: 1,
-      pluginVersion: "0.1.0",
+      protocolVersion: 2,
+      pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
       capabilities: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         streaming: true,
         activity: true,
         approvals: true,
@@ -148,11 +148,11 @@ describe("Hermes gateway handshake", () => {
     const hello = decodeHello({
       type: "connection.hello",
       requestId: "hello-future",
-      protocolVersion: 2,
-      pluginVersion: "0.2.0",
+      protocolVersion: 3,
+      pluginVersion: "0.3.0",
       hermesVersion: "2.0.0",
       capabilities: {
-        protocolVersion: 2,
+        protocolVersion: 3,
         streaming: true,
         activity: true,
         approvals: true,
@@ -165,14 +165,14 @@ describe("Hermes gateway handshake", () => {
       },
     });
 
-    expect(hello.protocolVersion).toBe(2);
-    expect(hello.capabilities.protocolVersion).toBe(2);
+    expect(hello.protocolVersion).toBe(3);
+    expect(hello.capabilities.protocolVersion).toBe(3);
   });
 
   it("reserves attachments for a future protocol version", () => {
     expect(() =>
       decodeCapabilities({
-        protocolVersion: 1,
+        protocolVersion: 2,
         streaming: true,
         activity: true,
         approvals: true,
@@ -183,12 +183,12 @@ describe("Hermes gateway handshake", () => {
   });
 });
 
-describe("T3 to Hermes v1 messages", () => {
+describe("T3 to Hermes v2 messages", () => {
   it("decodes session creation and opaque resume cursors", () => {
     expect(
       decodeT3Message({
         type: "session.ensure",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: "ensure-1",
         threadId: "thread-1",
         resumeSessionId: "opaque/hermes/session/value",
@@ -197,7 +197,7 @@ describe("T3 to Hermes v1 messages", () => {
 
     expect(
       decodeResumeCursor({
-        protocolVersion: 1,
+        protocolVersion: 2,
         sessionId: "opaque/hermes/session/value",
       }).sessionId,
     ).toBe("opaque/hermes/session/value");
@@ -205,7 +205,7 @@ describe("T3 to Hermes v1 messages", () => {
 
   it("decodes start and steering as distinct turn operations", () => {
     const context = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: "turn-command-1",
       threadId: "thread-1",
       sessionId: "session-1",
@@ -219,7 +219,7 @@ describe("T3 to Hermes v1 messages", () => {
 
   it("decodes interrupt, approval, structured input, stop, and ping", () => {
     const turnContext = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       threadId: "thread-1",
       sessionId: "session-1",
       turnId: "turn-1",
@@ -251,7 +251,7 @@ describe("T3 to Hermes v1 messages", () => {
     expect(
       decodeT3Message({
         type: "session.stop",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: "stop-1",
         threadId: "thread-1",
         sessionId: "session-1",
@@ -260,7 +260,7 @@ describe("T3 to Hermes v1 messages", () => {
     expect(
       decodeT3Message({
         type: "ping",
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: "ping-1",
         sentAt: "2026-07-23T12:00:00.000Z",
       }).type,
@@ -271,7 +271,8 @@ describe("T3 to Hermes v1 messages", () => {
     expect(() =>
       decodeT3Message({
         type: "ping",
-        protocolVersion: 2,
+        // Protocol v1 peers must upgrade before sending post-handshake frames.
+        protocolVersion: 1,
         requestId: "ping-1",
         sentAt: "2026-07-23T12:00:00.000Z",
       }),
@@ -279,25 +280,38 @@ describe("T3 to Hermes v1 messages", () => {
   });
 });
 
-describe("Hermes to T3 v1 events", () => {
+describe("Hermes to T3 v2 events", () => {
   const turnContext = {
-    protocolVersion: 1,
+    protocolVersion: 2,
     threadId: "thread-1",
     sessionId: "session-1",
     turnId: "turn-1",
   };
 
   it("decodes session readiness, turn start, streaming text, and completion", () => {
-    expect(
-      decodePluginMessage({
-        type: "session.ready",
-        protocolVersion: 1,
-        requestId: "ensure-1",
-        threadId: "thread-1",
-        sessionId: "session-1",
-        resumed: false,
-      }).type,
-    ).toBe("session.ready");
+    const legacyReady = decodePluginMessage({
+      type: "session.ready",
+      protocolVersion: 2,
+      requestId: "ensure-1",
+      threadId: "thread-1",
+      sessionId: "session-1",
+      resumed: false,
+    });
+    expect(legacyReady.type).toBe("session.ready");
+    const activeReady = decodePluginMessage({
+      type: "session.ready",
+      protocolVersion: 2,
+      requestId: "ensure-2",
+      threadId: "thread-1",
+      sessionId: "session-1",
+      resumed: true,
+      activeTurnId: "turn-1",
+    });
+    expect(activeReady.type).toBe("session.ready");
+    if (activeReady.type !== "session.ready") {
+      throw new Error("expected session.ready");
+    }
+    expect(activeReady.activeTurnId).toBe("turn-1");
     expect(
       decodePluginMessage({
         type: "turn.started",
@@ -313,6 +327,19 @@ describe("Hermes to T3 v1 events", () => {
         ...turnContext,
       }).type,
     ).toBe("content.delta");
+    const snapshot = decodePluginMessage({
+      type: "content.snapshot",
+      streamKind: "assistant_text",
+      text: "",
+      itemId: "message-1",
+      contentIndex: 0,
+      ...turnContext,
+    });
+    expect(snapshot.type).toBe("content.snapshot");
+    if (snapshot.type !== "content.snapshot") {
+      throw new Error("expected content.snapshot");
+    }
+    expect(snapshot.text).toBe("");
     expect(
       decodePluginMessage({
         type: "turn.completed",

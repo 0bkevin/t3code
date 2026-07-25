@@ -14,7 +14,7 @@ SPEC.loader.exec_module(protocol)
 
 
 class ProtocolTests(unittest.TestCase):
-    def test_hello_matches_v1_contract(self):
+    def test_hello_matches_v2_contract(self):
         hello = protocol.connection_hello(
             hermes_version="0.19.0",
             authentication={"type": "enrollment-token", "token": "once"},
@@ -22,15 +22,16 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(hello["type"], "connection.hello")
         self.assertEqual(hello["requestId"], "request-1")
-        self.assertEqual(hello["protocolVersion"], 1)
+        self.assertEqual(hello["protocolVersion"], 2)
         self.assertFalse(hello["capabilities"]["attachments"])
         self.assertTrue(hello["capabilities"]["streaming"])
 
     def test_server_frame_validation_is_closed(self):
         with self.assertRaisesRegex(ValueError, "unsupported"):
-            protocol.validate_server_frame({"type": "made.up", "protocolVersion": 1})
+            protocol.validate_server_frame({"type": "made.up", "protocolVersion": 2})
         with self.assertRaisesRegex(ValueError, "version"):
-            protocol.validate_server_frame({"type": "ping", "protocolVersion": 2})
+            # Protocol v1 peers must upgrade before sending runtime frames.
+            protocol.validate_server_frame({"type": "ping", "protocolVersion": 1})
 
     def test_tool_types_map_to_canonical_items(self):
         self.assertEqual(

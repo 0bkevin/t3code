@@ -477,6 +477,49 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
 
+  effectIt.effect("adopts a recovered active provider turn while binding a pending start", () =>
+    Effect.gen(function* () {
+      const recoveredTurnId = asTurnId("turn-recovered-during-start");
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          startSessionEffect: (session) =>
+            Effect.succeed({
+              ...session,
+              status: "running",
+              activeTurnId: recoveredTurnId,
+            }),
+        }),
+      );
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-recovered-provider-turn"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-recovered-provider-turn"),
+          role: "user",
+          text: "steer the recovered turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+      const readModel = yield* Effect.promise(() => harness.readModel());
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+
+      expect(thread?.session?.status).toBe("running");
+      expect(thread?.session?.activeTurnId).toBe(recoveredTurnId);
+      expect(thread?.latestTurn).toMatchObject({
+        turnId: recoveredTurnId,
+        state: "running",
+      });
+    }),
+  );
+
   effectIt.effect("projects starting before a slow provider session finishes", () =>
     Effect.gen(function* () {
       const releaseStart = yield* Deferred.make<void>();

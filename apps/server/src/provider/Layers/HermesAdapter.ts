@@ -107,11 +107,6 @@ export const sanitizeHermesRequestArgs = (
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 };
 
-export const shouldProjectHermesTurnStarted = (
-  pendingSteerRequestIds: Set<HermesGatewayRequestId>,
-  incomingRequestId: HermesGatewayRequestId,
-) => !pendingSteerRequestIds.delete(incomingRequestId);
-
 export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input: {
   readonly instanceId: ProviderInstanceId;
 }) {
@@ -119,7 +114,6 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
   const broker = yield* HermesGatewayBroker;
   const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, SessionContext>();
-  const pendingSteerRequestIds = new Set<HermesGatewayRequestId>();
 
   const randomId = crypto.randomUUIDv4.pipe(
     Effect.mapError(
@@ -188,10 +182,6 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
         case "session.ready":
           return undefined;
         case "turn.started": {
-          const isSteeringAcknowledgement = !shouldProjectHermesTurnStarted(
-            pendingSteerRequestIds,
-            message.requestId,
-          );
           if (context) {
             updateSession(context, {
               status: "running",
@@ -201,7 +191,6 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
               context.turns.push({ id: TurnId.make(message.turnId), items: [] });
             }
           }
-          if (isSteeringAcknowledgement) return undefined;
           return {
             ...base,
             type: "turn.started",
@@ -215,6 +204,16 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             payload: {
               streamKind: message.streamKind,
               delta: message.delta,
+              ...(message.contentIndex !== undefined ? { contentIndex: message.contentIndex } : {}),
+            },
+          };
+        case "content.snapshot":
+          return {
+            ...base,
+            type: "content.snapshot",
+            payload: {
+              streamKind: message.streamKind,
+              text: message.text,
               ...(message.contentIndex !== undefined ? { contentIndex: message.contentIndex } : {}),
             },
           };
@@ -267,7 +266,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             payload: { answers: message.answers },
           };
         case "turn.completed":
-          if (context) {
+          if (context?.session.activeTurnId === message.turnId) {
             updateSession(context, { status: message.state === "failed" ? "error" : "ready" });
             const { activeTurnId: _activeTurnId, ...session } = context.session;
             context.session = session;
@@ -282,7 +281,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             },
           };
         case "turn.aborted":
-          if (context) {
+          if (context?.session.activeTurnId === message.turnId) {
             const { activeTurnId: _activeTurnId, ...session } = context.session;
             context.session = { ...session, status: "ready", updatedAt: nowIso() };
           }
@@ -292,7 +291,15 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
             payload: { reason: message.reason },
           };
         case "session.exited":
-          if (context) updateSession(context, { status: message.recoverable ? "error" : "closed" });
+          if (!context || context.hermesSessionId !== message.sessionId) {
+            return undefined;
+          }
+          const { activeTurnId: _activeTurnId, ...session } = context.session;
+          context.session = {
+            ...session,
+            status: message.recoverable ? "error" : "closed",
+            updatedAt: nowIso(),
+          };
           return {
             ...base,
             type: "session.exited",
@@ -365,13 +372,15 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
         });
       }
       const createdAt = nowIso();
+      const activeTurnId = response.activeTurnId;
       const session = {
         provider: PROVIDER,
         providerInstanceId: input.instanceId,
-        status: "ready",
+        status: activeTurnId === undefined ? "ready" : "running",
         runtimeMode: sessionInput.runtimeMode,
         ...(sessionInput.cwd !== undefined ? { cwd: sessionInput.cwd } : {}),
         ...(sessionInput.modelSelection?.model ? { model: sessionInput.modelSelection.model } : {}),
+        ...(activeTurnId !== undefined ? { activeTurnId } : {}),
         threadId: sessionInput.threadId,
         resumeCursor: {
           protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
@@ -383,7 +392,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       sessions.set(sessionInput.threadId, {
         session,
         hermesSessionId: response.sessionId,
-        turns: [],
+        turns: activeTurnId === undefined ? [] : [{ id: activeTurnId, items: [] }],
       });
       yield* emit({
         ...(yield* eventBase({ threadId: sessionInput.threadId })),
@@ -422,22 +431,16 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     const activeTurnId = context.session.activeTurnId;
     const turnId = activeTurnId ?? TurnId.make(`hermes-turn-${yield* randomId}`);
     const outboundRequestId = yield* requestId;
-    if (activeTurnId) pendingSteerRequestIds.add(outboundRequestId);
-    const response = yield* broker
-      .request(input.instanceId, {
-        type: activeTurnId ? "turn.steer" : "turn.start",
-        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
-        requestId: outboundRequestId,
-        threadId: turnInput.threadId,
-        sessionId: context.hermesSessionId,
-        turnId,
-        text,
-      })
-      .pipe(
-        Effect.tapError(() => Effect.sync(() => pendingSteerRequestIds.delete(outboundRequestId))),
-      );
+    const response = yield* broker.request(input.instanceId, {
+      type: activeTurnId ? "turn.steer" : "turn.start",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      requestId: outboundRequestId,
+      threadId: turnInput.threadId,
+      sessionId: context.hermesSessionId,
+      turnId,
+      text,
+    });
     if (response.type !== "turn.started") {
-      pendingSteerRequestIds.delete(outboundRequestId);
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: activeTurnId ? "turn.steer" : "turn.start",

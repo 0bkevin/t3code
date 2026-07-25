@@ -27,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -35,7 +36,9 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -192,7 +195,10 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | ProjectionTurnRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -234,9 +240,13 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const projectionTurnLayer = ProjectionTurnRepositoryLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(projectionTurnLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
@@ -247,6 +257,7 @@ describe("ProviderRuntimeIngestion", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const turnRepository = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -315,6 +326,7 @@ describe("ProviderRuntimeIngestion", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
+      turnRepository,
       drain,
     };
   }
@@ -946,6 +958,209 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("replaces streaming assistant text from authoritative snapshots without changing identity", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const itemId = asItemId("item-streaming-snapshot");
+    const turnId = asTurnId("turn-streaming-snapshot");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-streaming-snapshot-delta"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: "draft",
+      },
+    });
+    harness.emit({
+      type: "content.snapshot",
+      eventId: asEventId("evt-streaming-snapshot-replace"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        text: "authoritative",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-streaming-snapshot-tail"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: " answer",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-streaming-snapshot-completed"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === `assistant:${itemId}` &&
+          message.text === "authoritative answer" &&
+          !message.streaming,
+      ),
+    );
+    expect(thread.messages.filter((message) => message.id === `assistant:${itemId}`)).toHaveLength(
+      1,
+    );
+  });
+
+  it("applies repeated empty snapshots idempotently to a streaming assistant message", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const itemId = asItemId("item-empty-snapshot");
+    const turnId = asTurnId("turn-empty-snapshot");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-empty-snapshot-delta"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: "remove me",
+      },
+    });
+    for (const eventId of ["evt-empty-snapshot-one", "evt-empty-snapshot-two"]) {
+      harness.emit({
+        type: "content.snapshot",
+        eventId: asEventId(eventId),
+        provider: ProviderDriverKind.make("hermes"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId,
+        payload: {
+          streamKind: "assistant_text",
+          text: "",
+        },
+      });
+    }
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-empty-snapshot-completed"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === `assistant:${itemId}` && message.text === "" && !message.streaming,
+      ),
+    );
+    expect(thread.messages.filter((message) => message.id === `assistant:${itemId}`)).toHaveLength(
+      1,
+    );
+  });
+
+  it("authoritatively replaces buffered assistant text before completion", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const itemId = asItemId("item-buffered-snapshot");
+    const turnId = asTurnId("turn-buffered-snapshot");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-buffered-snapshot-delta"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: "draft",
+      },
+    });
+    harness.emit({
+      type: "content.snapshot",
+      eventId: asEventId("evt-buffered-snapshot-replace"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        text: "final",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-buffered-snapshot-tail"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: " answer",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-buffered-snapshot-completed"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === `assistant:${itemId}` &&
+          message.text === "final answer" &&
+          !message.streaming,
+      ),
+    );
+    expect(thread.messages.filter((message) => message.id === `assistant:${itemId}`)).toHaveLength(
+      1,
+    );
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1572,6 +1787,85 @@ describe("ProviderRuntimeIngestion", () => {
     expect(threadAfterSteer.latestTurn?.turnId).toBe(newTurnId);
     expect(threadAfterSteer.latestTurn?.state).toBe("running");
   });
+
+  effectIt.effect(
+    "consumes a follow-up pending start when Hermes acknowledges the active turn",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness());
+        const threadId = asThreadId("thread-1");
+        const activeTurnId = asTurnId("turn-hermes-active");
+        const followUpMessageId = asMessageId("msg-hermes-follow-up");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+
+        harness.setProviderSession({
+          provider: ProviderDriverKind.make("hermes"),
+          status: "running",
+          runtimeMode: "approval-required",
+          threadId,
+          createdAt,
+          updatedAt: createdAt,
+          activeTurnId,
+        });
+        harness.emit({
+          type: "turn.started",
+          eventId: asEventId("evt-hermes-active-turn-started"),
+          provider: ProviderDriverKind.make("hermes"),
+          createdAt,
+          threadId,
+          turnId: activeTurnId,
+        });
+        yield* Effect.promise(() =>
+          waitForThread(
+            harness.readModel,
+            (thread) =>
+              thread.session?.status === "running" && thread.session.activeTurnId === activeTurnId,
+            2_000,
+            threadId,
+          ),
+        );
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-hermes-follow-up"),
+          threadId,
+          message: {
+            messageId: followUpMessageId,
+            role: "user",
+            text: "steer the active Hermes turn",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+
+        const pendingBeforeAck = yield* harness.turnRepository.getPendingTurnStartByThreadId({
+          threadId,
+        });
+        expect(Option.getOrUndefined(pendingBeforeAck)?.messageId).toBe(followUpMessageId);
+
+        harness.emit({
+          type: "turn.started",
+          eventId: asEventId("evt-hermes-follow-up-ack"),
+          provider: ProviderDriverKind.make("hermes"),
+          createdAt: "2026-01-01T00:00:02.000Z",
+          threadId,
+          turnId: activeTurnId,
+        });
+        yield* Effect.promise(() => harness.drain());
+
+        const pendingAfterAck = yield* harness.turnRepository.getPendingTurnStartByThreadId({
+          threadId,
+        });
+        const activeTurn = yield* harness.turnRepository.getByTurnId({
+          threadId,
+          turnId: activeTurnId,
+        });
+        expect(Option.isNone(pendingAfterAck)).toBe(true);
+        expect(Option.getOrUndefined(activeTurn)?.pendingMessageId).toBe(followUpMessageId);
+      }),
+  );
 
   it("does not mark the source proposed plan implemented for an unrelated turn.started when no thread active turn is tracked", async () => {
     const harness = await createHarness();
@@ -2543,6 +2837,65 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("replaces a spilled buffered projection when an authoritative snapshot arrives", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const itemId = asItemId("item-buffer-spill-snapshot");
+    const turnId = asTurnId("turn-buffer-spill-snapshot");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-buffer-spill-before-snapshot"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: "x".repeat(40_000),
+      },
+    });
+    harness.emit({
+      type: "content.snapshot",
+      eventId: asEventId("evt-buffer-spill-snapshot"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        text: "authoritative after spill",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-buffer-spill-snapshot-completed"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === `assistant:${itemId}` &&
+          message.text === "authoritative after spill" &&
+          !message.streaming,
+      ),
+    );
+    expect(thread.messages.filter((message) => message.id === `assistant:${itemId}`)).toHaveLength(
+      1,
+    );
+  });
+
   it("does not duplicate assistant completion when item.completed is followed by turn.completed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -2847,6 +3200,89 @@ describe("ProviderRuntimeIngestion", () => {
         (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
       ),
     ).toBe(true);
+  });
+
+  it("upserts unknown provider item lifecycle into one meaningful activity", async () => {
+    const harness = await createHarness();
+    const itemId = asItemId("item-generic-activity");
+    const turnId = asTurnId("turn-generic-activity");
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-generic-activity-started"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "unknown",
+        status: "inProgress",
+        title: "Reading skill hermes-agent",
+        detail: "Opening the skill instructions.",
+        data: { unsafeRawPayload: "not projected" },
+      },
+    });
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-generic-activity-updated"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "unknown",
+        status: "inProgress",
+        title: "Reading skill hermes-agent",
+        detail: "Parsing the workflow.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-generic-activity-completed"),
+      provider: ProviderDriverKind.make("hermes"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "unknown",
+        status: "completed",
+        title: "Read skill hermes-agent",
+        detail: "Skill instructions loaded.",
+      },
+    });
+
+    const activityId = `provider:hermes:item:${itemId}`;
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === activityId &&
+          activity.payload &&
+          typeof activity.payload === "object" &&
+          (activity.payload as Record<string, unknown>).status === "completed",
+      ),
+    );
+    const activities = thread.activities.filter((activity) => activity.id === activityId);
+    const activity = activities[0];
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+
+    expect(activities).toHaveLength(1);
+    expect(activity?.kind).toBe("provider.activity");
+    expect(activity?.tone).toBe("info");
+    expect(activity?.summary).toBe("Read skill hermes-agent");
+    expect(payload).toMatchObject({
+      itemType: "unknown",
+      status: "completed",
+      providerItemId: itemId,
+      title: "Read skill hermes-agent",
+      detail: "Skill instructions loaded.",
+    });
+    expect(payload?.data).toBeUndefined();
   });
 
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {

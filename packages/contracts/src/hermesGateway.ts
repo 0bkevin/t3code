@@ -21,7 +21,7 @@ import { ProviderApprovalDecision, ProviderUserInputAnswers } from "./orchestrat
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { CanonicalItemType, CanonicalRequestType, UserInputQuestion } from "./providerRuntime.ts";
 
-export const HERMES_GATEWAY_PROTOCOL_VERSION = 1 as const;
+export const HERMES_GATEWAY_PROTOCOL_VERSION = 2 as const;
 
 export const HermesGatewayProtocolVersion = Schema.Literal(HERMES_GATEWAY_PROTOCOL_VERSION);
 export type HermesGatewayProtocolVersion = typeof HermesGatewayProtocolVersion.Type;
@@ -87,7 +87,7 @@ export type HermesGatewayCapabilities = typeof HermesGatewayCapabilities.Type;
  *
  * This deliberately permits capability shapes from a newer protocol so T3 can
  * return a structured `version-incompatible` rejection instead of failing the
- * WebSocket frame decoder. Accepted v1 connections must subsequently validate
+ * WebSocket frame decoder. Accepted v2 connections must subsequently validate
  * this advertisement with `HermesGatewayCapabilities`.
  */
 export const HermesGatewayHelloCapabilities = Schema.Struct({
@@ -112,7 +112,7 @@ export type HermesGatewayConnectionState = typeof HermesGatewayConnectionState.T
 /**
  * Public instance state used by settings and provider-picker surfaces.
  *
- * `protocolVersion` is not restricted to v1 here so the UI can report the
+ * `protocolVersion` is not restricted to v2 here so the UI can report the
  * unsupported version observed from a plugin that needs an upgrade.
  */
 export const HermesGatewayInstanceStatus = Schema.Struct({
@@ -241,7 +241,7 @@ export type HermesGatewayAuthentication = typeof HermesGatewayAuthentication.Typ
 /**
  * `protocolVersion` accepts any positive integer at the initial boundary so
  * T3 can reject incompatible plugins with a structured upgrade response.
- * Once accepted, all remaining v1 frames use the literal v1 schema.
+ * Once accepted, all remaining v2 frames use the literal v2 schema.
  */
 export const HermesGatewayConnectionHello = Schema.Struct({
   type: Schema.Literal("connection.hello"),
@@ -380,6 +380,7 @@ export const HermesGatewaySessionReady = Schema.Struct({
   threadId: ThreadId,
   sessionId: HermesGatewaySessionId,
   resumed: Schema.Boolean,
+  activeTurnId: Schema.optional(TurnId),
 });
 export type HermesGatewaySessionReady = typeof HermesGatewaySessionReady.Type;
 
@@ -411,6 +412,17 @@ export const HermesGatewayContentDelta = Schema.Struct({
   contentIndex: Schema.optional(NonNegativeInt),
 });
 export type HermesGatewayContentDelta = typeof HermesGatewayContentDelta.Type;
+
+export const HermesGatewayContentSnapshot = Schema.Struct({
+  type: Schema.Literal("content.snapshot"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  ...HermesGatewayTurnContext.fields,
+  itemId: Schema.optional(HermesGatewayItemId),
+  streamKind: HermesGatewayContentStreamKind,
+  text: Schema.String,
+  contentIndex: Schema.optional(NonNegativeInt),
+});
+export type HermesGatewayContentSnapshot = typeof HermesGatewayContentSnapshot.Type;
 
 export const HermesGatewayItemStatus = Schema.Literals([
   "inProgress",
@@ -569,6 +581,7 @@ export const HermesGatewayPluginToT3Message = Schema.Union([
   HermesGatewaySessionReady,
   HermesGatewayTurnStarted,
   HermesGatewayContentDelta,
+  HermesGatewayContentSnapshot,
   HermesGatewayItemStarted,
   HermesGatewayItemUpdated,
   HermesGatewayItemCompleted,

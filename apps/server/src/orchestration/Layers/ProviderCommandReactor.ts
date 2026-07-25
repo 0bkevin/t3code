@@ -527,8 +527,7 @@ const make = Effect.gen(function* () {
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             runtimeMode: desiredRuntimeMode,
-            // Provider turn ids are not orchestration turn ids.
-            activeTurnId: null,
+            activeTurnId: session.activeTurnId ?? null,
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
           },

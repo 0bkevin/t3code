@@ -35,6 +35,13 @@ from .protocol import (
 
 logger = logging.getLogger(__name__)
 
+_T3_HOME_CHANNEL_NOTICE = (
+    "📬 No home channel is set for T3. "
+    "A home channel is where Hermes delivers cron job results "
+    "and cross-platform messages.\n\n"
+    "Type /sethome to make this chat your home channel, or ignore to skip."
+)
+
 
 def _hermes_version() -> str:
     try:
@@ -163,6 +170,10 @@ class T3PlatformAdapter(BasePlatformAdapter):
         if turn is None:
             return SendResult(success=False, error="no active T3 turn")
         try:
+            if content == _T3_HOME_CHANNEL_NOTICE:
+                if bool((metadata or {}).get("notify")):
+                    await self._complete_turn(turn)
+                return SendResult(success=True, message_id=turn.message_id)
             await self._emit_assistant_content(turn, content)
             if bool((metadata or {}).get("notify")):
                 await self._complete_turn(turn)
@@ -187,6 +198,10 @@ class T3PlatformAdapter(BasePlatformAdapter):
         if turn is None:
             return SendResult(success=False, error="no active T3 turn")
         try:
+            if content == _T3_HOME_CHANNEL_NOTICE:
+                if finalize:
+                    await self._complete_turn(turn)
+                return SendResult(success=True, message_id=message_id)
             await self._emit_assistant_content(turn, content)
             if finalize:
                 await self._complete_turn(turn)
@@ -343,6 +358,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
         self._sessions[thread_id] = session_id
         self._active_session_threads.add(thread_id)
         self._thread_by_session[session_id] = thread_id
+        active_turn = self._active_turns.get(thread_id)
         await self._send_frame(
             frame(
                 "session.ready",
@@ -350,6 +366,11 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 threadId=thread_id,
                 sessionId=session_id,
                 resumed=bool(resume_id and resume_id == session_id),
+                **(
+                    {"activeTurnId": active_turn.turn_id}
+                    if active_turn is not None
+                    else {}
+                ),
             )
         )
         await self._send_status()
@@ -647,7 +668,6 @@ class T3PlatformAdapter(BasePlatformAdapter):
     async def _emit_assistant_content(self, turn: _TurnState, content: str) -> None:
         visible = str(content or "").replace(" ▉", "").replace("▉", "")
         if not turn.assistant_started:
-            turn.assistant_started = True
             await self._send_frame(
                 frame(
                     "item.started",
@@ -660,9 +680,9 @@ class T3PlatformAdapter(BasePlatformAdapter):
                     title="Hermes response",
                 )
             )
+            turn.assistant_started = True
         if visible.startswith(turn.visible_text):
             delta = visible[len(turn.visible_text) :]
-            turn.visible_text = visible
             if delta:
                 await self._send_frame(
                     frame(
@@ -676,13 +696,21 @@ class T3PlatformAdapter(BasePlatformAdapter):
                         contentIndex=0,
                     )
                 )
+                turn.visible_text = visible
         elif visible != turn.visible_text:
-            # Hermes' public platform edit hook exposes cumulative rendered text,
-            # but the v1 T3 delta contract has no replacement operation. Preserve
-            # the valid prefix and report the rare rewrite as generic activity.
-            await self._emit_generic_activity(
-                turn, "Hermes revised already-streamed text; replacement is deferred."
+            await self._send_frame(
+                frame(
+                    "content.snapshot",
+                    threadId=turn.thread_id,
+                    sessionId=turn.session_id,
+                    turnId=turn.turn_id,
+                    itemId=turn.message_id,
+                    streamKind="assistant_text",
+                    text=visible,
+                    contentIndex=0,
+                )
             )
+            turn.visible_text = visible
 
     async def _complete_turn(self, turn: _TurnState) -> None:
         if self._active_turns.get(turn.thread_id) is not turn:
@@ -737,9 +765,9 @@ class T3PlatformAdapter(BasePlatformAdapter):
         normalized_detail = str(detail)[:2_000]
         if turn.generic_activity_detail == normalized_detail:
             return
-        turn.generic_activity_detail = normalized_detail
-        if turn.generic_activity_id is None:
-            turn.generic_activity_id = item_id()
+        activity_id = turn.generic_activity_id
+        if activity_id is None:
+            activity_id = item_id()
             event_type = "item.started"
         else:
             event_type = "item.updated"
@@ -749,13 +777,15 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 threadId=turn.thread_id,
                 sessionId=turn.session_id,
                 turnId=turn.turn_id,
-                itemId=turn.generic_activity_id,
+                itemId=activity_id,
                 itemType="unknown",
                 status="inProgress",
                 title="Hermes activity",
                 detail=normalized_detail,
             )
         )
+        turn.generic_activity_id = activity_id
+        turn.generic_activity_detail = normalized_detail
 
     def emit_tool_started(
         self,

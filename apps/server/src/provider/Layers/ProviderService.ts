@@ -162,6 +162,19 @@ function readPersistedCwd(
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function readPersistedActiveTurnId(
+  runtimePayload: ProviderSessionDirectory.ProviderRuntimeBinding["runtimePayload"],
+): string | null | undefined {
+  if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
+    return undefined;
+  }
+  const rawActiveTurnId =
+    "activeTurnId" in runtimePayload ? runtimePayload.activeTurnId : undefined;
+  return typeof rawActiveTurnId === "string" || rawActiveTurnId === null
+    ? rawActiveTurnId
+    : undefined;
+}
+
 const dieOnMissingBindingInstanceId = (
   operation: string,
   payload: {
@@ -281,6 +294,70 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     });
 
+  const persistRuntimeLifecycle = (event: ProviderRuntimeEvent) =>
+    Effect.gen(function* () {
+      if (
+        event.type !== "turn.started" &&
+        event.type !== "turn.completed" &&
+        event.type !== "turn.aborted" &&
+        event.type !== "session.exited"
+      ) {
+        return;
+      }
+
+      const binding = Option.getOrUndefined(yield* directory.getBinding(event.threadId));
+      if (!binding || event.providerInstanceId === undefined) {
+        return;
+      }
+      if (
+        binding.provider !== event.provider ||
+        binding.providerInstanceId !== event.providerInstanceId
+      ) {
+        yield* Effect.logWarning("provider.session.runtime.lifecycle-binding-mismatch", {
+          threadId: event.threadId,
+          eventProvider: event.provider,
+          eventProviderInstanceId: event.providerInstanceId,
+          bindingProvider: binding.provider,
+          bindingProviderInstanceId: binding.providerInstanceId,
+          eventType: event.type,
+        });
+        return;
+      }
+
+      const persistedActiveTurnId = readPersistedActiveTurnId(binding.runtimePayload);
+      const terminalMatchesActiveTurn =
+        (event.type === "turn.completed" || event.type === "turn.aborted") &&
+        event.turnId !== undefined &&
+        persistedActiveTurnId === event.turnId;
+      const isSessionExit = event.type === "session.exited";
+      const status =
+        event.type === "turn.started" || terminalMatchesActiveTurn
+          ? "running"
+          : isSessionExit
+            ? event.payload.recoverable === true || event.payload.exitKind === "error"
+              ? "error"
+              : "stopped"
+            : undefined;
+      const activeTurnId =
+        event.type === "turn.started"
+          ? (event.turnId ?? persistedActiveTurnId)
+          : terminalMatchesActiveTurn || isSessionExit
+            ? null
+            : persistedActiveTurnId;
+
+      yield* directory.upsert({
+        threadId: event.threadId,
+        provider: event.provider,
+        providerInstanceId: event.providerInstanceId,
+        ...(status !== undefined ? { status } : {}),
+        runtimePayload: {
+          ...(activeTurnId !== undefined ? { activeTurnId } : {}),
+          lastRuntimeEvent: event.type,
+          lastRuntimeEventAt: event.createdAt,
+        },
+      });
+    });
+
   const processRuntimeEvent = (
     source: {
       readonly instanceId: ProviderInstanceId;
@@ -293,7 +370,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(
+            persistRuntimeLifecycle(canonicalEvent).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.session.runtime.lifecycle-persist-failed", {
+                  threadId: canonicalEvent.threadId,
+                  provider: canonicalEvent.provider,
+                  providerInstanceId: canonicalEvent.providerInstanceId,
+                  eventType: canonicalEvent.type,
+                  errorTag: causeErrorTag(cause),
+                }),
+              ),
+            ),
+          ),
+          Effect.andThen(publishRuntimeEvent(canonicalEvent)),
+        ),
       ),
     );
 

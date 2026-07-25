@@ -176,11 +176,34 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.connection = FakeConnection()
         self.adapter._connection = self.connection
 
+    async def _start_turn(self, thread_id: str, turn_id: str):
+        await self.adapter._handle_server_frame(
+            {
+                "type": "session.ensure",
+                "protocolVersion": 2,
+                "requestId": f"ensure-{thread_id}",
+                "threadId": thread_id,
+            }
+        )
+        session_id = self.adapter._sessions[thread_id]
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 2,
+                "requestId": f"start-{thread_id}",
+                "threadId": thread_id,
+                "sessionId": session_id,
+                "turnId": turn_id,
+                "text": "Start",
+            }
+        )
+        return session_id
+
     async def test_thread_ensure_start_stream_and_complete(self):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "ensure-1",
                 "threadId": "thread-1",
             }
@@ -193,7 +216,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "start-1",
                 "threadId": "thread-1",
                 "sessionId": ready["sessionId"],
@@ -216,11 +239,305 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(deltas, ["Hello", " world"])
 
+    async def test_cumulative_edits_emit_delta_snapshot_delta_then_finalize(self):
+        await self._start_turn("thread-snapshot", "turn-snapshot")
+        content_start = len(self.connection.messages)
+
+        await self.adapter.send("thread-snapshot", "Hello")
+        duplicate_start = len(self.connection.messages)
+        await self.adapter.edit_message("thread-snapshot", "message", "Hello")
+        self.assertEqual(len(self.connection.messages), duplicate_start)
+
+        await self.adapter.edit_message("thread-snapshot", "message", "Help")
+        snapshot_duplicate_start = len(self.connection.messages)
+        await self.adapter.edit_message("thread-snapshot", "message", "Help")
+        self.assertEqual(len(self.connection.messages), snapshot_duplicate_start)
+
+        await self.adapter.edit_message(
+            "thread-snapshot",
+            "message",
+            "Helpful",
+            finalize=True,
+        )
+
+        content_frames = self.connection.messages[content_start:]
+        self.assertEqual(
+            [message["type"] for message in content_frames],
+            [
+                "item.started",
+                "content.delta",
+                "content.snapshot",
+                "content.delta",
+                "item.completed",
+                "turn.completed",
+                "connection.status",
+            ],
+        )
+        self.assertEqual(content_frames[1]["delta"], "Hello")
+        self.assertEqual(content_frames[2]["text"], "Help")
+        self.assertEqual(content_frames[3]["delta"], "ful")
+
+    async def test_empty_and_duplicate_cumulative_edits_are_reconciled(self):
+        await self._start_turn("thread-empty", "turn-empty")
+        content_start = len(self.connection.messages)
+
+        await self.adapter.send("thread-empty", "")
+        duplicate_start = len(self.connection.messages)
+        await self.adapter.edit_message("thread-empty", "message", "")
+        self.assertEqual(len(self.connection.messages), duplicate_start)
+
+        await self.adapter.edit_message("thread-empty", "message", "Visible")
+        await self.adapter.edit_message("thread-empty", "message", "")
+        empty_snapshot_end = len(self.connection.messages)
+        await self.adapter.edit_message("thread-empty", "message", "")
+        self.assertEqual(len(self.connection.messages), empty_snapshot_end)
+        await self.adapter.edit_message(
+            "thread-empty",
+            "message",
+            "",
+            finalize=True,
+        )
+
+        content_frames = self.connection.messages[content_start:]
+        self.assertEqual(
+            [message["type"] for message in content_frames],
+            [
+                "item.started",
+                "content.delta",
+                "content.snapshot",
+                "item.completed",
+                "turn.completed",
+                "connection.status",
+            ],
+        )
+        self.assertEqual(content_frames[1]["delta"], "Visible")
+        self.assertEqual(content_frames[2]["text"], "")
+
+    async def test_failed_content_sends_do_not_advance_visible_text(self):
+        await self._start_turn("thread-retry", "turn-retry")
+        await self.adapter.send("thread-retry", "Hello")
+        original_send = self.connection.send
+
+        async def fail_content(message):
+            if message["type"] in {"content.delta", "content.snapshot"}:
+                raise ConnectionError("send failed")
+            await original_send(message)
+
+        self.connection.send = fail_content
+        failed = await self.adapter.edit_message(
+            "thread-retry",
+            "message",
+            "Hello world",
+        )
+        self.assertFalse(failed.success)
+        self.assertEqual(
+            self.adapter._active_turns["thread-retry"].visible_text,
+            "Hello",
+        )
+
+        self.connection.send = original_send
+        retried = await self.adapter.edit_message(
+            "thread-retry",
+            "message",
+            "Hello world",
+        )
+        self.assertTrue(retried.success)
+        self.assertEqual(self.connection.messages[-1]["delta"], " world")
+
+        self.connection.send = fail_content
+        failed_snapshot = await self.adapter.edit_message(
+            "thread-retry",
+            "message",
+            "Hi",
+        )
+        self.assertFalse(failed_snapshot.success)
+        self.assertEqual(
+            self.adapter._active_turns["thread-retry"].visible_text,
+            "Hello world",
+        )
+
+        self.connection.send = original_send
+        retried_snapshot = await self.adapter.edit_message(
+            "thread-retry",
+            "message",
+            "Hi",
+        )
+        self.assertTrue(retried_snapshot.success)
+        self.assertEqual(self.connection.messages[-1]["type"], "content.snapshot")
+        self.assertEqual(self.connection.messages[-1]["text"], "Hi")
+
+    async def test_failed_generic_activity_start_retries_the_full_lifecycle(self):
+        await self._start_turn("thread-activity-retry", "turn-activity-retry")
+        turn = self.adapter._active_turns["thread-activity-retry"]
+        original_send = self.connection.send
+
+        async def fail_activity_start(message):
+            if message["type"] == "item.started":
+                raise ConnectionError("send failed")
+            await original_send(message)
+
+        self.connection.send = fail_activity_start
+        with self.assertRaisesRegex(ConnectionError, "send failed"):
+            await self.adapter._emit_generic_activity(turn, "Reading repository")
+
+        self.assertIsNone(turn.generic_activity_id)
+        self.assertIsNone(turn.generic_activity_detail)
+
+        self.connection.send = original_send
+        await self.adapter._emit_generic_activity(turn, "Reading repository")
+        started = self.connection.messages[-1]
+        self.assertEqual(started["type"], "item.started")
+        self.assertEqual(started["detail"], "Reading repository")
+        self.assertEqual(turn.generic_activity_id, started["itemId"])
+        self.assertEqual(turn.generic_activity_detail, "Reading repository")
+
+        await self.adapter._emit_generic_activity(turn, "Running tests")
+        updated = self.connection.messages[-1]
+        self.assertEqual(updated["type"], "item.updated")
+        self.assertEqual(updated["itemId"], started["itemId"])
+        self.assertEqual(updated["detail"], "Running tests")
+
+    async def test_exact_t3_home_channel_notice_is_suppressed(self):
+        await self._start_turn("thread-notice", "turn-notice")
+        content_start = len(self.connection.messages)
+        notice = (
+            "📬 No home channel is set for T3. "
+            "A home channel is where Hermes delivers cron job results "
+            "and cross-platform messages.\n\n"
+            "Type /sethome to make this chat your home channel, or ignore to skip."
+        )
+
+        suppressed = await self.adapter.send("thread-notice", notice)
+        self.assertTrue(suppressed.success)
+        self.assertEqual(len(self.connection.messages), content_start)
+        self.assertFalse(
+            self.adapter._active_turns["thread-notice"].assistant_started
+        )
+
+        await self.adapter.edit_message(
+            "thread-notice",
+            "message",
+            "The actual Hermes response",
+            finalize=True,
+        )
+        content_frames = self.connection.messages[content_start:]
+        self.assertEqual(
+            [message["type"] for message in content_frames],
+            [
+                "item.started",
+                "content.delta",
+                "item.completed",
+                "turn.completed",
+                "connection.status",
+            ],
+        )
+        self.assertEqual(content_frames[1]["delta"], "The actual Hermes response")
+
+    async def test_terminal_send_suppresses_exact_home_notice_and_completes_turn(self):
+        await self._start_turn("thread-terminal-notice-send", "turn-terminal-notice-send")
+        content_start = len(self.connection.messages)
+        notice = (
+            "📬 No home channel is set for T3. "
+            "A home channel is where Hermes delivers cron job results "
+            "and cross-platform messages.\n\n"
+            "Type /sethome to make this chat your home channel, or ignore to skip."
+        )
+
+        suppressed = await self.adapter.send(
+            "thread-terminal-notice-send",
+            notice,
+            metadata={"notify": True},
+        )
+
+        self.assertTrue(suppressed.success)
+        self.assertNotIn("thread-terminal-notice-send", self.adapter._active_turns)
+        self.assertEqual(
+            [
+                message["type"]
+                for message in self.connection.messages[content_start:]
+            ],
+            ["turn.completed", "connection.status"],
+        )
+
+    async def test_terminal_edit_suppresses_exact_home_notice_and_completes_turn(self):
+        await self._start_turn("thread-terminal-notice-edit", "turn-terminal-notice-edit")
+        content_start = len(self.connection.messages)
+        notice = (
+            "📬 No home channel is set for T3. "
+            "A home channel is where Hermes delivers cron job results "
+            "and cross-platform messages.\n\n"
+            "Type /sethome to make this chat your home channel, or ignore to skip."
+        )
+
+        suppressed = await self.adapter.edit_message(
+            "thread-terminal-notice-edit",
+            "message",
+            notice,
+            finalize=True,
+        )
+
+        self.assertTrue(suppressed.success)
+        self.assertNotIn("thread-terminal-notice-edit", self.adapter._active_turns)
+        self.assertEqual(
+            [
+                message["type"]
+                for message in self.connection.messages[content_start:]
+            ],
+            ["turn.completed", "connection.status"],
+        )
+
+    async def test_near_match_home_channel_text_is_not_suppressed(self):
+        await self._start_turn("thread-notice-near-match", "turn-notice-near-match")
+        content_start = len(self.connection.messages)
+        await self.adapter.edit_message(
+            "thread-notice-near-match",
+            "message",
+            (
+                "📬 No home channel is set for T3. "
+                "A home channel is where Hermes delivers cron job results "
+                "and cross-platform messages.\n\n"
+                "Type /sethome to make this chat your home channel, "
+                "or ignore to skip. "
+            ),
+            finalize=True,
+        )
+        self.assertEqual(
+            [
+                message["type"]
+                for message in self.connection.messages[content_start:]
+            ],
+            [
+                "item.started",
+                "content.delta",
+                "item.completed",
+                "turn.completed",
+                "connection.status",
+            ],
+        )
+
+    async def test_session_ready_reports_an_active_turn_on_reconnect(self):
+        session_id = await self._start_turn("thread-reconnect", "turn-reconnect")
+
+        await self.adapter._handle_server_frame(
+            {
+                "type": "session.ensure",
+                "protocolVersion": 2,
+                "requestId": "ensure-reconnect",
+                "threadId": "thread-reconnect",
+                "resumeSessionId": session_id,
+            }
+        )
+
+        ready = self.connection.messages[-2]
+        self.assertEqual(ready["type"], "session.ready")
+        self.assertTrue(ready["resumed"])
+        self.assertEqual(ready["activeTurnId"], "turn-reconnect")
+
     async def test_steer_uses_official_hermes_command(self):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "ensure-2",
                 "threadId": "thread-2",
             }
@@ -229,7 +546,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "start-2",
                 "threadId": "thread-2",
                 "sessionId": session_id,
@@ -248,7 +565,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "steer-2",
                 "threadId": "thread-2",
                 "sessionId": session_id,
@@ -283,7 +600,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "ensure-rejected-steer",
                 "threadId": "thread-rejected-steer",
             }
@@ -292,7 +609,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "start-rejected-steer",
                 "threadId": "thread-rejected-steer",
                 "sessionId": session_id,
@@ -309,7 +626,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "steer-rejected",
                 "threadId": "thread-rejected-steer",
                 "sessionId": session_id,
@@ -339,7 +656,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "ensure-failed-steer",
                 "threadId": "thread-failed-steer",
             }
@@ -348,7 +665,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "start-failed-steer",
                 "threadId": "thread-failed-steer",
                 "sessionId": session_id,
@@ -365,7 +682,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "steer-failed",
                 "threadId": "thread-failed-steer",
                 "sessionId": session_id,
@@ -386,7 +703,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "ensure-3",
                 "threadId": "thread-3",
             }
@@ -396,7 +713,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.stop",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "stop-3",
                 "threadId": "thread-3",
                 "sessionId": session_id,

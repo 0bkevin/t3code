@@ -60,7 +60,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         socket = FakeSocket(
             {
                 "type": "connection.accepted",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "instanceId": "provider-instance",
                 "nickname": "Research",
                 "credential": "persistent-secret",
@@ -77,13 +77,33 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             {"type": "enrollment-token", "token": "once"},
         )
 
+    async def test_accepted_handshake_rejects_an_incompatible_protocol(self):
+        socket = FakeSocket(
+            {
+                "type": "connection.accepted",
+                "protocolVersion": 1,
+                "instanceId": "provider-instance",
+                "nickname": "Research",
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "incompatible version"):
+            await connection.authenticate_socket(
+                socket,
+                authentication={
+                    "type": "instance-credential",
+                    "instanceId": "provider-instance",
+                    "credential": "secret",
+                },
+                hermes_version="0.19.0",
+            )
+
     async def test_rejected_handshake_fails_closed(self):
         socket = FakeSocket(
             {
                 "type": "connection.rejected",
                 "code": "version-incompatible",
                 "message": "upgrade required",
-                "expectedProtocolVersion": 1,
+                "expectedProtocolVersion": 2,
             }
         )
         with self.assertRaises(connection.ConnectionRejected) as raised:

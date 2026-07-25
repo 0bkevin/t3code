@@ -4,6 +4,9 @@ Experimental Hermes platform plugin for connecting one already-running Hermes
 process to T3 Code. The plugin makes an outbound WebSocket connection; Hermes
 does not need to listen on a public port.
 
+The gateway wire protocol is v2. The T3 server and Hermes plugin must be updated
+together; mismatched versions fail the connection handshake closed.
+
 Each T3 thread maps deterministically to one Hermes gateway session. A new T3
 thread creates a new session identity, later messages use the same identity,
 active-turn messages use Hermes' native `/steer` path, and stopping a turn does
@@ -43,9 +46,10 @@ The long-lived credential is never printed. Restart `hermes gateway` after
 enrollment. `hermes t3 status` reports the local enrollment without revealing
 the credential.
 
-## V1 scope
+## Initial scope
 
 - Text input and live assistant streaming
+- Authoritative text replacement when Hermes revises cumulative streamed output
 - Multiple concurrent Hermes sessions in one process
 - Active-turn steering and interrupt
 - Dangerous-command approvals
@@ -53,6 +57,10 @@ the credential.
 - Tool lifecycle activity through Hermes plugin hooks
 - Reconnect with bounded backoff
 - Version-incompatible and revoked credentials fail closed
+
+T3 threads are session-only in the initial scope. The adapter suppresses Hermes' exact
+first-chat `/sethome` notice without assigning a home channel or redirecting
+cron and cross-platform delivery.
 
 Attachments intentionally advertise `false`. Adding bounded image/file input is
 the first post-stability feature and should not reuse arbitrary raw payloads.

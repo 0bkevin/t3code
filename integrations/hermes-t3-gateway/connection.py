@@ -10,7 +10,7 @@ from contextlib import suppress
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .protocol import WEBSOCKET_PATH, connection_hello
+from .protocol import PROTOCOL_VERSION, WEBSOCKET_PATH, connection_hello
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ async def authenticate_socket(
         raise RuntimeError(
             f"expected connection.accepted, received {message.get('type')!r}"
         )
-    if message.get("protocolVersion") != 1:
+    if message.get("protocolVersion") != PROTOCOL_VERSION:
         raise RuntimeError("T3 accepted the connection with an incompatible version")
     return message
 

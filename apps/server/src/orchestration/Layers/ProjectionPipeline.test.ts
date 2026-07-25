@@ -1652,6 +1652,117 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("replaces an assistant snapshot between legacy appended deltas", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-07-24T12:00:00.000Z";
+      const projectId = ProjectId.make("project-replacement");
+      const threadId = ThreadId.make("thread-replacement");
+      const messageId = MessageId.make("assistant-replacement");
+
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("evt-replacement-1"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-replacement-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-replacement-1"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Project Replacement",
+          workspaceRoot: "/tmp/project-replacement",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-replacement-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-replacement-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-replacement-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Thread Replacement",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("hermes"),
+            model: "hermes",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const appendMessage = (input: {
+        eventNumber: number;
+        text: string;
+        streaming: boolean;
+        textOperation?: "replace";
+      }) =>
+        eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make(`evt-replacement-${input.eventNumber}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make(`cmd-replacement-${input.eventNumber}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-replacement-${input.eventNumber}`),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId,
+            role: "assistant",
+            text: input.text,
+            turnId: null,
+            streaming: input.streaming,
+            ...(input.textOperation !== undefined ? { textOperation: input.textOperation } : {}),
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+      yield* appendMessage({ eventNumber: 3, text: "Hello wor", streaming: true });
+      yield* appendMessage({
+        eventNumber: 4,
+        text: "Hello there",
+        streaming: true,
+        textOperation: "replace",
+      });
+      yield* appendMessage({ eventNumber: 5, text: "!", streaming: true });
+      yield* appendMessage({ eventNumber: 6, text: "", streaming: false });
+
+      yield* projectionPipeline.bootstrap;
+
+      const messageRows = yield* sql<{ readonly text: string; readonly isStreaming: unknown }>`
+        SELECT
+          text,
+          is_streaming AS "isStreaming"
+        FROM projection_thread_messages
+        WHERE message_id = ${messageId}
+      `;
+      assert.equal(messageRows.length, 1);
+      assert.equal(messageRows[0]?.text, "Hello there!");
+      assert.isFalse(Boolean(messageRows[0]?.isStreaming));
+    }),
+  );
+
   it.effect(
     "resolves turn-count conflicts when checkpoint completion rewrites provisional turns",
     () =>

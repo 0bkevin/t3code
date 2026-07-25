@@ -69,6 +69,34 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.planMarkdown).toBe("# Ship it");
   });
 
+  it("decodes authoritative content snapshots, including empty text", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "content.snapshot",
+      eventId: "event-content-snapshot-1",
+      provider: "hermes",
+      providerInstanceId: "hermes-research",
+      sessionId: "runtime-session-1",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "message-1",
+      payload: {
+        streamKind: "assistant_text",
+        text: "",
+        contentIndex: 0,
+        summaryIndex: 1,
+      },
+    });
+
+    expect(parsed.type).toBe("content.snapshot");
+    if (parsed.type !== "content.snapshot") {
+      throw new Error("expected content.snapshot");
+    }
+    expect(parsed.payload.text).toBe("");
+    expect(parsed.payload.contentIndex).toBe(0);
+    expect(parsed.payload.summaryIndex).toBe(1);
+  });
+
   it("decodes user-input.requested with structured questions", () => {
     const parsed = decodeRuntimeEvent({
       type: "user-input.requested",
