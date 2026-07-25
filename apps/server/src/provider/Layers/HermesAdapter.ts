@@ -573,14 +573,28 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
    * `turn.completed` arrived for a turn orchestration had written off, was
    * rejected by its conflict gate, and the thread never settled.
    */
-  let connected = yield* broker.isConnected(input.instanceId);
+  // Track the connection identity, not merely whether we are connected. A
+  // plugin restart usually REPLACES the socket: the old one dies as the new
+  // one is accepted, so exactly one `connected` status is published and a
+  // connectedness edge never fires. The plugin's session map is per-process,
+  // so skipping the re-ensure there leaves T3 holding a session the new
+  // process has never heard of, and its next turn.start is rejected with
+  // "Call session.ensure before starting a turn" — a dead thread.
+  //
+  // Starts null rather than reading the current generation: sessions are only
+  // created after this point, so the first status we observe has nothing to
+  // resume, and treating it as new is harmless.
+  let seenGeneration: number | null = null;
   yield* broker.streamStatuses.pipe(
     Stream.filter((status) => status.instanceId === input.instanceId),
     Stream.runForEach((status) =>
       Effect.gen(function* () {
-        const nowConnected = status.status === "connected";
-        const reconnected = nowConnected && !connected;
-        connected = nowConnected;
+        const generation = status.connectionGeneration;
+        const reconnected =
+          status.status === "connected" && generation !== null && generation !== seenGeneration;
+        // Only advance on a live connection: holding the last generation
+        // through an offline gap means the reconnect still registers as new.
+        if (generation !== null) seenGeneration = generation;
         if (!reconnected) return;
         yield* Effect.forEach(
           Array.from(sessions.values()),

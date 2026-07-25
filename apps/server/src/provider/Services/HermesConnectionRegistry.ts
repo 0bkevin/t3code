@@ -160,6 +160,7 @@ export type HermesLivenessStatusFields = Pick<
   | "activeSessionCount"
   | "protocolVersion"
   | "capabilities"
+  | "connectionGeneration"
 > & {
   readonly connected: boolean;
   readonly upgradeRequired: boolean;

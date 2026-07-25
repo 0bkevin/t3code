@@ -46,6 +46,10 @@ export const livenessStatusFields = (
     protocolVersion:
       observed?.capabilities.protocolVersion ?? liveness?.upgradeRequired?.protocolVersion ?? null,
     capabilities: observed?.capabilities ?? null,
+    // Exposed so consumers can tell a replacement (old socket dies as a new
+    // one is accepted, publishing a single `connected` status) from a
+    // continuous connection. Watching connectedness alone cannot.
+    connectionGeneration: liveness?.connection?.generation ?? null,
     connected: liveness?.connection !== undefined,
     upgradeRequired: liveness?.upgradeRequired !== undefined,
   };

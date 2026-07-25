@@ -35,9 +35,19 @@ import {
  * The reconnect trigger is a broker status transition, so these tests drive the
  * broker's two streams directly and never touch a real socket or a clock.
  */
+let generationCounter = 0;
+const nextGeneration = () => {
+  generationCounter += 1;
+  return generationCounter;
+};
 const statusFor = (
   instanceId: ProviderInstanceId,
   status: HermesGatewayInstanceStatus["status"],
+  // Defaults to a fresh generation per connected status so a test that just
+  // wants "it reconnected" gets one; pass an explicit value to model a
+  // republish of the SAME connection (session counts, pings), which must not
+  // re-trigger the resume.
+  connectionGeneration: number | null = status === "connected" ? nextGeneration() : null,
 ): HermesGatewayInstanceStatus => ({
   instanceId,
   nickname: "Hermes",
@@ -50,6 +60,7 @@ const statusFor = (
   activeSessionCount: 0,
   protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
   capabilities: null,
+  connectionGeneration,
 });
 
 const collectEvents = (adapter: { readonly streamEvents: Stream.Stream<ProviderRuntimeEvent> }) =>
@@ -509,8 +520,36 @@ const makeReconnectHarness = (options: {
       yield* PubSub.publish(brokerStatuses, statusFor(options.instanceId, "connected"));
       yield* drain;
     });
+    // A plugin restart as it actually happens: the broker accepts the new
+    // socket and retires the old one in the same step, so the instance never
+    // observably goes offline and only one `connected` status is published.
+    const replaceConnection = Effect.gen(function* () {
+      state.connected = true;
+      yield* PubSub.publish(brokerStatuses, statusFor(options.instanceId, "connected"));
+      yield* drain;
+    });
+    // The same live connection republishing (session counts, pings). Must NOT
+    // look like a new connection.
+    const republishSameConnection = (generation: number) =>
+      Effect.gen(function* () {
+        state.connected = true;
+        yield* PubSub.publish(
+          brokerStatuses,
+          statusFor(options.instanceId, "connected", generation),
+        );
+        yield* drain;
+      });
 
-    return { adapter, sent, brokerEvents, state, disconnect, reconnect } as const;
+    return {
+      adapter,
+      sent,
+      brokerEvents,
+      state,
+      disconnect,
+      reconnect,
+      replaceConnection,
+      republishSameConnection,
+    } as const;
   });
 
 it.effect("re-issues session.ensure on reconnect and keeps streaming a turn that survived", () =>
@@ -569,6 +608,82 @@ it.effect("re-issues session.ensure on reconnect and keeps streaming a turn that
     assert.isDefined(seen.find((event) => event.type === "content.delta"));
 
     yield* Fiber.interrupt(fiber);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+// Regression: a plugin restart REPLACES the socket rather than leaving a gap.
+// The broker accepts the new connection and retires the old one together, so
+// the instance never observably goes offline and exactly one `connected`
+// status is published. An edge detector watching connectedness therefore never
+// fires, T3 keeps a session the new plugin process has never heard of, and its
+// next turn.start comes back "Call session.ensure before starting a turn" —
+// the thread is dead with no way to recover from the UI.
+it.effect("re-issues session.ensure when the connection is replaced without going offline", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_replaced");
+    const threadId = ThreadId.make("thread-replaced");
+    const initialSessionId = HermesGatewaySessionId.make("session-before-restart");
+    const harness = yield* makeReconnectHarness({ instanceId, threadId, initialSessionId });
+
+    // Production ordering: the plugin is already connected and the adapter has
+    // observed that connection before any thread exists.
+    yield* harness.republishSameConnection(7);
+
+    yield* harness.adapter.startSession({
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+
+    // No disconnect: the plugin restarted, so the broker retired the old socket
+    // and accepted the new one together. The instance never reports offline.
+    yield* harness.replaceConnection;
+
+    const ensures = harness.sent.filter((message) => message.type === "session.ensure");
+    assert.equal(
+      ensures.length,
+      2,
+      "a replaced connection must re-ensure, or the next turn is rejected",
+    );
+    const resume = ensures[1];
+    assert.equal(
+      resume?.type === "session.ensure" ? resume.resumeSessionId : undefined,
+      initialSessionId,
+    );
+
+    // A later turn now targets a session the new plugin knows about.
+    yield* harness.adapter.sendTurn({ threadId, input: "after the restart" });
+    const starts = harness.sent.filter((message) => message.type === "turn.start");
+    assert.equal(starts.length, 1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("does not re-ensure when the same connection republishes its status", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_same_connection");
+    const threadId = ThreadId.make("thread-same-connection");
+    const harness = yield* makeReconnectHarness({
+      instanceId,
+      threadId,
+      initialSessionId: HermesGatewaySessionId.make("session-stable"),
+    });
+
+    // Production ordering: the plugin connects first, so its generation is
+    // already known by the time a thread creates a session.
+    yield* harness.republishSameConnection(4242);
+
+    yield* harness.adapter.startSession({
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+
+    // Session-count reports and ping results republish the SAME connection.
+    // Re-ensuring on each would cancel pending approvals under a running turn.
+    yield* harness.republishSameConnection(4242);
+    yield* harness.republishSameConnection(4242);
+
+    assert.equal(harness.sent.filter((message) => message.type === "session.ensure").length, 1);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

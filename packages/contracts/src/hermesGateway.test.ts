@@ -70,6 +70,7 @@ describe("Hermes gateway management contracts", () => {
       pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
       model: "gpt-5.6-terra",
+      connectionGeneration: 3,
       activeSessionCount: 2,
       protocolVersion: 2,
       capabilities: {

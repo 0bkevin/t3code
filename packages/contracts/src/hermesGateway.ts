@@ -130,6 +130,17 @@ export const HermesGatewayInstanceStatus = Schema.Struct({
    * plugin predates the `model` field on `connection.hello`.
    */
   model: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * Monotonic id of the underlying connection, or null while offline.
+   *
+   * Consumers must key "this is a different plugin process now" off this
+   * rather than off `status` transitioning through `offline`. A replacement —
+   * the old socket dying as a new one is accepted — publishes a single
+   * `connected` status, so a connectedness edge detector never fires and
+   * anything that must be re-established per connection (notably
+   * `session.ensure`) is silently skipped.
+   */
+  connectionGeneration: Schema.NullOr(NonNegativeInt),
   activeSessionCount: NonNegativeInt,
   protocolVersion: Schema.NullOr(PositiveInt),
   capabilities: Schema.NullOr(HermesGatewayCapabilities),
