@@ -453,6 +453,10 @@ const makeReconnectHarness = (options: {
       resumeSessionId: options.initialSessionId,
       resumeActiveTurnId: undefined as TurnId | undefined,
       resumeFails: false,
+      // When set, session.ensure never completes — a plugin that has accepted
+      // the socket but has not answered yet. The handler must not be wedged
+      // waiting for it.
+      stallEnsure: false,
     };
     const broker: HermesGatewayBrokerShape = {
       createEnrollment: () => Effect.die(new Error("unused")),
@@ -467,6 +471,7 @@ const makeReconnectHarness = (options: {
       request: (_instanceId, message) => {
         sent.push(message);
         if (message.type === "session.ensure") {
+          if (state.stallEnsure) return Effect.never;
           if (state.resumeFails) {
             return Effect.fail(
               new ProviderAdapterRequestError({
@@ -718,6 +723,48 @@ it.effect("re-issues session.ensure when the connection is replaced without goin
     yield* harness.adapter.sendTurn({ threadId, input: "after the restart" });
     const starts = harness.sent.filter((message) => message.type === "turn.start");
     assert.equal(starts.length, 1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+// Regression: the resume must not block the status-stream handler.
+// `Stream.runForEach` is serial, and `session.ensure` is a correlated request
+// whose reply arrives on the broker's OTHER stream — so awaiting it inside the
+// handler wedges the subscription until the 30s request timeout. Every later
+// status event queues behind it, including the next reconnect, and the thread
+// is left with no session while every turn fails "Call session.ensure before
+// starting a turn".
+it.effect("keeps handling status events while a resume awaits its reply", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_serial");
+    const threadId = ThreadId.make("thread-serial");
+    const harness = yield* makeReconnectHarness({
+      instanceId,
+      threadId,
+      initialSessionId: HermesGatewaySessionId.make("session-serial"),
+    });
+    yield* harness.republishSameConnection(11);
+    yield* harness.adapter.startSession({
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+
+    // From here the fake never answers session.ensure, standing in for a plugin
+    // that is still starting up.
+    harness.state.stallEnsure = true;
+    yield* harness.replaceConnection;
+    const afterFirst = harness.sent.filter((message) => message.type === "session.ensure").length;
+
+    // A second replacement arrives while that resume is still outstanding. If
+    // the handler were blocked awaiting the reply this would never be seen.
+    yield* harness.replaceConnection;
+    const afterSecond = harness.sent.filter((message) => message.type === "session.ensure").length;
+
+    assert.isAbove(
+      afterSecond,
+      afterFirst,
+      "a resume awaiting its reply must not stall later reconnects",
+    );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

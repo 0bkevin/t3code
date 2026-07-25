@@ -473,6 +473,139 @@ it.effect("shares one live broker between the gateway route and Hermes provider 
   }).pipe(Effect.provide(providerLayer), Effect.scoped);
 });
 
+// Reproduces the user-reported failure end to end through the REAL broker and
+// the REAL adapter (earlier adapter-only tests used a fake broker and passed,
+// which is why this survived): send a turn, restart the gateway, send another.
+// The second turn must not be rejected with "Call session.ensure before
+// starting a turn".
+it.effect("resumes an existing thread after the gateway restarts", () => {
+  const secrets = makeSecretStore();
+  const providerLayer = Layer.effect(
+    HermesTestInstance,
+    HermesDriver.create({
+      instanceId,
+      displayName: "Restart Hermes",
+      environment: [],
+      enabled: true,
+      config: HermesDriver.defaultConfig(),
+    }),
+  ).pipe(
+    Layer.provideMerge(HermesGatewayBrokerLive),
+    Layer.provide(
+      ServerSettings.layerTest({
+        providerInstances: {
+          [instanceId]: { driver: "hermes", displayName: "Restart", config: {} },
+        },
+      }),
+    ),
+    Layer.provide(Layer.succeed(ServerSecretStore.ServerSecretStore, secrets)),
+    Layer.provide(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const broker = yield* HermesGatewayBroker;
+    const provider = yield* HermesTestInstance;
+    const enrollment = yield* enroll(broker, instanceId, "Restart Hermes");
+    const threadId = ThreadId.make("gateway-restart-thread");
+    const sessionId = HermesGatewaySessionId.make("gateway-restart-session");
+
+    // ── First connection: establish a session and complete a turn ──
+    const first = recordingTransport();
+    const firstRegistration = yield* broker.registerConnection(
+      hello({ type: "enrollment-token", token: enrollment.oneTimeToken }),
+      first.transport,
+    );
+    const startSession = yield* provider.adapter
+      .startSession({ threadId, providerInstanceId: instanceId, runtimeMode: "full-access" })
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Effect.yieldNow;
+    const ensure = first.sent.at(-1);
+    if (!ensure || ensure.type !== "session.ensure") {
+      return yield* Effect.die(new Error("session.ensure did not reach the transport"));
+    }
+    yield* broker.receive(firstRegistration, {
+      type: "session.ready",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      requestId: ensure.requestId,
+      threadId,
+      sessionId,
+      resumed: false,
+    });
+    yield* Fiber.join(startSession);
+
+    // ── `hermes gateway stop` + `start`. Deliberately NOT a clean
+    // offline-then-connected: under systemd the replacement socket can be
+    // accepted before the dead one's close is processed, so the broker sees a
+    // replacement and the instance never reports offline.
+
+    // ── `hermes gateway start`: a NEW connection authenticates ──
+    const credential = yield* secrets.get(hermesGatewayCredentialSecretName(instanceId)).pipe(
+      Effect.map(Option.getOrThrow),
+      Effect.map((bytes) => new TextDecoder().decode(bytes)),
+    );
+    const second = recordingTransport();
+    const secondRegistration = yield* broker.registerConnection(
+      hello({
+        type: "instance-credential",
+        instanceId,
+        credential: HermesGatewayCredential.make(credential),
+      }),
+      second.transport,
+    );
+    // The dead socket's close lands late, after the replacement is live. It is
+    // generation-fenced, so it must not retire the new connection.
+    yield* broker.disconnect(firstRegistration);
+    // Let the adapter observe the reconnect and re-issue session.ensure.
+    //
+    // Critically the reply is NOT delivered until after this settles: the
+    // resume must not block the status-stream handler waiting for it. It used
+    // to, and since the reply is delivered by the broker's own stream the
+    // deadlock only broke on the 30s request timeout — leaving the thread with
+    // no session and every later turn rejected.
+    for (let i = 0; i < 40; i += 1) yield* Effect.yieldNow;
+
+    const resumeEnsure = second.sent.find((message) => message.type === "session.ensure");
+    assert.isDefined(
+      resumeEnsure,
+      "a gateway restart must re-issue session.ensure on the new connection",
+    );
+    if (!resumeEnsure || resumeEnsure.type !== "session.ensure") {
+      return yield* Effect.die(new Error("unreachable"));
+    }
+    assert.equal(resumeEnsure.threadId, threadId);
+    assert.equal(resumeEnsure.resumeSessionId, sessionId);
+    yield* broker.receive(secondRegistration, {
+      type: "session.ready",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      requestId: resumeEnsure.requestId,
+      threadId,
+      sessionId,
+      resumed: true,
+    });
+    for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+
+    // ── The follow-up turn must reach the plugin ──
+    const sendTurn = yield* provider.adapter
+      .sendTurn({ threadId, input: "follow up after restart" })
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Effect.yieldNow;
+    const turnStart = second.sent.find((message) => message.type === "turn.start");
+    assert.isDefined(turnStart, "the follow-up turn must be dispatched after a gateway restart");
+    if (!turnStart || turnStart.type !== "turn.start") {
+      return yield* Effect.die(new Error("unreachable"));
+    }
+    yield* broker.receive(secondRegistration, {
+      type: "turn.started",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      requestId: turnStart.requestId,
+      threadId,
+      sessionId,
+      turnId: turnStart.turnId,
+    });
+    assert.equal((yield* Fiber.join(sendTurn)).turnId, turnStart.turnId);
+  }).pipe(Effect.provide(providerLayer), Effect.scoped);
+});
+
 // ── Durable config lives in settings; liveness never does ──────────
 
 it.effect("stores durable enrollment facts in the provider instance config", () =>

@@ -596,6 +596,13 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
         // through an offline gap means the reconnect still registers as new.
         if (generation !== null) seenGeneration = generation;
         if (!reconnected) return;
+        // Forked, NOT awaited. `Stream.runForEach` processes status events
+        // serially, and the resume issues `session.ensure` — a correlated
+        // request whose reply is delivered by the broker's message stream.
+        // Awaiting it here holds up this handler, and the deadlock is only
+        // broken by the 30s request timeout, after which the thread is left
+        // with no session and every turn fails "Call session.ensure before
+        // starting a turn". Resuming off the handler lets the reply land.
         yield* Effect.forEach(
           Array.from(sessions.values()),
           (context) =>
@@ -609,7 +616,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
               ),
             ),
           { discard: true },
-        );
+        ).pipe(Effect.forkScoped);
       }),
     ),
     Effect.forkScoped,
