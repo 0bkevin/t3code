@@ -55,13 +55,40 @@ def frame(frame_type: str, **payload: Any) -> dict[str, Any]:
     }
 
 
+def configured_model() -> str | None:
+    """Return Hermes' configured default model, or None when unavailable.
+
+    Reads `hermes_cli.config.load_config_readonly()`, the documented read-only
+    accessor. That function returns the *shared, process-wide cached* config
+    dict, so nothing here mutates it or hands a nested structure to a caller
+    that might: only a trimmed string copy of `model.default` leaves this
+    function.
+
+    Every failure mode — no Hermes on the path, an older Hermes without the
+    accessor, a config with no model section — degrades to None so the field is
+    omitted from the handshake rather than sent as null or empty.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        model = load_config_readonly().get("model", {}).get("default")
+    except Exception:  # noqa: BLE001 - model reporting must never break the handshake
+        return None
+    if not isinstance(model, str):
+        return None
+    trimmed = model.strip()
+    return trimmed or None
+
+
 def connection_hello(
     *,
     hermes_version: str,
     authentication: dict[str, str],
     hello_request_id: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    resolved_model = model if model is not None else configured_model()
+    hello: dict[str, Any] = {
         "type": "connection.hello",
         "requestId": hello_request_id or request_id(),
         "protocolVersion": PROTOCOL_VERSION,
@@ -70,6 +97,11 @@ def connection_hello(
         "capabilities": dict(CAPABILITIES),
         "authentication": authentication,
     }
+    # Optional on the wire: omit entirely rather than send null/empty so a
+    # server that has the field still falls back to its generic label.
+    if resolved_model:
+        hello["model"] = resolved_model
+    return hello
 
 
 def protocol_error(

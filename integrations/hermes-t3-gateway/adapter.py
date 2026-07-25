@@ -6,9 +6,9 @@ import asyncio
 import contextvars
 import logging
 import os
-import threading
 import uuid
 import weakref
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,6 +41,14 @@ _T3_HOME_CHANNEL_NOTICE = (
     "and cross-platform messages.\n\n"
     "Type /sethome to make this chat your home channel, or ignore to skip."
 )
+
+# T3's canonical item type for a free-form provider status line. Deliberately
+# not `unknown`: that value is the "could not classify this" sentinel other
+# adapters rely on being inert, so routing status text through it made stray
+# activity rows appear in unrelated provider threads. T3 renders these rows
+# preferring `detail` over `title`, so the live status string is sent as
+# `detail`.
+_STATUS_ITEM_TYPE = "status_text"
 
 
 def _hermes_version() -> str:
@@ -75,6 +83,16 @@ class _SteerControlResponse:
     thread_id: str
     request_id: str
     messages: list[str] = field(default_factory=list)
+
+    @property
+    def control_message_id(self) -> str:
+        """Synthetic id returned for captured control traffic.
+
+        `edit_message` correlates against this so a later edit of the control
+        acknowledgement is captured too, while genuine assistant edits (which
+        carry the stream's own message id) pass straight through.
+        """
+        return f"t3-steer-control-{self.request_id}"
 
 
 _steer_control_response = contextvars.ContextVar[_SteerControlResponse | None](
@@ -113,6 +131,10 @@ class T3PlatformAdapter(BasePlatformAdapter):
         self._active_turns: dict[str, _TurnState] = {}
         self._approval_requests: dict[str, tuple[str, str]] = {}
         self._user_input_requests: dict[str, tuple[str, str]] = {}
+        # Strong references to fire-and-forget tasks. asyncio only holds a weak
+        # reference to a running task, so without this the GC may collect one
+        # mid-flight and its exception surfaces as a bare warning.
+        self._scheduled_tasks: set[asyncio.Task[Any]] = set()
         type(self)._instances.add(self)
 
     @property
@@ -166,8 +188,12 @@ class T3PlatformAdapter(BasePlatformAdapter):
         reply_to: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
-        del reply_to
-        captured = self._capture_steer_control_response(chat_id, content)
+        # `reply_to` is the base adapter's reply anchor. For the inline
+        # slash-command path it is `_reply_anchor_for_event(event)`, which for
+        # this platform resolves to the dispatched MessageEvent's `message_id`
+        # — the steering requestId. That is the only correlation identifier
+        # `send` receives, so it is the capture discriminator here.
+        captured = self._capture_steer_control_response(chat_id, content, reply_to)
         if captured is not None:
             return captured
         turn = self._active_turns.get(str(chat_id))
@@ -195,7 +221,11 @@ class T3PlatformAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         del metadata
-        captured = self._capture_steer_control_response(chat_id, content)
+        # `edit_message` never carries the reply anchor; its correlation
+        # identifier is the id of the message being edited. Only an edit of a
+        # message this adapter already reported as captured control traffic is
+        # control traffic itself.
+        captured = self._capture_steer_control_response(chat_id, content, message_id)
         if captured is not None:
             return captured
         turn = self._active_turns.get(str(chat_id))
@@ -518,15 +548,29 @@ class T3PlatformAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         content: str,
+        correlation_id: str | None,
     ) -> SendResult | None:
+        """Capture only the steering command's own acknowledgement.
+
+        A steer targets a RUNNING turn, so Hermes can legitimately emit
+        assistant output on the same thread while the steering command is
+        still awaited. Matching on `chat_id` alone would swallow that output
+        and drop it from the transcript, so the capture is keyed on the
+        steering `requestId` the plugin stamped on the dispatched
+        `MessageEvent` (and, for follow-up edits, on the synthetic control
+        message id this method returns). Everything else falls through to the
+        normal assistant-content path.
+        """
         control = _steer_control_response.get()
         if control is None or control.thread_id != str(chat_id):
             return None
+        if correlation_id is None:
+            return None
+        correlation = str(correlation_id)
+        if correlation not in {control.request_id, control.control_message_id}:
+            return None
         control.messages.append(str(content))
-        return SendResult(
-            success=True,
-            message_id=f"t3-steer-control-{control.request_id}",
-        )
+        return SendResult(success=True, message_id=control.control_message_id)
 
     async def _interrupt_turn(self, message: dict[str, Any]) -> None:
         thread_id = str(message["threadId"])
@@ -743,7 +787,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
                         sessionId=turn.session_id,
                         turnId=turn.turn_id,
                         itemId=turn.generic_activity_id,
-                        itemType="unknown",
+                        itemType=_STATUS_ITEM_TYPE,
                         status="completed",
                         title="Hermes activity",
                         **(
@@ -788,7 +832,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
                     sessionId=turn.session_id,
                     turnId=turn.turn_id,
                     itemId=activity_id,
-                    itemType="unknown",
+                    itemType=_STATUS_ITEM_TYPE,
                     status="inProgress",
                     title="Hermes activity",
                     detail=normalized_detail,
@@ -937,20 +981,42 @@ class T3PlatformAdapter(BasePlatformAdapter):
         if reason:
             logger.warning("T3 gateway offline: %s", reason)
 
-    def _schedule(self, coroutine) -> None:
+    def _schedule(self, coroutine: Coroutine[Any, Any, Any]) -> None:
+        """Run a coroutine on the adapter's bound loop from any thread.
+
+        Hermes calls the tool hooks from the agent thread, so this is the
+        boundary back onto the gateway loop. `create_task` is only valid when
+        the *running* loop is the adapter's own loop — checking merely for "a
+        loop is running" would schedule onto whichever unrelated loop happens
+        to be current. Created tasks are held in a strong-reference set (asyncio
+        only holds a weak one) and their exceptions are logged rather than
+        surfacing as bare "task exception was never retrieved" warnings.
+        """
         loop = self._event_loop
         if loop is None or loop.is_closed():
             coroutine.close()
             return
-        if threading.current_thread() is threading.main_thread():
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                asyncio.run_coroutine_threadsafe(coroutine, loop)
-            else:
-                loop.create_task(coroutine)
-        else:
+        try:
+            running_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            task = loop.create_task(coroutine)
+            self._scheduled_tasks.add(task)
+            task.add_done_callback(self._finish_scheduled_task)
+            return
+        try:
             asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except RuntimeError:  # loop closed between the check and the submit
+            coroutine.close()
+
+    def _finish_scheduled_task(self, task: asyncio.Task[Any]) -> None:
+        self._scheduled_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error("T3 gateway background task failed: %s", error, exc_info=error)
 
 
 def check_requirements() -> bool:

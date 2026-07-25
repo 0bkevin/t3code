@@ -14,14 +14,18 @@ not delete its transcript.
 
 ## Install from this repository
 
-Copy or symlink this directory into the active Hermes profile:
+Run the install script. It symlinks this directory into the active Hermes
+profile's user-plugin directory and enables the plugin:
 
 ```bash
-mkdir -p ~/.hermes/plugins
-ln -s /path/to/t3code/integrations/hermes-t3-gateway \
-  ~/.hermes/plugins/hermes-t3-gateway
-hermes plugins enable hermes-t3-gateway
+./integrations/hermes-t3-gateway/install.sh
 ```
+
+The script is safe to re-run: an existing correct symlink is left in place, and
+enabling an already-enabled plugin is a no-op. It installs into
+`$HERMES_HOME/plugins/` when `HERMES_HOME` is set, and `~/.hermes/plugins/`
+otherwise. It fails with instructions if `hermes` is not on `PATH`, and refuses
+to replace a real directory already sitting at the target path.
 
 In T3 Code, open the Hermes instance settings, choose **Add Hermes**, enter a
 unique nickname, and copy the generated enrollment command. It has this shape:
@@ -42,9 +46,13 @@ profile-aware `save_env_value` helper:
 - `HERMES_T3_GATEWAY_CREDENTIAL`
 - `HERMES_T3_GATEWAY_NICKNAME`
 
-The long-lived credential is never printed. Restart `hermes gateway` after
+The long-lived credential is never printed. Run `hermes gateway restart` after
 enrollment. `hermes t3 status` reports the local enrollment without revealing
 the credential.
+
+The handshake also reports Hermes' configured default model so T3 can show a
+truthful label in its picker. It is read-only — Hermes owns model selection —
+and is omitted entirely if it cannot be read.
 
 ## Initial scope
 

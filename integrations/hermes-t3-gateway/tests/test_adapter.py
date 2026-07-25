@@ -8,6 +8,7 @@ import pathlib
 import sys
 import types
 import unittest
+import unittest.mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = "hermes_t3_gateway_adapter_test"
@@ -77,14 +78,18 @@ class BasePlatformAdapter:
             and event.text.startswith("/steer ")
         ):
             # Faithful model of Hermes BasePlatformAdapter's active-command
-            # path: the gateway handler returns a control acknowledgement,
-            # then BasePlatformAdapter sends it through the platform adapter
-            # with notify=True.
+            # bypass path (gateway/platforms/base.py ~4926 at upstream
+            # 62e07223): the gateway handler returns a control
+            # acknowledgement, then the base adapter sends it through the
+            # platform adapter with `reply_to=_reply_anchor_for_event(event)`
+            # — which, for a platform with no thread_id, is the dispatched
+            # event's own message_id — and notify=True metadata.
             response = await self._message_handler(event)
             if response:
                 await self.send(
                     event.source.chat_id,
                     response,
+                    reply_to=event.message_id,
                     metadata={"notify": True},
                 )
 
@@ -398,6 +403,35 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["itemId"], started["itemId"])
         self.assertEqual(updated["detail"], "Running tests")
 
+    async def test_live_status_uses_status_text_not_the_unknown_sentinel(self):
+        await self._start_turn("thread-status-type", "turn-status-type")
+        turn = self.adapter._active_turns["thread-status-type"]
+
+        await self.adapter._emit_generic_activity(turn, "Reading repository")
+        await self.adapter._emit_generic_activity(turn, "Running tests")
+        await self.adapter._complete_turn(turn)
+
+        status_frames = [
+            message
+            for message in self.connection.messages
+            if message.get("itemId") == turn.generic_activity_id
+        ]
+        self.assertEqual(
+            [message["type"] for message in status_frames],
+            ["item.started", "item.updated", "item.completed"],
+        )
+        # `unknown` is the canonical "could not classify" sentinel other
+        # adapters rely on being inert; status lines get their own type.
+        self.assertEqual(
+            {message["itemType"] for message in status_frames},
+            {"status_text"},
+        )
+        # T3 renders these rows preferring `detail`, so the real status string
+        # must ride there rather than only in `title`.
+        self.assertEqual(status_frames[0]["detail"], "Reading repository")
+        self.assertEqual(status_frames[1]["detail"], "Running tests")
+        self.assertEqual(status_frames[2]["detail"], "Running tests")
+
     async def test_concurrent_generic_activity_updates_share_one_lifecycle(self):
         await self._start_turn("thread-activity-concurrent", "turn-activity-concurrent")
         turn = self.adapter._active_turns["thread-activity-concurrent"]
@@ -481,6 +515,23 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertNotIn("thread-activity-complete", self.adapter._active_turns)
+
+    def test_home_channel_notice_literal_matches_hermes_construction(self):
+        # Hermes builds this notice inline from an f-string rather than
+        # exporting a constant (gateway/run.py:13780 at upstream 62e07223), and
+        # the adapter suppresses it by exact string equality. Reconstruct it the
+        # same way so upstream wording drift fails here loudly instead of
+        # leaking the notice into a T3 transcript.
+        platform_name = "t3"  # Platform("t3").value
+        sethome_cmd = "/sethome"  # non-Slack branch
+        expected = (
+            f"📬 No home channel is set for {platform_name.title()}. "
+            f"A home channel is where Hermes delivers cron job results "
+            f"and cross-platform messages.\n\n"
+            f"Type {sethome_cmd} to make this chat your home channel, "
+            f"or ignore to skip."
+        )
+        self.assertEqual(adapter_module._T3_HOME_CHANNEL_NOTICE, expected)
 
     async def test_exact_t3_home_channel_notice_is_suppressed(self):
         await self._start_turn("thread-notice", "turn-notice")
@@ -681,6 +732,90 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deltas, ["Actual response after steering"])
         self.assertNotIn("thread-2", self.adapter._active_turns)
 
+    async def test_assistant_output_during_a_steer_is_not_captured_as_control(self):
+        session_id = await self._start_turn("thread-steer-race", "turn-steer-race")
+        messages_before_steer = len(self.connection.messages)
+
+        async def stream_while_steering(event):
+            # A steer targets a RUNNING turn, so Hermes can emit genuine
+            # assistant output on this same thread while the steering command
+            # is still being awaited. That output must reach the transcript.
+            await self.adapter.edit_message(
+                "thread-steer-race",
+                "hermes-stream-message",
+                "Mid-steer assistant output",
+            )
+            del event
+            return "⏩ Steer queued — arrives after the next tool call: 'Focus'"
+
+        self.adapter._message_handler = stream_while_steering
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.steer",
+                "protocolVersion": 2,
+                "requestId": "steer-race",
+                "threadId": "thread-steer-race",
+                "sessionId": session_id,
+                "turnId": "turn-steer-race",
+                "text": "Focus",
+            }
+        )
+
+        steer_messages = self.connection.messages[messages_before_steer:]
+        self.assertEqual(
+            [message["type"] for message in steer_messages],
+            ["item.started", "content.delta", "turn.started"],
+        )
+        self.assertEqual(steer_messages[1]["delta"], "Mid-steer assistant output")
+        # The acknowledgement itself is still captured and suppressed, so the
+        # steer is acknowledged rather than failing closed on the prefix check.
+        self.assertEqual(steer_messages[2]["requestId"], "steer-race")
+        self.assertIn("thread-steer-race", self.adapter._active_turns)
+        self.assertEqual(
+            self.adapter._active_turns["thread-steer-race"].visible_text,
+            "Mid-steer assistant output",
+        )
+
+    async def test_steer_control_acknowledgement_edits_stay_suppressed(self):
+        session_id = await self._start_turn("thread-steer-edit", "turn-steer-edit")
+        messages_before_steer = len(self.connection.messages)
+        acknowledgement = "⏩ Steer queued — arrives after the next tool call: 'Focus'"
+
+        async def edit_own_acknowledgement(event):
+            sent = await self.adapter.send(
+                "thread-steer-edit",
+                acknowledgement,
+                reply_to=event.message_id,
+                metadata={"notify": True},
+            )
+            # A retry/finalize edit of the control message correlates by the
+            # synthetic control message id, so it stays out of the transcript.
+            await self.adapter.edit_message(
+                "thread-steer-edit",
+                sent.message_id,
+                acknowledgement,
+                finalize=True,
+            )
+
+        self.adapter._message_handler = edit_own_acknowledgement
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.steer",
+                "protocolVersion": 2,
+                "requestId": "steer-edit",
+                "threadId": "thread-steer-edit",
+                "sessionId": session_id,
+                "turnId": "turn-steer-edit",
+                "text": "Focus",
+            }
+        )
+
+        steer_messages = self.connection.messages[messages_before_steer:]
+        self.assertEqual(
+            [message["type"] for message in steer_messages], ["turn.started"]
+        )
+        self.assertIn("thread-steer-edit", self.adapter._active_turns)
+
     async def test_rejected_steer_emits_error_without_completing_active_turn(self):
         await self.adapter._handle_server_frame(
             {
@@ -783,6 +918,73 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steer_messages[0]["requestId"], "steer-failed")
         self.assertEqual(steer_messages[0]["code"], "internal-error")
         self.assertIn("thread-failed-steer", self.adapter._active_turns)
+
+    async def test_schedule_keeps_a_strong_reference_until_the_task_finishes(self):
+        self.adapter._event_loop = asyncio.get_running_loop()
+        released = asyncio.Event()
+
+        async def work():
+            await asyncio.sleep(0)
+            released.set()
+
+        self.adapter._schedule(work())
+        self.assertEqual(len(self.adapter._scheduled_tasks), 1)
+        await released.wait()
+        await asyncio.sleep(0)
+        self.assertEqual(self.adapter._scheduled_tasks, set())
+
+    async def test_schedule_logs_background_task_failures(self):
+        self.adapter._event_loop = asyncio.get_running_loop()
+
+        async def boom():
+            raise RuntimeError("background frame failed")
+
+        with self.assertLogs(adapter_module.logger, level="ERROR") as captured:
+            self.adapter._schedule(boom())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        self.assertTrue(
+            any("background frame failed" in line for line in captured.output)
+        )
+        self.assertEqual(self.adapter._scheduled_tasks, set())
+
+    async def test_schedule_does_not_create_tasks_on_a_foreign_loop(self):
+        other_loop = asyncio.new_event_loop()
+        self.adapter._event_loop = other_loop
+
+        async def work():
+            return None
+
+        coroutine = work()
+        try:
+            with (
+                unittest.mock.patch.object(other_loop, "create_task") as create_task,
+                unittest.mock.patch.object(
+                    adapter_module.asyncio, "run_coroutine_threadsafe"
+                ) as threadsafe,
+            ):
+                # The running loop is this test's loop, not the adapter's, so
+                # create_task would schedule onto the wrong loop entirely.
+                self.adapter._schedule(coroutine)
+            create_task.assert_not_called()
+            threadsafe.assert_called_once_with(coroutine, other_loop)
+            self.assertEqual(self.adapter._scheduled_tasks, set())
+        finally:
+            coroutine.close()
+            other_loop.close()
+
+    async def test_schedule_closes_the_coroutine_when_the_loop_is_gone(self):
+        self.adapter._event_loop = None
+        started = False
+
+        async def work():
+            nonlocal started
+            started = True
+
+        coroutine = work()
+        self.adapter._schedule(coroutine)
+        self.assertFalse(started)
+        self.assertEqual(self.adapter._scheduled_tasks, set())
 
     async def test_session_status_counts_ready_sessions_and_stop_decrements(self):
         await self.adapter._handle_server_frame(
