@@ -6,7 +6,9 @@ import {
   createHermesProviderInstanceId,
   isHermesInstanceRemovedError,
   isOwnedHermesEnrollmentRetry,
+  resolveHermesWaitingState,
   resolveWizardNavigation,
+  rollbackProviderInstances,
   validateProviderInstanceIdForWizard,
 } from "./AddProviderInstanceDialog.logic";
 
@@ -129,5 +131,107 @@ describe("Hermes enrollment retry ownership", () => {
         createdHermesInstanceId: null,
       }),
     ).toContain("already exists");
+  });
+});
+
+describe("rollbackProviderInstances", () => {
+  interface TestInstance {
+    readonly driver: string;
+    readonly enabled: boolean;
+  }
+  const written: TestInstance = { driver: "hermes", enabled: true };
+  const other: TestInstance = { driver: "codex", enabled: true };
+
+  it("removes only the instance this dialog wrote", () => {
+    expect(
+      rollbackProviderInstances({
+        latest: { "hermes-a": written, codex_work: other },
+        instanceId: "hermes-a",
+        written,
+      }),
+    ).toEqual({ codex_work: other });
+  });
+
+  it("preserves instances another client added between the write and the rollback", () => {
+    const concurrent: TestInstance = { driver: "claude", enabled: true };
+    expect(
+      rollbackProviderInstances({
+        latest: { "hermes-a": written, "added-elsewhere": concurrent },
+        instanceId: "hermes-a",
+        written,
+      }),
+    ).toEqual({ "added-elsewhere": concurrent });
+  });
+
+  it("does nothing when the id is already gone or was replaced by a different config", () => {
+    expect(
+      rollbackProviderInstances({ latest: { codex_work: other }, instanceId: "hermes-a", written }),
+    ).toBeNull();
+    expect(
+      rollbackProviderInstances({
+        latest: { "hermes-a": { ...written } },
+        instanceId: "hermes-a",
+        written,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("resolveHermesWaitingState", () => {
+  it("treats a not-yet-dialled-in gateway as an expected pending wait, not an error", () => {
+    expect(resolveHermesWaitingState({ connectionState: null, isExpired: false })).toEqual({
+      phase: "waiting",
+      statusLabelState: "offline",
+      isPending: true,
+      needsNewCommand: false,
+    });
+    expect(resolveHermesWaitingState({ connectionState: "offline", isExpired: false })).toEqual({
+      phase: "waiting",
+      statusLabelState: "offline",
+      isPending: true,
+      needsNewCommand: false,
+    });
+    expect(resolveHermesWaitingState({ connectionState: "connecting", isExpired: false })).toEqual({
+      phase: "waiting",
+      statusLabelState: "connecting",
+      isPending: true,
+      needsNewCommand: false,
+    });
+  });
+
+  it("flips to connected and ignores expiry once the gateway has dialled in", () => {
+    expect(resolveHermesWaitingState({ connectionState: "connected", isExpired: true })).toEqual({
+      phase: "connected",
+      statusLabelState: "connected",
+      isPending: false,
+      needsNewCommand: false,
+    });
+  });
+
+  it("offers a fresh command when the one-time token expired unused", () => {
+    expect(resolveHermesWaitingState({ connectionState: "offline", isExpired: true })).toEqual({
+      phase: "expired",
+      statusLabelState: "offline",
+      isPending: false,
+      needsNewCommand: true,
+    });
+  });
+
+  it("surfaces upgrade-required and revoked ahead of waiting, since neither resolves by waiting", () => {
+    expect(
+      resolveHermesWaitingState({ connectionState: "upgrade-required", isExpired: false }),
+    ).toEqual({
+      phase: "blocked",
+      statusLabelState: "upgrade-required",
+      isPending: false,
+      // A protocol upgrade needs a new plugin, not a new token.
+      needsNewCommand: false,
+    });
+    expect(resolveHermesWaitingState({ connectionState: "revoked", isExpired: false })).toEqual({
+      phase: "blocked",
+      statusLabelState: "revoked",
+      isPending: false,
+      needsNewCommand: true,
+    });
   });
 });

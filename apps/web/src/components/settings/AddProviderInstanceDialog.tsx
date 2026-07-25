@@ -1,9 +1,11 @@
 "use client";
 
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
-import { CheckIcon, CopyIcon, LoaderIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { CheckIcon, CopyIcon, LoaderIcon, TriangleAlertIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
 import {
+  type HermesGatewayConnectionState,
   type HermesGatewayEnrollmentResult,
   ProviderInstanceId,
   ProviderDriverKind,
@@ -35,19 +37,26 @@ import { AnimatedHeight } from "../AnimatedHeight";
 import {
   ADD_PROVIDER_WIZARD_STEPS,
   createHermesProviderInstanceId,
+  HERMES_PLUGIN_INSTALL_COMMAND,
   isHermesInstanceRemovedError,
   isOwnedHermesEnrollmentRetry,
+  resolveHermesWaitingState,
   resolveWizardNavigation,
+  rollbackProviderInstances,
   type WizardNavigation,
   validateProviderInstanceIdForWizard,
 } from "./AddProviderInstanceDialog.logic";
 import { AddProviderInstanceWizardSteps } from "./AddProviderInstanceWizardSteps";
 import { usePrimaryEnvironment } from "../../state/environments";
-import { serverEnvironment } from "../../state/server";
+import { primaryServerProvidersAtom, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   defaultHermesConnectorUrl,
   formatHermesLastConnected,
+  hermesGatewayProviderSignal,
+  hermesGatewayStatusGuidance,
+  hermesGatewayStatusLabel,
+  isHermesEnrollmentExpired,
   messageFromUnknownError,
 } from "./HermesGatewayInstanceSection.logic";
 
@@ -113,6 +122,17 @@ const COMING_SOON_DRIVER_OPTIONS: readonly ComingSoonDriverOption[] = [
   },
 ];
 
+const HERMES_BADGE_VARIANT_BY_STATUS: Record<
+  HermesGatewayConnectionState,
+  "success" | "warning" | "error" | "secondary"
+> = {
+  connected: "success",
+  connecting: "warning",
+  offline: "secondary",
+  "upgrade-required": "warning",
+  revoked: "error",
+};
+
 interface AddProviderInstanceDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -128,6 +148,10 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   const createHermesEnrollment = useAtomCommand(serverEnvironment.hermesGatewayCreateEnrollment, {
     reportFailure: false,
   });
+  const getHermesStatus = useAtomCommand(serverEnvironment.hermesGatewayGetInstanceStatus, {
+    reportFailure: false,
+  });
+  const serverProviders = useAtomValue(primaryServerProvidersAtom);
 
   const [wizardStep, setWizardStep] = useState(0);
   const [driver, setDriver] = useState<ProviderDriverKind>(DEFAULT_DRIVER_KIND);
@@ -154,7 +178,17 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   const [createdHermesIdentity, setCreatedHermesIdentity] = useState<{
     readonly instanceId: string;
     readonly nickname: string;
+    /**
+     * False once a failed enrollment rolled the settings write back. The id
+     * stays claimed by this dialog session (so validation keeps exempting it
+     * and no duplicate is ever created), but the next attempt has to write it
+     * again before the server will accept an enrollment for it.
+     */
+    readonly persisted: boolean;
   } | null>(null);
+  const [hermesConnectionState, setHermesConnectionState] =
+    useState<HermesGatewayConnectionState | null>(null);
+  const [nowMillis, setNowMillis] = useState(() => Date.now());
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     target: "Hermes enrollment command",
     onCopy: () =>
@@ -164,9 +198,53 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
         description: "Run it in the terminal where Hermes is installed.",
       }),
   });
+  const { copyToClipboard: copyInstallCommand, isCopied: isInstallCommandCopied } =
+    useCopyToClipboard({
+      target: "Hermes plugin install command",
+      onCopy: () =>
+        toastManager.add({
+          type: "success",
+          title: "Install command copied",
+          description: "Run it from the T3 Code checkout on the Hermes host.",
+        }),
+    });
 
+  // Rollback of a failed Hermes enrollment must survive the dialog closing
+  // mid-failure, so the pending undo lives in a ref that an unmount-safe
+  // effect drains rather than in the `handleSave` closure alone.
+  const pendingRollbackRef = useRef<{
+    readonly instanceId: string;
+    readonly written: ProviderInstanceConfig;
+  } | null>(null);
+  const latestProviderInstancesRef = useRef(settings.providerInstances);
+  latestProviderInstancesRef.current = settings.providerInstances;
+  const environmentIdRef = useRef(environmentId);
+  environmentIdRef.current = environmentId;
+  const updateServerSettingsRef = useRef(updateServerSettings);
+  updateServerSettingsRef.current = updateServerSettings;
+
+  const rollbackPendingHermesInstance = useCallback(async () => {
+    const pending = pendingRollbackRef.current;
+    pendingRollbackRef.current = null;
+    const rollbackEnvironmentId = environmentIdRef.current;
+    if (pending === null || rollbackEnvironmentId === null) return;
+    const providerInstances = rollbackProviderInstances({
+      latest: latestProviderInstancesRef.current ?? {},
+      instanceId: pending.instanceId,
+      written: pending.written,
+    });
+    if (providerInstances === null) return;
+    await updateServerSettingsRef.current({
+      environmentId: rollbackEnvironmentId,
+      input: { patch: { providerInstances } },
+    });
+  }, []);
+
+  // Fires both when the dialog is closed and when it is unmounted outright
+  // (its parent renders it conditionally), so an orphan is never left behind.
   useEffect(() => {
     if (open) return;
+    void rollbackPendingHermesInstance();
     setWizardStep(0);
     setDriver(DEFAULT_DRIVER_KIND);
     setLabel("");
@@ -184,7 +262,70 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     setSaveError(null);
     setIsSaving(false);
     setCreatedHermesIdentity(null);
-  }, [open]);
+    setHermesConnectionState(null);
+  }, [open, rollbackPendingHermesInstance]);
+
+  useEffect(
+    () => () => {
+      void rollbackPendingHermesInstance();
+    },
+    [rollbackPendingHermesInstance],
+  );
+
+  const enrolledInstanceId = hermesEnrollment?.instanceId ?? null;
+  // The server pushes a fresh `ServerProvider` snapshot over the already-open
+  // `subscribeServerConfig` stream every time the broker publishes a gateway
+  // status change, so this flips the moment Hermes dials in — no polling.
+  const hermesProviderSignal = useMemo(
+    () =>
+      enrolledInstanceId === null
+        ? null
+        : hermesGatewayProviderSignal(serverProviders, enrolledInstanceId),
+    [serverProviders, enrolledInstanceId],
+  );
+  const hermesProviderSignalKey = hermesProviderSignal
+    ? `${hermesProviderSignal.present}:${hermesProviderSignal.connected}:${hermesProviderSignal.revision ?? ""}`
+    : null;
+
+  // The pushed snapshot only tells us connected/not. Resolve the authoritative
+  // `HermesGatewayConnectionState` once per change so `upgrade-required` and
+  // `revoked` are distinguishable from a plain wait.
+  useEffect(() => {
+    if (enrolledInstanceId === null || environmentId === null) return;
+    if (hermesProviderSignalKey === null) return;
+    let cancelled = false;
+    void (async () => {
+      const result = await getHermesStatus({
+        environmentId,
+        input: { instanceId: ProviderInstanceId.make(enrolledInstanceId) },
+      });
+      if (cancelled) return;
+      if (result._tag === "Success") setHermesConnectionState(result.value.status);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [enrolledInstanceId, environmentId, getHermesStatus, hermesProviderSignalKey]);
+
+  // Re-evaluate the enrollment expiry on a coarse tick so the panel switches
+  // itself to the "mint a new command" affordance without a manual refresh.
+  useEffect(() => {
+    if (hermesEnrollment === null) return;
+    setNowMillis(Date.now());
+    const interval = window.setInterval(() => setNowMillis(Date.now()), 15_000);
+    return () => window.clearInterval(interval);
+  }, [hermesEnrollment]);
+
+  const hermesWaitingState = useMemo(
+    () =>
+      hermesEnrollment === null
+        ? null
+        : resolveHermesWaitingState({
+            connectionState: hermesConnectionState,
+            isExpired: isHermesEnrollmentExpired(hermesEnrollment.expiresAt, nowMillis),
+          }),
+    [hermesEnrollment, hermesConnectionState, nowMillis],
+  );
 
   const existingIds = useMemo(
     () => new Set(Object.keys(settings.providerInstances ?? {})),
@@ -261,11 +402,15 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     // keeps the type boundary honest and guards against any future drift in
     // the slug rules.
     const brandedId = ProviderInstanceId.make(instanceId);
-    const isOwnedHermesRetry = isOwnedHermesEnrollmentRetry({
-      driver,
-      instanceId,
-      createdHermesInstanceId: createdHermesIdentity?.instanceId ?? null,
-    });
+    // Only skip the settings write when the instance this dialog created is
+    // still persisted. After a rolled-back failure the id is still ours, but
+    // it has to be written again before the server will enroll it.
+    const isOwnedHermesRetry =
+      isOwnedHermesEnrollmentRetry({
+        driver,
+        instanceId,
+        createdHermesInstanceId: createdHermesIdentity?.instanceId ?? null,
+      }) && createdHermesIdentity?.persisted === true;
     const nextMap = {
       ...settings.providerInstances,
       [brandedId]: nextInstance,
@@ -277,6 +422,12 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
         if (environmentId === null) {
           throw new Error("Connect this browser to a T3 server before pairing Hermes.");
         }
+        // The server rejects `create-enrollment` unless the instance already
+        // exists in `providerInstances` with the Hermes driver, so the write
+        // genuinely has to come first. Instead of enroll-first, the write is
+        // registered as a pending rollback that the failure path — and the
+        // close/unmount effects — undo, so a failed enrollment never leaves a
+        // visible `instance-not-found` orphan in the model picker.
         if (!isOwnedHermesRetry) {
           const settingsResult = await updateServerSettings({
             environmentId,
@@ -285,9 +436,11 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
           if (settingsResult._tag === "Failure") {
             throw squashAtomCommandFailure(settingsResult);
           }
+          pendingRollbackRef.current = { instanceId, written: nextInstance };
           setCreatedHermesIdentity({
             instanceId,
             nickname: label.trim(),
+            persisted: true,
           });
         }
         const enrollmentResult = await createHermesEnrollment({
@@ -300,12 +453,24 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
         });
         if (enrollmentResult._tag === "Failure") {
           const enrollmentError = squashAtomCommandFailure(enrollmentResult);
+          // The server already deleted the tombstoned instance itself, so
+          // there is nothing left for us to roll back — just rotate the nonce
+          // so the next attempt uses a fresh, untainted id.
           if (isHermesInstanceRemovedError(enrollmentError)) {
+            pendingRollbackRef.current = null;
             setCreatedHermesIdentity(null);
             setHermesIdentityNonce(randomUUID());
+          } else {
+            await rollbackPendingHermesInstance();
+            setCreatedHermesIdentity((current) =>
+              current ? { ...current, persisted: false } : current,
+            );
           }
           throw enrollmentError;
         }
+        // Enrollment succeeded: the instance is legitimately persisted now.
+        pendingRollbackRef.current = null;
+        setHermesConnectionState(null);
         setHermesEnrollment(enrollmentResult.value);
         toastManager.add({
           type: "success",
@@ -329,6 +494,50 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
       toastManager.add({
         type: "error",
         title: "Could not add provider instance",
+        description: message,
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /**
+   * Mint a replacement one-time command for the instance already persisted by
+   * this dialog session. The instance itself is untouched, so there is nothing
+   * to roll back here — only the expired/revoked token is replaced.
+   */
+  const handleRegenerateEnrollment = async () => {
+    const identity = createdHermesIdentity;
+    if (identity === null || environmentId === null) return;
+    try {
+      setIsSaving(true);
+      setSaveError(null);
+      const enrollmentResult = await createHermesEnrollment({
+        environmentId,
+        input: {
+          instanceId: ProviderInstanceId.make(identity.instanceId),
+          nickname: identity.nickname,
+          connectorUrl: hermesConnectorUrl,
+        },
+      });
+      if (enrollmentResult._tag === "Failure") {
+        const enrollmentError = squashAtomCommandFailure(enrollmentResult);
+        if (isHermesInstanceRemovedError(enrollmentError)) {
+          setCreatedHermesIdentity(null);
+          setHermesIdentityNonce(randomUUID());
+          setHermesEnrollment(null);
+        }
+        throw enrollmentError;
+      }
+      setHermesConnectionState(null);
+      setHermesEnrollment(enrollmentResult.value);
+      setNowMillis(Date.now());
+    } catch (error) {
+      const message = messageFromUnknownError(error);
+      setSaveError(message);
+      toastManager.add({
+        type: "error",
+        title: "Could not create a new Hermes command",
         description: message,
       });
     } finally {
@@ -360,29 +569,137 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
             data-slot="dialog-panel"
             className="space-y-4 bg-zinc-25/80 px-6 py-5 ring-1 ring-black/5 dark:bg-white/2 dark:ring-white/5"
           >
-            {hermesEnrollment ? (
-              <div className="grid gap-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Connect Hermes</p>
-                  <p className="text-xs text-muted-foreground">
-                    This one-time command expires{" "}
-                    {formatHermesLastConnected(hermesEnrollment.expiresAt)}.
-                  </p>
-                </div>
-                <div className="flex min-w-0 items-center gap-2">
-                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-muted px-2 py-2 text-[11px]">
-                    {hermesEnrollment.command}
-                  </code>
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="outline"
-                    onClick={() => copyToClipboard(hermesEnrollment.command, undefined)}
-                    aria-label="Copy Hermes enrollment command"
+            {hermesEnrollment && hermesWaitingState ? (
+              <div className="grid gap-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">
+                      {hermesWaitingState.phase === "connected"
+                        ? "Hermes is connected"
+                        : "Waiting for Hermes"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {hermesGatewayStatusGuidance(hermesWaitingState.statusLabelState)}
+                    </p>
+                  </div>
+                  <Badge
+                    variant={HERMES_BADGE_VARIANT_BY_STATUS[hermesWaitingState.statusLabelState]}
+                    size="sm"
                   >
-                    {isCopied ? <CheckIcon /> : <CopyIcon />}
-                  </Button>
+                    {hermesWaitingState.isPending ? (
+                      <LoaderIcon className="animate-spin" />
+                    ) : hermesWaitingState.phase === "connected" ? (
+                      <CheckIcon />
+                    ) : null}
+                    {hermesGatewayStatusLabel(hermesWaitingState.statusLabelState)}
+                  </Badge>
                 </div>
+
+                {hermesWaitingState.phase === "connected" ? (
+                  <p className="text-xs text-muted-foreground">
+                    The gateway dialled in and its persistent credential is stored on the Hermes
+                    host. You can close this dialog and start a thread against it.
+                  </p>
+                ) : (
+                  <ol className="grid gap-3">
+                    <li className="grid gap-1.5">
+                      <p className="text-xs font-medium text-foreground">
+                        1. Install the plugin on the Hermes host
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Run this from your T3 Code checkout on the machine running Hermes. It
+                        symlinks the plugin into <code>~/.hermes/plugins</code> and enables it. T3
+                        Code cannot do this for you — skip it only if you already installed the
+                        plugin there.
+                      </p>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-muted px-2 py-2 text-[11px]">
+                          {HERMES_PLUGIN_INSTALL_COMMAND}
+                        </code>
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant="outline"
+                          onClick={() =>
+                            copyInstallCommand(HERMES_PLUGIN_INSTALL_COMMAND, undefined)
+                          }
+                          aria-label="Copy Hermes plugin install command"
+                        >
+                          {isInstallCommandCopied ? <CheckIcon /> : <CopyIcon />}
+                        </Button>
+                      </div>
+                    </li>
+
+                    <li className="grid gap-1.5">
+                      <p className="text-xs font-medium text-foreground">
+                        2. Run the one-time connect command
+                      </p>
+                      {hermesWaitingState.phase === "expired" ? (
+                        <p className="flex items-start gap-1.5 text-[11px] text-warning-foreground">
+                          <TriangleAlertIcon className="mt-px size-3.5 shrink-0" aria-hidden />
+                          <span>
+                            This command expired{" "}
+                            {formatHermesLastConnected(hermesEnrollment.expiresAt)}. Generate a new
+                            one below — the instance itself is unchanged.
+                          </span>
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-muted-foreground">
+                          Expires {formatHermesLastConnected(hermesEnrollment.expiresAt)}.
+                        </p>
+                      )}
+                      <div
+                        className={cn(
+                          "flex min-w-0 items-center gap-2",
+                          hermesWaitingState.needsNewCommand && "opacity-55",
+                        )}
+                      >
+                        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-muted px-2 py-2 text-[11px]">
+                          {hermesEnrollment.command}
+                        </code>
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant="outline"
+                          disabled={hermesWaitingState.needsNewCommand}
+                          onClick={() => copyToClipboard(hermesEnrollment.command, undefined)}
+                          aria-label="Copy Hermes enrollment command"
+                        >
+                          {isCopied ? <CheckIcon /> : <CopyIcon />}
+                        </Button>
+                      </div>
+                    </li>
+
+                    <li className="grid gap-1.5">
+                      <p className="text-xs font-medium text-foreground">
+                        3. Restart the gateway on that host
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Run <code>hermes gateway restart</code>. This step is required — the plugin
+                        only dials T3 Code after the restart, so nothing is wrong while this panel
+                        still says {hermesGatewayStatusLabel(hermesWaitingState.statusLabelState)}.
+                        This page updates itself the moment Hermes connects.
+                      </p>
+                    </li>
+                  </ol>
+                )}
+
+                {hermesWaitingState.needsNewCommand ? (
+                  <div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isSaving || environmentId === null}
+                      onClick={() => void handleRegenerateEnrollment()}
+                    >
+                      {isSaving ? <LoaderIcon className="animate-spin" /> : null}
+                      Generate a new command
+                    </Button>
+                  </div>
+                ) : null}
+
+                {saveError ? <p className="text-xs text-destructive">{saveError}</p> : null}
+
                 <p className="text-[11px] text-muted-foreground">
                   The persistent gateway credential is delivered directly to the plugin and is never
                   shown in T3 Code.
@@ -577,8 +894,9 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                 {saveError ? <p className="text-xs text-destructive">{saveError}</p> : null}
                 {createdHermesIdentity ? (
                   <p className="text-xs text-muted-foreground">
-                    The Hermes instance was added. Retry enrollment for this exact instance, or
-                    close this dialog and finish pairing from its Settings card.
+                    {createdHermesIdentity.persisted
+                      ? "The Hermes instance was added. Retry enrollment for this exact instance, or close this dialog and finish pairing from its Settings card."
+                      : "Nothing was left behind — the half-created instance was removed. Retry to create it again with the same identity."}
                   </p>
                 ) : null}
               </AnimatedHeight>
@@ -587,8 +905,12 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
 
           <DialogFooter variant="bare">
             {hermesEnrollment ? (
-              <Button size="sm" onClick={() => onOpenChange(false)}>
-                Done
+              <Button
+                size="sm"
+                variant={hermesWaitingState?.phase === "connected" ? "default" : "outline"}
+                onClick={() => onOpenChange(false)}
+              >
+                {hermesWaitingState?.phase === "connected" ? "Done" : "Close and keep waiting"}
               </Button>
             ) : (
               <Button
