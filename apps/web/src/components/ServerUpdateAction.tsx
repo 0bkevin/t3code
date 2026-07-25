@@ -161,6 +161,11 @@ export function ServerUpdateAction({
       return;
     }
     inFlightRef.current = true;
+    // Only outages observed during this attempt may resolve it. An earlier
+    // unrelated blip would otherwise satisfy the resolve predicate on the
+    // very next render and re-enable the button mid-update.
+    wentAwayRef.current = false;
+    sawWindowRef.current = false;
     const attempt = attemptRef.current + 1;
     attemptRef.current = attempt;
     const ownsAttempt = () => attemptRef.current === attempt;

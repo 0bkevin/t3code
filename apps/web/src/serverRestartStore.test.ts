@@ -75,6 +75,22 @@ describe("serverRestartStore", () => {
         false,
       );
     });
+
+    it("does not dress up an unrelated outage as a restart once cleared", () => {
+      // The consumer clears the window after seeing the restart through, so a
+      // later ordinary outage inside the original 90s must read as an outage.
+      expectServerRestart(ENVIRONMENT_ID);
+      clearExpectedServerRestart(ENVIRONMENT_ID);
+      vi.advanceTimersByTime(10_000);
+
+      expect(expiresAtFor(ENVIRONMENT_ID)).toBeNull();
+      expect(
+        isServerRestarting({
+          restartExpected: expiresAtFor(ENVIRONMENT_ID) !== null,
+          environmentUnavailable: true,
+        }),
+      ).toBe(false);
+    });
   });
 
   describe("isExpectedRestartResolved", () => {

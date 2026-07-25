@@ -9,11 +9,21 @@
  * machine stays transport-only, and this store is UI-side intent that
  * expires on its own if the server never comes back.
  *
- * The window is intentionally write-once-and-expire: it is armed while the
- * old server is still connected (the acknowledgement races its own
- * disconnect), and nothing observed on the connection can reliably end it
- * early. Presentation gates on the environment actually being unavailable,
- * so a lingering window is inert once the replacement is back.
+ * Ending the window is the subtle part. It is armed while the old server is
+ * still connected (the acknowledgement races its own disconnect), so a
+ * connected environment cannot by itself mean the restart is over — that is
+ * how an earlier revision made the whole feature inert. But never ending it
+ * is also wrong: an unrelated outage later in the window would be dressed up
+ * as an intentional restart. So the window ends when the environment has
+ * gone away and come back, i.e. the restart it was armed for has been seen.
+ *
+ * A blip during a long install can consume the window early; the
+ * acknowledgement re-arms it, which is what covers that case.
+ *
+ * Note this observation is only used for presentation. The update action's
+ * own release path deliberately does not depend on it — coupling the two is
+ * what produced a family of bugs where each consumer invalidated the other's
+ * evidence.
  */
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useReducer } from "react";
