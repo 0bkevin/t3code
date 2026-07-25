@@ -602,7 +602,20 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
         // warn, and carry on serving locally.
         const shared = yield* Effect.acquireRelease(
           shareDevServer({ webPort: sharedWebPort }),
-          () => unshareDevServer(sharedWebPort),
+          () =>
+            // Serve config outlives this process, so a cleanup that did not
+            // take leaves a tailnet URL pointing at a port nothing serves.
+            unshareDevServer(sharedWebPort).pipe(
+              Effect.flatMap((result) =>
+                result.cleared
+                  ? Effect.void
+                  : Effect.logWarning(
+                      `[dev-runner] could not remove the tailnet mapping for port ${String(sharedWebPort)}${
+                        result.detail ? `: ${result.detail}` : ""
+                      }. Remove it with \`tailscale serve --https=${String(sharedWebPort)} off\`.`,
+                    ),
+              ),
+            ),
         ).pipe(
           Effect.tapError((error: DevShareError) =>
             Effect.logWarning(

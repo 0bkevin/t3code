@@ -127,17 +127,44 @@ export interface DevShareResult {
 }
 
 /**
- * Removes a mapping created by {@link shareDevServer}. Best-effort.
+ * `tailscale serve … off` exits nonzero with this when the port had no mapping,
+ * which is the normal case for a first-time share — not a failure.
+ */
+const NO_EXISTING_HANDLER_PATTERN = /handler does not exist/i;
+
+/**
+ * Removes any mapping for `webPort`, reporting whether the port is now clear.
  *
  * Runs uninterruptibly with its own scope: this is called from a finalizer on
  * the way out of an interrupted program, and spawning the cleanup subprocess
  * under the dying scope would cancel it before `tailscale` ever ran — leaving
  * exactly the stale mapping it exists to remove.
  */
-export const unshareDevServer = (webPort: number) =>
+export const unshareDevServer = (
+  webPort: number,
+): Effect.Effect<
+  { readonly cleared: boolean; readonly detail?: string | undefined },
+  never,
+  ChildProcessSpawner.ChildProcessSpawner
+> =>
   runTailscale(["serve", `--https=${String(webPort)}`, "off"], "serve-failed").pipe(
+    Effect.map((result) => {
+      if (result.exitCode === 0) {
+        return { cleared: true } as const;
+      }
+      const stderr = result.stderr.trim();
+      // Nothing was mapped, so the port is clear either way.
+      if (NO_EXISTING_HANDLER_PATTERN.test(stderr)) {
+        return { cleared: true } as const;
+      }
+      return { cleared: false, detail: stderr || `exit code ${String(result.exitCode)}` } as const;
+    }),
+    // A spawn failure (no tailscale on PATH) also means we cannot vouch for the
+    // port being clear.
+    Effect.catch((error: DevShareError) =>
+      Effect.succeed({ cleared: false, detail: error.message } as const),
+    ),
     Effect.scoped,
-    Effect.ignore,
     Effect.uninterruptible,
   );
 
@@ -156,7 +183,18 @@ export const shareDevServer = Effect.fn("devShare.shareDevServer")(function* (in
   // stale entry may carry path routes we no longer want — older versions mapped
   // /ws, /api and friends to a separate backend port, and serving "/" alone
   // would leave those pointing at a port nothing is listening on.
-  yield* unshareDevServer(input.webPort);
+  const cleared = yield* unshareDevServer(input.webPort);
+  if (!cleared.cleared) {
+    // Serving over routes we failed to remove would hand out a URL that is
+    // broken in a way the user cannot see: the page loads while /ws and /api
+    // silently resolve to a dead backend. Better to refuse and say why.
+    return yield* new DevShareError({
+      reason: "serve-failed",
+      detail: `could not clear the existing mapping for port ${port}${
+        cleared.detail ? `: ${cleared.detail}` : ""
+      }. Run \`tailscale serve --https=${port} off\` and retry.`,
+    });
+  }
 
   const serve = yield* runTailscale(
     ["serve", "--bg", `--https=${port}`, `http://127.0.0.1:${port}`],
