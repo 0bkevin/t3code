@@ -123,6 +123,63 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(raised.exception.code, "version-incompatible")
 
+    async def test_handshake_survives_a_ping_racing_the_reply(self):
+        """A ping may arrive before `connection.accepted`.
+
+        The server starts probing liveness on its own schedule, so the first
+        frame after hello is not guaranteed to be the handshake reply.
+        Treating it as one tore down the freshly established connection and
+        reconnected in a loop — the plugin logged "unexpected requestId" while
+        the server logged missed pongs.
+        """
+        class RacingSocket:
+            def __init__(self):
+                self.sent = []
+                self._frames = None
+
+            async def send(self, value):
+                self.sent.append(json.loads(value))
+
+            async def recv(self):
+                if self._frames is None:
+                    hello_id = self.sent[0]["requestId"]
+                    self._frames = iter(
+                        [
+                            json.dumps(
+                                {
+                                    "type": "ping",
+                                    "protocolVersion": 2,
+                                    "requestId": "server-ping-1",
+                                }
+                            ),
+                            json.dumps(
+                                {
+                                    "type": "connection.accepted",
+                                    "protocolVersion": 2,
+                                    "requestId": hello_id,
+                                    "instanceId": "provider-instance",
+                                    "nickname": "Hermes",
+                                }
+                            ),
+                        ]
+                    )
+                return next(self._frames)
+
+        socket = RacingSocket()
+        accepted = await connection.authenticate_socket(
+            socket,
+            authentication={
+                "type": "instance-credential",
+                "instanceId": "provider-instance",
+                "credential": "secret",
+            },
+            hermes_version="0.19.0",
+        )
+        self.assertEqual(accepted["type"], "connection.accepted")
+        pongs = [f for f in socket.sent if f.get("type") == "pong"]
+        self.assertEqual(len(pongs), 1, "the racing ping must still be answered")
+        self.assertEqual(pongs[0]["requestId"], "server-ping-1")
+
     async def test_ping_is_answered_while_a_command_handler_is_blocked(self):
         """A ping must not queue behind command dispatch.
 

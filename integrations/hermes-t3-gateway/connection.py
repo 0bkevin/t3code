@@ -78,12 +78,45 @@ async def authenticate_socket(
         authentication=authentication,
     )
     await socket.send(json.dumps(hello, separators=(",", ":"), ensure_ascii=False))
-    raw = await asyncio.wait_for(socket.recv(), timeout=timeout)
-    message = json.loads(raw)
-    if not isinstance(message, dict):
-        raise TypeError("T3 returned a non-object handshake frame")
-    if message.get("requestId") != hello["requestId"]:
-        raise RuntimeError("T3 returned a handshake with an unexpected requestId")
+
+    # Read until the reply to THIS hello arrives. The handshake is not
+    # guaranteed to be the only frame in flight — the server may already be
+    # probing liveness — and treating whatever arrives first as the reply
+    # tears down the connection that was just established, in a loop.
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError("T3 did not answer the gateway handshake in time")
+        raw = await asyncio.wait_for(socket.recv(), timeout=remaining)
+        message = json.loads(raw)
+        if not isinstance(message, dict):
+            raise TypeError("T3 returned a non-object handshake frame")
+        if message.get("type") == "ping":
+            # Answer inline: the read loop that normally handles this has not
+            # started yet, and an unanswered ping counts against liveness.
+            await socket.send(
+                json.dumps(
+                    {
+                        "type": "pong",
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "requestId": message.get("requestId"),
+                        "sentAt": message.get("sentAt") or iso_now(),
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+            )
+            continue
+        if message.get("requestId") != hello["requestId"]:
+            # Some other correlated frame raced the handshake; keep waiting for
+            # ours rather than failing the whole connection.
+            logger.debug(
+                "Ignoring a non-handshake frame while authenticating: %s",
+                message.get("type"),
+            )
+            continue
+        break
     if message.get("type") == "connection.rejected":
         raise ConnectionRejected(
             str(message.get("code") or "internal-error"),
