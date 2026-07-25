@@ -109,10 +109,26 @@ const SWEEP_INTERVAL = Duration.minutes(1);
  * "the connection stopped responding" rather than sit out a generic timeout.
  */
 const PING_INTERVAL = Duration.seconds(10);
-/** How long a single ping may go unanswered before it counts as missed. */
-const PING_TIMEOUT = Duration.seconds(4);
-/** Consecutive missed pings tolerated before the connection is torn down. */
-const PING_MAX_MISSED = 2;
+/**
+ * How long a single ping may go unanswered before it counts as missed.
+ *
+ * Generous on purpose. The plugin answers pings from its socket read loop
+ * without touching Hermes, so a slow reply means the process is genuinely
+ * starved rather than merely busy — but a Python event loop under a heavy
+ * turn can still be slow to schedule, and killing a working connection is far
+ * worse than noticing a dead one a few seconds later.
+ */
+const PING_TIMEOUT = Duration.seconds(6);
+/**
+ * Consecutive missed pings tolerated before the connection is torn down.
+ *
+ * Worst case detection is `PING_INTERVAL` (the wait before the first probe)
+ * plus `PING_TIMEOUT * PING_MAX_MISSED`, since a miss re-probes immediately.
+ * That total must stay under `REQUEST_TIMEOUT` so an in-flight request over a
+ * dead socket fails with the liveness reason rather than a generic timeout:
+ * 10 + 6*3 = 28s against a 30s request timeout.
+ */
+const PING_MAX_MISSED = 3;
 
 const CREDENTIAL_BYTES = 32;
 
@@ -773,6 +789,10 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
             "The Hermes gateway connection stopped responding.",
           );
         }
+        // This connection is gone either way — retired here, or already
+        // replaced. Stop probing rather than interrogating a dead socket and
+        // logging another miss for a connection nobody is using.
+        return yield* Effect.interrupt;
       });
 
       // First probe runs after one interval — long enough that a plugin which

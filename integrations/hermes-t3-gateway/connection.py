@@ -10,7 +10,7 @@ from contextlib import suppress
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .protocol import PROTOCOL_VERSION, WEBSOCKET_PATH, connection_hello
+from .protocol import PROTOCOL_VERSION, WEBSOCKET_PATH, connection_hello, iso_now
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,7 @@ class T3GatewayConnection:
         self._send_lock = asyncio.Lock()
         self._connected = asyncio.Event()
         self._first_result: asyncio.Future[bool] | None = None
+        self._handlers: set[asyncio.Task[None]] = set()
         self._stopping = False
 
     @property
@@ -185,6 +186,46 @@ class T3GatewayConnection:
         async with self._send_lock:
             await self._socket.send(encoded)
 
+    def _spawn_handler(self, message: dict[str, Any]) -> None:
+        """Run one command handler off the read loop.
+
+        asyncio only holds a weak reference to tasks, so the handle is kept
+        until completion — otherwise a long turn can be garbage collected
+        mid-flight. Failures are logged rather than surfacing as bare
+        "task exception was never retrieved" warnings.
+        """
+        task = asyncio.create_task(self._on_message(message))
+        self._handlers.add(task)
+
+        def _finished(completed: asyncio.Task[None]) -> None:
+            self._handlers.discard(completed)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                logger.warning(
+                    "T3 gateway command handler failed: %s", error, exc_info=error
+                )
+
+        task.add_done_callback(_finished)
+
+    async def _send_pong(self, ping: dict[str, Any]) -> None:
+        """Answer a liveness probe without going through command dispatch."""
+        request_id = ping.get("requestId")
+        if not request_id:
+            return
+        try:
+            await self.send(
+                {
+                    "type": "pong",
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "requestId": request_id,
+                    "sentAt": ping.get("sentAt") or iso_now(),
+                }
+            )
+        except Exception:  # noqa: BLE001 - a failed pong must not kill the read loop
+            logger.debug("Failed to answer a T3 liveness ping", exc_info=True)
+
     async def _supervise(self) -> None:
         delay = 1.0
         while not self._stopping:
@@ -208,8 +249,20 @@ class T3GatewayConnection:
                 delay = 1.0
                 async for raw in socket:
                     message = json.loads(raw)
-                    if isinstance(message, dict):
-                        await self._on_message(message)
+                    if not isinstance(message, dict):
+                        continue
+                    # Liveness is answered inline; it never touches Hermes.
+                    if message.get("type") == "ping":
+                        await self._send_pong(message)
+                        continue
+                    # Commands are dispatched WITHOUT awaiting them. A handler
+                    # awaits Hermes — `turn.start` blocks for the whole agent
+                    # turn — and awaiting it here would stop reading the
+                    # socket, so a ping sent mid-turn would not even be read,
+                    # let alone answered, and T3 would close a healthy
+                    # connection as half-open. Ordering within a session is
+                    # still preserved by the plugin's own per-thread state.
+                    self._spawn_handler(message)
             except asyncio.CancelledError:
                 raise
             except ConnectionRejected as exc:
