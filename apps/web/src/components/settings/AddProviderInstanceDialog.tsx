@@ -37,6 +37,7 @@ import { AnimatedHeight } from "../AnimatedHeight";
 import {
   ADD_PROVIDER_WIZARD_STEPS,
   createHermesProviderInstanceId,
+  HERMES_GATEWAY_RESTART_COMMAND,
   HERMES_PLUGIN_INSTALL_COMMAND,
   isHermesInstanceRemovedError,
   isOwnedHermesEnrollmentRetry,
@@ -206,6 +207,16 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
           type: "success",
           title: "Install command copied",
           description: "Run it from the T3 Code checkout on the Hermes host.",
+        }),
+    });
+  const { copyToClipboard: copyRestartCommand, isCopied: isRestartCommandCopied } =
+    useCopyToClipboard({
+      target: "Hermes gateway restart command",
+      onCopy: () =>
+        toastManager.add({
+          type: "success",
+          title: "Restart command copied",
+          description: "Run it on the Hermes host to activate the pairing.",
         }),
     });
 
@@ -675,10 +686,31 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                         3. Restart the gateway on that host
                       </p>
                       <p className="text-[11px] text-muted-foreground">
-                        Run <code>hermes gateway restart</code>. This step is required — the plugin
-                        only dials T3 Code after the restart, so nothing is wrong while this panel
-                        still says {hermesGatewayStatusLabel(hermesWaitingState.statusLabelState)}.
-                        This page updates itself the moment Hermes connects.
+                        This step is required — the plugin only dials T3 Code after the restart, so
+                        nothing is wrong while this panel still says{" "}
+                        {hermesGatewayStatusLabel(hermesWaitingState.statusLabelState)}. This page
+                        updates itself the moment Hermes connects.
+                      </p>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-muted px-2 py-2 text-[11px]">
+                          {HERMES_GATEWAY_RESTART_COMMAND}
+                        </code>
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant="outline"
+                          onClick={() =>
+                            copyRestartCommand(HERMES_GATEWAY_RESTART_COMMAND, undefined)
+                          }
+                          aria-label="Copy Hermes gateway restart command"
+                        >
+                          {isRestartCommandCopied ? <CheckIcon /> : <CopyIcon />}
+                        </Button>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Without an installed service this runs in the foreground and keeps the
+                        terminal — that is expected. Use <code>hermes gateway install</code> to run
+                        it as a background service instead.
                       </p>
                     </li>
                   </ol>

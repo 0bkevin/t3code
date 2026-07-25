@@ -24,12 +24,51 @@ export class ClipboardWriteError extends Schema.TaggedErrorClass<ClipboardWriteE
   }
 }
 
+/**
+ * Copy via the legacy `document.execCommand` path.
+ *
+ * `navigator.clipboard` only exists in a secure context, so it is undefined
+ * over plain http — which is exactly how T3 is reached on a LAN or Tailscale
+ * host. Without this fallback every copy button on such an origin silently
+ * does nothing, including the ones handing over a pairing command the user
+ * cannot reasonably retype.
+ */
+function writeTextWithExecCommand(value: string): boolean {
+  if (typeof document === "undefined") return false;
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  // Keep it off-screen and non-interactive, but still focusable: a hidden or
+  // display:none element cannot be selected, which is what execCommand needs.
+  textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.opacity = "0";
+  const previouslyFocused = document.activeElement;
+  document.body.appendChild(textarea);
+  try {
+    textarea.select();
+    textarea.setSelectionRange(0, value.length);
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+    // Duck-typed rather than `instanceof HTMLElement`: the global is absent in
+    // non-DOM environments, where a bare reference throws instead of being
+    // falsy — and losing focus is never worth failing a copy over.
+    const restoreFocus = (previouslyFocused as unknown as { focus?: unknown } | null)?.focus;
+    if (typeof restoreFocus === "function") {
+      restoreFocus.call(previouslyFocused);
+    }
+  }
+}
+
 export async function writeTextToClipboard(value: string, target = "text") {
-  if (
-    typeof window === "undefined" ||
-    typeof navigator === "undefined" ||
-    !navigator.clipboard?.writeText
-  ) {
+  const hasClipboardApi = typeof navigator !== "undefined" && !!navigator.clipboard?.writeText;
+  // `document` is only needed for the legacy fallback, so it is not required
+  // when the async Clipboard API is present.
+  if (typeof window === "undefined" || (!hasClipboardApi && typeof document === "undefined")) {
     throw new ClipboardApiUnavailableError({
       target,
     });
@@ -37,15 +76,25 @@ export async function writeTextToClipboard(value: string, target = "text") {
 
   if (!value) return false;
 
-  try {
-    await navigator.clipboard.writeText(value);
-    return true;
-  } catch (cause) {
-    throw new ClipboardWriteError({
-      target,
-      cause,
-    });
+  if (hasClipboardApi) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (cause) {
+      // A rejected write (permissions policy, no user activation) can still
+      // succeed through the legacy path, so fall through rather than fail.
+      if (writeTextWithExecCommand(value)) return true;
+      throw new ClipboardWriteError({
+        target,
+        cause,
+      });
+    }
   }
+
+  if (writeTextWithExecCommand(value)) return true;
+  throw new ClipboardApiUnavailableError({
+    target,
+  });
 }
 
 export function useCopyToClipboard<TContext = void>({

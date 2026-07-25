@@ -41,6 +41,12 @@ export function createHermesProviderInstanceId(label: string, randomUuid: () => 
  */
 export const HERMES_PLUGIN_INSTALL_COMMAND = "./integrations/hermes-t3-gateway/install.sh" as const;
 
+/**
+ * Activates the pairing. The gateway only constructs the platform adapter at
+ * startup, so it keeps reporting offline until it is restarted.
+ */
+export const HERMES_GATEWAY_RESTART_COMMAND = "hermes gateway restart" as const;
+
 export function isHermesInstanceRemovedError(error: unknown): boolean {
   return (
     typeof error === "object" &&
