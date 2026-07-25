@@ -149,13 +149,27 @@ export default defineConfig(() => {
                 target: devProxyTarget,
                 changeOrigin: true,
               },
+              // `ws: true` because /api carries the Hermes gateway socket at
+              // /api/hermes-gateway/ws alongside plain HTTP routes.
               "/api": {
                 target: devProxyTarget,
                 changeOrigin: true,
+                ws: true,
               },
               "/attachments": {
                 target: devProxyTarget,
                 changeOrigin: true,
+              },
+              // The client's RPC socket. Without a forwarding rule the upgrade
+              // is answered by Vite rather than the server, so a browser told
+              // to use the public origin (`--public-url`) connects to the Vite
+              // port and every RPC fails — the whole app reports the server as
+              // not connected. Loopback dev never hit this because the client
+              // talks to the server port directly.
+              "/ws": {
+                target: devProxyTarget,
+                changeOrigin: true,
+                ws: true,
               },
             },
           }
