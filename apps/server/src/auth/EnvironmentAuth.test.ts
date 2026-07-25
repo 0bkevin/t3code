@@ -128,7 +128,8 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
       Effect.provide(
         makeEnvironmentAuthLayer({
           mode: "web",
-          port: 7446,
+          port: 13773,
+          authCookiePort: 7446,
         }),
       ),
     ),

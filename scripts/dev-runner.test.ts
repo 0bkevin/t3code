@@ -61,6 +61,20 @@ const devServerInput = {
   runArgs: ["--inspect", "secret-token-value"],
 } as const;
 
+const defaultCreateEnvInput = {
+  mode: "dev",
+  baseEnv: {},
+  serverOffset: 0,
+  webOffset: 0,
+  t3Home: undefined,
+  browser: undefined,
+  autoBootstrapProjectFromCwd: undefined,
+  logWebSocketEvents: undefined,
+  host: undefined,
+  port: undefined,
+  devUrl: undefined,
+} as const;
+
 it.layer(NodeServices.layer)("dev-runner", (it) => {
   describe("getDevRunnerModeArgs", () => {
     it.effect("lets Vite+ honor the desktop dev task graph", () =>
@@ -144,6 +158,67 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
 
         assert.equal(env.T3CODE_HOME, undefined);
         assert.equal(env.T3CODE_NO_BROWSER, "1");
+      }),
+    );
+
+    it.effect("configures remote dev targets and cookie isolation from one public URL", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({
+          mode: "dev",
+          baseEnv: {},
+          serverOffset: 0,
+          webOffset: 0,
+          t3Home: undefined,
+          browser: undefined,
+          autoBootstrapProjectFromCwd: undefined,
+          logWebSocketEvents: undefined,
+          host: undefined,
+          port: undefined,
+          devUrl: undefined,
+          publicUrl: new URL("https://siva.example.test:7446"),
+        });
+
+        assert.equal(env.VITE_DEV_SERVER_URL, "https://siva.example.test:7446");
+        assert.equal(env.VITE_HTTP_URL, "https://siva.example.test:7446");
+        assert.equal(env.VITE_WS_URL, "wss://siva.example.test:7446");
+        assert.equal(env.T3CODE_DEV_PROXY_URL, "http://localhost:13773");
+        assert.equal(env.T3CODE_AUTH_COOKIE_PORT, "7446");
+      }),
+    );
+
+    it.effect("rejects public URLs that are not HTTP origins", () =>
+      Effect.gen(function* () {
+        const unsupportedProtocol = yield* Effect.flip(
+          createDevRunnerEnv({
+            ...defaultCreateEnvInput,
+            publicUrl: new URL("ftp://siva.example.test:7446"),
+          }),
+        );
+        const pathUrl = yield* Effect.flip(
+          createDevRunnerEnv({
+            ...defaultCreateEnvInput,
+            publicUrl: new URL("https://siva.example.test:7446/app"),
+          }),
+        );
+
+        assert.equal(unsupportedProtocol._tag, "DevRunnerPublicUrlError");
+        assert.equal(unsupportedProtocol.reason, "unsupported-protocol");
+        assert.equal(pathUrl._tag, "DevRunnerPublicUrlError");
+        assert.equal(pathUrl.reason, "not-an-origin");
+      }),
+    );
+
+    it.effect("rejects conflicting public and explicit dev URLs", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          createDevRunnerEnv({
+            ...defaultCreateEnvInput,
+            devUrl: new URL("http://localhost:7331"),
+            publicUrl: new URL("https://siva.example.test:7446"),
+          }),
+        );
+
+        assert.equal(error._tag, "DevRunnerConflictingUrlOptionsError");
       }),
     );
 

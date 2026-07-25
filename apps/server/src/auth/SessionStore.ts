@@ -469,7 +469,7 @@ export const make = Effect.gen(function* () {
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
   const cookieName = resolveSessionCookieName({
     mode: serverConfig.mode,
-    port: serverConfig.port,
+    port: serverConfig.authCookiePort ?? serverConfig.port,
   });
 
   const emitUpsert = (clientSession: AuthClientSession) =>

@@ -81,6 +81,29 @@ export class DevRunnerInvalidPortOffsetError extends Schema.TaggedErrorClass<Dev
   }
 }
 
+export class DevRunnerPublicUrlError extends Schema.TaggedErrorClass<DevRunnerPublicUrlError>()(
+  "DevRunnerPublicUrlError",
+  {
+    reason: Schema.Literals(["unsupported-protocol", "not-an-origin"]),
+    protocol: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.reason === "unsupported-protocol"
+      ? `Public URL must use HTTP or HTTPS; received protocol "${this.protocol}".`
+      : "Public URL must be an origin without credentials, a path, query parameters, or a fragment.";
+  }
+}
+
+export class DevRunnerConflictingUrlOptionsError extends Schema.TaggedErrorClass<DevRunnerConflictingUrlOptionsError>()(
+  "DevRunnerConflictingUrlOptionsError",
+  {},
+) {
+  override get message(): string {
+    return "Use either --public-url or --dev-url, not both.";
+  }
+}
+
 export class DevRunnerPortExhaustedError extends Schema.TaggedErrorClass<DevRunnerPortExhaustedError>()(
   "DevRunnerPortExhaustedError",
   {
@@ -131,6 +154,8 @@ export class DevRunnerProcessExitError extends Schema.TaggedErrorClass<DevRunner
 export const DevRunnerError = Schema.Union([
   DevRunnerConfigurationError,
   DevRunnerInvalidPortOffsetError,
+  DevRunnerPublicUrlError,
+  DevRunnerConflictingUrlOptionsError,
   DevRunnerPortExhaustedError,
   DevRunnerProcessError,
   DevRunnerProcessExitError,
@@ -150,6 +175,11 @@ const optionalBooleanConfig = (name: string): Config.Config<boolean | undefined>
   );
 const optionalPortConfig = (name: string): Config.Config<number | undefined> =>
   Config.port(name).pipe(
+    Config.option,
+    Config.map((value) => Option.getOrUndefined(value)),
+  );
+const optionalUrlConfig = (name: string): Config.Config<URL | undefined> =>
+  Config.url(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
@@ -227,6 +257,7 @@ interface CreateDevRunnerEnvInput {
   readonly host: string | undefined;
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
+  readonly publicUrl?: URL | undefined;
 }
 
 export function createDevRunnerEnv({
@@ -241,18 +272,68 @@ export function createDevRunnerEnv({
   host,
   port,
   devUrl,
-}: CreateDevRunnerEnvInput): Effect.Effect<NodeJS.ProcessEnv, never, Path.Path> {
+  publicUrl,
+}: CreateDevRunnerEnvInput): Effect.Effect<
+  NodeJS.ProcessEnv,
+  DevRunnerPublicUrlError | DevRunnerConflictingUrlOptionsError,
+  Path.Path
+> {
   return Effect.gen(function* () {
     const serverPort = port ?? BASE_SERVER_PORT + serverOffset;
     const webPort = BASE_WEB_PORT + webOffset;
     const configuredBaseDir = t3Home?.trim() || baseEnv.T3CODE_HOME?.trim() || undefined;
     const resolvedBaseDir = yield* resolveBaseDir(configuredBaseDir);
     const isDesktopMode = mode === "dev:desktop";
+    const configuredPublicUrl = isDesktopMode ? undefined : publicUrl;
+
+    if (configuredPublicUrl !== undefined && devUrl !== undefined) {
+      return yield* new DevRunnerConflictingUrlOptionsError();
+    }
+    if (
+      configuredPublicUrl !== undefined &&
+      configuredPublicUrl.protocol !== "http:" &&
+      configuredPublicUrl.protocol !== "https:"
+    ) {
+      return yield* new DevRunnerPublicUrlError({
+        reason: "unsupported-protocol",
+        protocol: configuredPublicUrl.protocol,
+      });
+    }
+    if (
+      configuredPublicUrl !== undefined &&
+      (configuredPublicUrl.username !== "" ||
+        configuredPublicUrl.password !== "" ||
+        configuredPublicUrl.pathname !== "/" ||
+        configuredPublicUrl.search !== "" ||
+        configuredPublicUrl.hash !== "")
+    ) {
+      return yield* new DevRunnerPublicUrlError({
+        reason: "not-an-origin",
+        protocol: configuredPublicUrl.protocol,
+      });
+    }
+
+    const publicHttpUrl = configuredPublicUrl?.origin;
+    const publicWsUrl =
+      configuredPublicUrl === undefined
+        ? undefined
+        : (() => {
+            const url = new URL(configuredPublicUrl);
+            url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+            return url.origin;
+          })();
+    const publicPort =
+      configuredPublicUrl === undefined
+        ? undefined
+        : Number(
+            configuredPublicUrl.port || (configuredPublicUrl.protocol === "https:" ? "443" : "80"),
+          );
 
     const output: NodeJS.ProcessEnv = {
       ...baseEnv,
       PORT: String(webPort),
       VITE_DEV_SERVER_URL:
+        publicHttpUrl ??
         devUrl?.toString() ??
         `http://${isDesktopMode ? DESKTOP_DEV_LOOPBACK_HOST : "localhost"}:${webPort}`,
     };
@@ -265,8 +346,12 @@ export function createDevRunnerEnv({
 
     if (!isDesktopMode) {
       output.T3CODE_PORT = String(serverPort);
-      output.VITE_HTTP_URL = `http://localhost:${serverPort}`;
-      output.VITE_WS_URL = `ws://localhost:${serverPort}`;
+      output.T3CODE_DEV_PROXY_URL = `http://localhost:${serverPort}`;
+      output.VITE_HTTP_URL = publicHttpUrl ?? `http://localhost:${serverPort}`;
+      output.VITE_WS_URL = publicWsUrl ?? `ws://localhost:${serverPort}`;
+      if (publicPort !== undefined) {
+        output.T3CODE_AUTH_COOKIE_PORT = String(publicPort);
+      }
     } else {
       output.T3CODE_PORT = String(serverPort);
       output.VITE_HTTP_URL = `http://${DESKTOP_DEV_LOOPBACK_HOST}:${serverPort}`;
@@ -479,6 +564,7 @@ interface DevRunnerCliInput {
   readonly host: string | undefined;
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
+  readonly publicUrl?: URL | undefined;
   readonly dryRun: boolean;
   readonly runArgs: ReadonlyArray<string>;
 }
@@ -517,6 +603,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       host: input.host,
       port: input.port,
       devUrl: input.devUrl,
+      publicUrl: input.publicUrl,
     });
 
     const selectionSuffix =
@@ -626,6 +713,13 @@ const devRunnerCli = Command.make("dev-runner", {
     ),
     Flag.optional,
     Flag.map(Option.getOrUndefined),
+  ),
+  publicUrl: Flag.string("public-url").pipe(
+    Flag.withSchema(Schema.URLFromString),
+    Flag.withDescription(
+      "Browser-facing HTTP(S) origin for remote dev access; also namespaces auth cookies by its public port.",
+    ),
+    Flag.withFallbackConfig(optionalUrlConfig("T3CODE_PUBLIC_URL")),
   ),
   dryRun: Flag.boolean("dry-run").pipe(
     Flag.withDescription("Resolve mode/ports/env and print, but do not spawn Vite+."),

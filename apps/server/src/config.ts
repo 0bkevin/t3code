@@ -67,6 +67,7 @@ export class ServerConfig extends Context.Service<
     readonly otlpServiceName: string;
     readonly mode: RuntimeMode;
     readonly port: number;
+    readonly authCookiePort?: number;
     readonly host: string | undefined;
     readonly cwd: string;
     readonly baseDir: string;

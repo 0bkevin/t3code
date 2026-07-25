@@ -40,7 +40,7 @@ export const make = Effect.gen(function* () {
     sessionMethods: ["browser-session-cookie", "bearer-access-token", "dpop-access-token"],
     sessionCookieName: resolveSessionCookieName({
       mode: config.mode,
-      port: config.port,
+      port: config.authCookiePort ?? config.port,
     }),
   };
 

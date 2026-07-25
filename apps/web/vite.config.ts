@@ -8,6 +8,7 @@ import { defineConfig } from "vite-plus";
 import pkg from "./package.json" with { type: "json" };
 
 import { loadRepoEnv } from "../../scripts/lib/public-config";
+import { resolveDevProxyTarget } from "./src/viteHelpers";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
@@ -15,6 +16,18 @@ Object.assign(process.env, repoEnv);
 const port = Number(process.env.PORT ?? 5733);
 const host = process.env.HOST?.trim() || "localhost";
 const configuredWsUrl = process.env.VITE_WS_URL?.trim();
+const configuredDevProxyUrl = process.env.T3CODE_DEV_PROXY_URL?.trim();
+const configuredDevServerUrl = (() => {
+  const rawValue = process.env.VITE_DEV_SERVER_URL?.trim();
+  if (!rawValue) {
+    return undefined;
+  }
+  try {
+    return new URL(rawValue);
+  } catch {
+    return undefined;
+  }
+})();
 const configuredRelayUrl = repoEnv.VITE_T3CODE_RELAY_URL?.trim() || "";
 const configuredClerkPublishableKey = repoEnv.VITE_CLERK_PUBLISHABLE_KEY?.trim() || "";
 const configuredClerkJwtTemplate = repoEnv.VITE_CLERK_JWT_TEMPLATE?.trim() || "";
@@ -65,28 +78,7 @@ const unitTestProject = {
   },
 } satisfies TestProjectInlineConfiguration;
 
-function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
-  if (!wsUrl) {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(wsUrl);
-    if (url.protocol === "ws:") {
-      url.protocol = "http:";
-    } else if (url.protocol === "wss:") {
-      url.protocol = "https:";
-    }
-    url.pathname = "";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-const devProxyTarget = resolveDevProxyTarget(configuredWsUrl);
+const devProxyTarget = resolveDevProxyTarget(configuredDevProxyUrl ?? configuredWsUrl);
 
 export default defineConfig(() => {
   return {
@@ -145,6 +137,11 @@ export default defineConfig(() => {
       host,
       port,
       strictPort: true,
+      ...(configuredDevServerUrl
+        ? {
+            allowedHosts: [configuredDevServerUrl.hostname],
+          }
+        : {}),
       ...(devProxyTarget
         ? {
             proxy: {
@@ -164,12 +161,16 @@ export default defineConfig(() => {
           }
         : {}),
       hmr: {
-        // Explicit config so Vite's HMR WebSocket connects reliably
-        // inside Electron's BrowserWindow. Vite 8 uses console.debug for
-        // connection logs — enable "Verbose" in DevTools to see them.
-        protocol: "ws",
-        host,
-        clientPort: port,
+        // Follow the browser-facing dev origin when reverse-proxied, while
+        // preserving the explicit loopback config used by Electron.
+        protocol: configuredDevServerUrl?.protocol === "https:" ? "wss" : "ws",
+        host: configuredDevServerUrl?.hostname ?? host,
+        clientPort: configuredDevServerUrl
+          ? Number(
+              configuredDevServerUrl.port ||
+                (configuredDevServerUrl.protocol === "https:" ? "443" : "80"),
+            )
+          : port,
       },
     },
     build: {

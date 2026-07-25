@@ -7,6 +7,9 @@
 - Web dev commands do not auto-open a browser. Open the one-time pairing URL printed by the server so the first browser navigation is authenticated. Set `T3CODE_NO_BROWSER=0` only when interactive auto-open is intentional.
 - Pass dev-runner flags directly after the root task name, for example:
   `vp run dev --home-dir /tmp/t3code-dev`
+- For a reverse-proxied remote dev origin, pass `--public-url` so browser HTTP,
+  WebSocket, HMR, allowed-host, and port-scoped auth-cookie settings stay aligned:
+  `vp run dev --public-url https://siva.example.test:7446`
 - `vp run start` — Runs the production server (serves built web app as static files).
 - `vp run build` — Builds contracts, web app, and server.
 - `vp run typecheck` — Strict TypeScript checks for all packages.
