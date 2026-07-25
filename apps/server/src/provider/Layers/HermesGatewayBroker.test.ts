@@ -18,6 +18,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
@@ -36,6 +37,7 @@ const otherInstanceId = ProviderInstanceId.make("hermes_other");
 const defaultHermesInstanceId = ProviderInstanceId.make("hermes");
 const metadataSecretNameForTest = (id: ProviderInstanceId) =>
   `hermes-gateway-metadata-${Buffer.from(id, "utf8").toString("base64url")}`;
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 class HermesTestInstance extends Context.Service<HermesTestInstance, ProviderInstance>()(
   "t3/provider/Layers/HermesGatewayBroker.test/HermesTestInstance",
 ) {}
@@ -551,6 +553,49 @@ it.effect("checks nickname uniqueness from persisted metadata after restart", ()
       }),
     );
     assert.equal(error.code, "nickname-conflict");
+  }),
+);
+
+it.effect("keeps previous-protocol metadata manageable after restart", () =>
+  Effect.gen(function* () {
+    const secrets = makeSecretStore();
+    const previousProtocolVersion = HERMES_GATEWAY_PROTOCOL_VERSION - 1;
+    const legacyMetadata = (nickname: string) => ({
+      nickname,
+      connectorUrl: "https://t3.example.test",
+      revoked: false,
+      lastSeen: {
+        pluginVersion: "0.1.0",
+        hermesVersion: "0.19.0",
+        capabilities: {
+          ...capabilities,
+          protocolVersion: previousProtocolVersion,
+        },
+        connectedAt: "2026-07-24T00:00:00.000Z",
+        activeSessionCount: 0,
+      },
+    });
+    yield* secrets.set(
+      metadataSecretNameForTest(instanceId),
+      new TextEncoder().encode(encodeUnknownJson(legacyMetadata("Legacy Remote"))),
+    );
+    yield* secrets.set(
+      metadataSecretNameForTest(otherInstanceId),
+      new TextEncoder().encode(encodeUnknownJson(legacyMetadata("Legacy Other"))),
+    );
+
+    const broker = yield* makeBroker(secrets);
+    const legacyStatus = yield* broker.getInstanceStatus(instanceId);
+    assert.equal(legacyStatus.protocolVersion, previousProtocolVersion);
+    assert.isNull(legacyStatus.capabilities);
+    assert.equal((yield* broker.revokeInstance(instanceId)).status, "revoked");
+
+    const enrollment = yield* broker.createEnrollment({
+      instanceId: otherInstanceId,
+      nickname: "Legacy Other",
+      connectorUrl: "https://t3.example.test",
+    });
+    assert.equal(enrollment.instanceId, otherInstanceId);
   }),
 );
 

@@ -559,6 +559,7 @@ describe("EnvironmentThreads", () => {
 
       expect(Option.isNone(recovered.error)).toBe(true);
       expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
       expect(yield* Ref.get(harness.retryCount)).toBe(0);
     }),
   );

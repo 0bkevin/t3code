@@ -6,6 +6,7 @@ import {
   HermesGatewayCredential,
   HermesGatewayEnrollmentToken,
   HermesGatewayCapabilities,
+  HermesGatewayHelloCapabilities,
   HermesGatewayManagementError,
   type HermesGatewayConnectionHello,
   type HermesGatewayCreateEnrollmentInput,
@@ -65,7 +66,7 @@ const InstanceMetadata = Schema.Struct({
     Schema.Struct({
       pluginVersion: Schema.String,
       hermesVersion: Schema.String,
-      capabilities: HermesGatewayCapabilities,
+      capabilities: HermesGatewayHelloCapabilities,
       connectedAt: Schema.String,
       activeSessionCount: Schema.Number,
     }),
@@ -155,7 +156,10 @@ const statusFromState = (
       activeSessionCount: state.connection?.activeSessionCount ?? 0,
       protocolVersion:
         observed?.capabilities.protocolVersion ?? state.upgradeRequired?.protocolVersion ?? null,
-      capabilities: observed?.capabilities ?? null,
+      capabilities:
+        observed?.capabilities !== undefined && isStrictCapabilities(observed.capabilities)
+          ? observed.capabilities
+          : null,
     };
   })(),
   instanceId,
