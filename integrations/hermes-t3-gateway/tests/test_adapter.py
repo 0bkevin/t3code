@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import enum
 import importlib.util
@@ -396,6 +397,90 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["type"], "item.updated")
         self.assertEqual(updated["itemId"], started["itemId"])
         self.assertEqual(updated["detail"], "Running tests")
+
+    async def test_concurrent_generic_activity_updates_share_one_lifecycle(self):
+        await self._start_turn("thread-activity-concurrent", "turn-activity-concurrent")
+        turn = self.adapter._active_turns["thread-activity-concurrent"]
+        original_send = self.connection.send
+        first_send_started = asyncio.Event()
+        release_first_send = asyncio.Event()
+
+        async def block_first_activity_send(message):
+            if message["type"] == "item.started" and not first_send_started.is_set():
+                first_send_started.set()
+                await release_first_send.wait()
+            await original_send(message)
+
+        self.connection.send = block_first_activity_send
+        first_update = asyncio.create_task(
+            self.adapter._emit_generic_activity(turn, "Reading repository")
+        )
+        await first_send_started.wait()
+        second_update = asyncio.create_task(
+            self.adapter._emit_generic_activity(turn, "Running tests")
+        )
+        await asyncio.sleep(0)
+        release_first_send.set()
+        await asyncio.gather(first_update, second_update)
+
+        activity_frames = [
+            message
+            for message in self.connection.messages
+            if message["type"] in {"item.started", "item.updated"}
+        ]
+        self.assertEqual(
+            [message["type"] for message in activity_frames],
+            ["item.started", "item.updated"],
+        )
+        self.assertEqual(activity_frames[0]["itemId"], activity_frames[1]["itemId"])
+        self.assertEqual(turn.generic_activity_id, activity_frames[0]["itemId"])
+        self.assertEqual(turn.generic_activity_detail, "Running tests")
+
+    async def test_turn_completion_waits_for_in_flight_generic_activity_update(self):
+        await self._start_turn("thread-activity-complete", "turn-activity-complete")
+        turn = self.adapter._active_turns["thread-activity-complete"]
+        await self.adapter._emit_generic_activity(turn, "Reading repository")
+        activity_id = turn.generic_activity_id
+        original_send = self.connection.send
+        update_send_started = asyncio.Event()
+        release_update_send = asyncio.Event()
+
+        async def block_activity_update(message):
+            if message["type"] == "item.updated":
+                update_send_started.set()
+                await release_update_send.wait()
+            await original_send(message)
+
+        self.connection.send = block_activity_update
+        in_flight_update = asyncio.create_task(
+            self.adapter._emit_generic_activity(turn, "Running tests")
+        )
+        await update_send_started.wait()
+        completion = asyncio.create_task(self.adapter._complete_turn(turn))
+        await asyncio.sleep(0)
+        self.assertFalse(completion.done())
+
+        release_update_send.set()
+        await asyncio.gather(in_flight_update, completion)
+
+        lifecycle_frames = [
+            message
+            for message in self.connection.messages
+            if message["type"]
+            in {"item.started", "item.updated", "item.completed", "turn.completed"}
+        ]
+        self.assertEqual(
+            [message["type"] for message in lifecycle_frames],
+            ["item.started", "item.updated", "item.completed", "turn.completed"],
+        )
+        self.assertTrue(
+            all(
+                message["itemId"] == activity_id
+                for message in lifecycle_frames
+                if message["type"].startswith("item.")
+            )
+        )
+        self.assertNotIn("thread-activity-complete", self.adapter._active_turns)
 
     async def test_exact_t3_home_channel_notice_is_suppressed(self):
         await self._start_turn("thread-notice", "turn-notice")

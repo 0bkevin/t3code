@@ -64,6 +64,10 @@ class _TurnState:
     tool_items: dict[str, str] = field(default_factory=dict)
     generic_activity_id: str | None = None
     generic_activity_detail: str | None = None
+    generic_activity_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        repr=False,
+    )
 
 
 @dataclass
@@ -728,64 +732,70 @@ class T3PlatformAdapter(BasePlatformAdapter):
                     title="Hermes response",
                 )
             )
-        if turn.generic_activity_id is not None:
+        async with turn.generic_activity_lock:
+            if self._active_turns.get(turn.thread_id) is not turn:
+                return
+            if turn.generic_activity_id is not None:
+                await self._send_frame(
+                    frame(
+                        "item.completed",
+                        threadId=turn.thread_id,
+                        sessionId=turn.session_id,
+                        turnId=turn.turn_id,
+                        itemId=turn.generic_activity_id,
+                        itemType="unknown",
+                        status="completed",
+                        title="Hermes activity",
+                        **(
+                            {"detail": turn.generic_activity_detail}
+                            if turn.generic_activity_detail
+                            else {}
+                        ),
+                    )
+                )
             await self._send_frame(
                 frame(
-                    "item.completed",
+                    "turn.completed",
                     threadId=turn.thread_id,
                     sessionId=turn.session_id,
                     turnId=turn.turn_id,
-                    itemId=turn.generic_activity_id,
-                    itemType="unknown",
-                    status="completed",
-                    title="Hermes activity",
-                    **(
-                        {"detail": turn.generic_activity_detail}
-                        if turn.generic_activity_detail
-                        else {}
-                    ),
+                    state="completed",
+                    stopReason=None,
                 )
             )
-        await self._send_frame(
-            frame(
-                "turn.completed",
-                threadId=turn.thread_id,
-                sessionId=turn.session_id,
-                turnId=turn.turn_id,
-                state="completed",
-                stopReason=None,
-            )
-        )
-        self._active_turns.pop(turn.thread_id, None)
+            self._active_turns.pop(turn.thread_id, None)
         await self._send_status()
 
     async def _emit_generic_activity(self, turn: _TurnState, detail: str) -> None:
         if not detail:
             return
         normalized_detail = str(detail)[:2_000]
-        if turn.generic_activity_detail == normalized_detail:
-            return
-        activity_id = turn.generic_activity_id
-        if activity_id is None:
-            activity_id = item_id()
-            event_type = "item.started"
-        else:
-            event_type = "item.updated"
-        await self._send_frame(
-            frame(
-                event_type,
-                threadId=turn.thread_id,
-                sessionId=turn.session_id,
-                turnId=turn.turn_id,
-                itemId=activity_id,
-                itemType="unknown",
-                status="inProgress",
-                title="Hermes activity",
-                detail=normalized_detail,
+        async with turn.generic_activity_lock:
+            if self._active_turns.get(turn.thread_id) is not turn:
+                return
+            if turn.generic_activity_detail == normalized_detail:
+                return
+            activity_id = turn.generic_activity_id
+            if activity_id is None:
+                activity_id = item_id()
+                event_type = "item.started"
+            else:
+                event_type = "item.updated"
+            await self._send_frame(
+                frame(
+                    event_type,
+                    threadId=turn.thread_id,
+                    sessionId=turn.session_id,
+                    turnId=turn.turn_id,
+                    itemId=activity_id,
+                    itemType="unknown",
+                    status="inProgress",
+                    title="Hermes activity",
+                    detail=normalized_detail,
+                )
             )
-        )
-        turn.generic_activity_id = activity_id
-        turn.generic_activity_detail = normalized_detail
+            turn.generic_activity_id = activity_id
+            turn.generic_activity_detail = normalized_detail
 
     def emit_tool_started(
         self,
