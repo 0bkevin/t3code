@@ -3202,7 +3202,7 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(true);
   });
 
-  it("upserts unknown provider item lifecycle into one meaningful activity", async () => {
+  it("upserts status_text provider item lifecycle into one meaningful activity", async () => {
     const harness = await createHarness();
     const itemId = asItemId("item-generic-activity");
     const turnId = asTurnId("turn-generic-activity");
@@ -3216,7 +3216,7 @@ describe("ProviderRuntimeIngestion", () => {
       turnId,
       itemId,
       payload: {
-        itemType: "unknown",
+        itemType: "status_text",
         status: "inProgress",
         title: "Reading skill hermes-agent",
         detail: "Opening the skill instructions.",
@@ -3232,7 +3232,7 @@ describe("ProviderRuntimeIngestion", () => {
       turnId,
       itemId,
       payload: {
-        itemType: "unknown",
+        itemType: "status_text",
         status: "inProgress",
         title: "Reading skill hermes-agent",
         detail: "Parsing the workflow.",
@@ -3247,7 +3247,7 @@ describe("ProviderRuntimeIngestion", () => {
       turnId,
       itemId,
       payload: {
-        itemType: "unknown",
+        itemType: "status_text",
         status: "completed",
         title: "Read skill hermes-agent",
         detail: "Skill instructions loaded.",
@@ -3274,15 +3274,73 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activities).toHaveLength(1);
     expect(activity?.kind).toBe("provider.activity");
     expect(activity?.tone).toBe("info");
-    expect(activity?.summary).toBe("Read skill hermes-agent");
+    expect(activity?.summary).toBe("Skill instructions loaded.");
     expect(payload).toMatchObject({
-      itemType: "unknown",
+      itemType: "status_text",
       status: "completed",
       providerItemId: itemId,
       title: "Read skill hermes-agent",
       detail: "Skill instructions loaded.",
     });
     expect(payload?.data).toBeUndefined();
+  });
+
+  // Regression: `unknown` is the canonical "could not classify this item"
+  // sentinel and adapters rely on it being INERT. CodexAdapter deliberately
+  // emits it for item.updated; routing generic activity through it put rows
+  // summarized as the literal string "Provider activity" into Codex threads.
+  // Renderable status text has its own item type (`status_text`) instead.
+  it("does not create activities for the unknown item sentinel", async () => {
+    const harness = await createHarness();
+    const itemId = asItemId("item-codex-unknown");
+    const turnId = asTurnId("turn-codex-unknown");
+
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-codex-unknown-updated"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "unknown",
+        status: "inProgress",
+      },
+    });
+    // A tool item after it gives the poll something real to settle on, so the
+    // assertion is "the unknown item produced nothing" rather than a race.
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-codex-unknown-tool"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-codex-tool"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "ls",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
+      ),
+    );
+
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === `provider:codex:item:${itemId}`,
+      ),
+    ).toBe(false);
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "provider.activity",
+      ),
+    ).toBe(false);
   });
 
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {

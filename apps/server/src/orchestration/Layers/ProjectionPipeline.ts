@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  mergeAssistantMessageText,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
@@ -886,18 +887,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const previousMessage = Option.getOrUndefined(existingMessage);
           const nextText = Option.match(existingMessage, {
             onNone: () => event.payload.text,
-            onSome: (message) => {
-              if (event.payload.textOperation === "replace") {
-                return event.payload.text;
-              }
-              if (event.payload.streaming) {
-                return `${message.text}${event.payload.text}`;
-              }
-              if (event.payload.text.length === 0) {
-                return message.text;
-              }
-              return event.payload.text;
-            },
+            onSome: (message) =>
+              mergeAssistantMessageText(message.text, {
+                text: event.payload.text,
+                streaming: event.payload.streaming,
+                ...(event.payload.textOperation !== undefined
+                  ? { textOperation: event.payload.textOperation }
+                  : {}),
+              }),
           });
           const nextAttachments =
             event.payload.attachments !== undefined

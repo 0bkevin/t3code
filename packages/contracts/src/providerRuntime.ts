@@ -128,6 +128,11 @@ export const CanonicalItemType = Schema.Literals([
   "review_exited",
   "context_compaction",
   "error",
+  // Free-form provider status line ("Thinking…", "Searching the web…").
+  // Deliberately distinct from `unknown`: adapters use `unknown` as the
+  // "could not classify this item" sentinel and rely on it being inert, so
+  // renderable status text needs its own type rather than riding that one.
+  "status_text",
   "unknown",
 ]);
 export type CanonicalItemType = typeof CanonicalItemType.Type;

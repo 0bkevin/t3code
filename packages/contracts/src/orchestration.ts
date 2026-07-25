@@ -1044,6 +1044,40 @@ export const ThreadMessageSentPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+/**
+ * The single append-vs-replace rule for assistant message text.
+ *
+ * Three projections consume `thread.message-sent` — the server projector, the
+ * server projection pipeline, and the live client reducer — and each one has to
+ * fold an incoming payload into the text it already holds. Hand-writing that
+ * fold per projection is how `textOperation: "replace"` shipped to two of the
+ * three: browsers appended revised snapshots (rendering `"Hello worldHello,
+ * world!"`) until a refresh pulled the corrected text from the server.
+ *
+ * Every projection calls this instead. A new payload field that changes text
+ * semantics is added here once, and no projection can silently miss it.
+ *
+ * Rules, in order:
+ *   - `replace` — an authoritative snapshot supersedes what we hold. Providers
+ *     that emit revisable cumulative output (Hermes) rely on this.
+ *   - `streaming` — an incremental delta appends.
+ *   - empty non-streaming text — a terminal event carrying no text keeps what we
+ *     already have rather than blanking the message.
+ *   - otherwise — the payload is the whole text.
+ */
+export const mergeAssistantMessageText = (
+  existingText: string,
+  payload: {
+    readonly text: string;
+    readonly streaming: boolean;
+    readonly textOperation?: "replace" | undefined;
+  },
+): string => {
+  if (payload.textOperation === "replace") return payload.text;
+  if (payload.streaming) return `${existingText}${payload.text}`;
+  return payload.text.length > 0 ? payload.text : existingText;
+};
+
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,

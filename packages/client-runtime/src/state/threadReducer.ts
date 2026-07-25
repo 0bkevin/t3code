@@ -12,6 +12,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
+import { mergeAssistantMessageText } from "@t3tools/contracts";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -246,11 +247,13 @@ export function applyThreadDetailEvent(
               ? entry
               : {
                   ...entry,
-                  text: message.streaming
-                    ? `${entry.text}${message.text}`
-                    : message.text.length > 0
-                      ? message.text
-                      : entry.text,
+                  text: mergeAssistantMessageText(entry.text, {
+                    text: message.text,
+                    streaming: message.streaming,
+                    ...(event.payload.textOperation !== undefined
+                      ? { textOperation: event.payload.textOperation }
+                      : {}),
+                  }),
                   streaming: message.streaming,
                   ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
                   ...(message.streaming ? {} : { updatedAt: message.updatedAt }),

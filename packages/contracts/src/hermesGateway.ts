@@ -251,6 +251,15 @@ export const HermesGatewayConnectionHello = Schema.Struct({
   hermesVersion: TrimmedNonEmptyString,
   capabilities: HermesGatewayHelloCapabilities,
   authentication: HermesGatewayAuthentication,
+  /**
+   * The model Hermes is configured to run, reported so T3 can show something
+   * truthful in the picker instead of a placeholder. Read-only — Hermes owns
+   * model selection, and T3 declares `sessionModelSwitch: "unsupported"`.
+   *
+   * Optional so a plugin that predates this field still connects: an absent
+   * value degrades to the generic label rather than failing the handshake.
+   */
+  model: Schema.optional(TrimmedNonEmptyString),
 });
 export type HermesGatewayConnectionHello = typeof HermesGatewayConnectionHello.Type;
 

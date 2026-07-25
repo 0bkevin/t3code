@@ -319,6 +319,54 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    // Regression: a `replace` snapshot supersedes the text we hold rather than
+    // appending to it, even while `streaming` is true. Providers that emit
+    // revisable cumulative output (Hermes) revise mid-turn; appending rendered
+    // "Hello worldHello, world!" in the browser until a refresh pulled the
+    // corrected text from the server projection.
+    it("replaces text when the payload is an authoritative snapshot", () => {
+      const threadWithMessage: OrchestrationThread = {
+        ...baseThread,
+        messages: [
+          {
+            id: MessageId.make("msg-2"),
+            role: "assistant",
+            text: "Hello world",
+            turnId: TurnId.make("turn-1"),
+            streaming: true,
+            createdAt: "2026-04-01T06:00:00.000Z",
+            updatedAt: "2026-04-01T06:00:00.000Z",
+          },
+        ],
+      };
+
+      const result = applyThreadDetailEvent(threadWithMessage, {
+        ...baseEventFields,
+        sequence: 7,
+        occurredAt: "2026-04-01T06:01:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-2"),
+          role: "assistant",
+          text: "Hello, world!",
+          turnId: TurnId.make("turn-1"),
+          streaming: true,
+          textOperation: "replace",
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:01:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages).toHaveLength(1);
+        expect(result.thread.messages[0]?.text).toBe("Hello, world!");
+      }
+    });
+
     it("updates latestTurn for assistant messages with a turn", () => {
       const result = applyThreadDetailEvent(baseThread, {
         ...baseEventFields,

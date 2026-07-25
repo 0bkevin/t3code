@@ -1,5 +1,6 @@
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import {
+  mergeAssistantMessageText,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
@@ -471,14 +472,13 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
-                    text:
-                      payload.textOperation === "replace"
-                        ? message.text
-                        : message.streaming
-                          ? `${entry.text}${message.text}`
-                          : message.text.length > 0
-                            ? message.text
-                            : entry.text,
+                    text: mergeAssistantMessageText(entry.text, {
+                      text: message.text,
+                      streaming: message.streaming,
+                      ...(payload.textOperation !== undefined
+                        ? { textOperation: payload.textOperation }
+                        : {}),
+                    }),
                     streaming: message.streaming,
                     updatedAt: message.updatedAt,
                     turnId: message.turnId,

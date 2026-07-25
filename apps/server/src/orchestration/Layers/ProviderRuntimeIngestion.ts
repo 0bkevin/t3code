@@ -332,7 +332,10 @@ function genericProviderActivity(
     createdAt: event.createdAt,
     tone: "info",
     kind: "provider.activity",
-    summary: title ?? (detail ? truncateDetail(detail, 120) : "Provider activity"),
+    // Status text is the interesting part here; the title is a generic label
+    // ("Hermes activity"). Prefer the detail so the row reads as the status the
+    // provider is actually reporting.
+    summary: detail ? truncateDetail(detail, 120) : (title ?? "Working…"),
     payload: {
       itemType: event.payload.itemType,
       status,
@@ -653,7 +656,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.updated": {
-      if (event.payload.itemType === "unknown") {
+      if (event.payload.itemType === "status_text") {
         return [genericProviderActivity(event, maybeSequence)];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
@@ -679,7 +682,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
-      if (event.payload.itemType === "unknown") {
+      if (event.payload.itemType === "status_text") {
         return [genericProviderActivity(event, maybeSequence)];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
@@ -704,7 +707,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
-      if (event.payload.itemType === "unknown") {
+      if (event.payload.itemType === "status_text") {
         return [genericProviderActivity(event, maybeSequence)];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
