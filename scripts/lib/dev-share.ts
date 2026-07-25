@@ -153,8 +153,9 @@ export const shareDevServer = Effect.fn("devShare.shareDevServer")(function* (in
 
   // Clear any mapping left behind by a run that was killed before its finalizer
   // could fire. Serve config survives both the process and a reboot, and a
-  // stale entry may carry path routes we no longer want (older versions mapped
-  // /ws, /api and friends to a separate backend port).
+  // stale entry may carry path routes we no longer want — older versions mapped
+  // /ws, /api and friends to a separate backend port, and serving "/" alone
+  // would leave those pointing at a port nothing is listening on.
   yield* unshareDevServer(input.webPort);
 
   const serve = yield* runTailscale(
@@ -163,9 +164,13 @@ export const shareDevServer = Effect.fn("devShare.shareDevServer")(function* (in
   );
 
   if (serve.exitCode !== 0) {
+    // The clear above already happened, so say so: on a re-share this port is
+    // now serving nothing, and an operator who only saw "serve failed" would
+    // reasonably assume the previous mapping survived.
+    const cause = serve.stderr.trim() || `exit code ${String(serve.exitCode)}`;
     return yield* new DevShareError({
       reason: "serve-failed",
-      detail: serve.stderr.trim() || `exit code ${String(serve.exitCode)} for port ${port}`,
+      detail: `${cause} (port ${port} is no longer served; any previous mapping for it was cleared before this attempt)`,
     });
   }
 

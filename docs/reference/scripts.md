@@ -44,10 +44,12 @@ Ports resolve in this order, first match winning:
 
 1. `T3CODE_PORT_OFFSET=<n>` — exact numeric offset, full control.
 2. `T3CODE_DEV_INSTANCE=<value>` — numeric offset, or a hashed one for non-numeric values. Example: `T3CODE_DEV_INSTANCE=branch-a vp run dev:desktop`
-3. **Git worktree** — the offset is hashed from the worktree path, so every worktree gets its own stable pair that survives restarts and doesn't collide with its siblings.
+3. **Git worktree** — the offset is hashed from the worktree path, so a worktree gets the same preferred pair every time instead of everyone starting at the default and racing for it.
 4. Otherwise the defaults: server `13773`, web `5733`.
 
-Whatever the source, both ports are then checked on loopback and shifted together if either is taken. The resolved values are printed on the `[dev-runner] …` line; `--dry-run` prints them without starting anything. Read them from there rather than assuming the defaults.
+Whatever the source, this only picks a _preferred_ offset. Both ports are then checked on loopback and shifted together if either is taken, so two worktrees whose hashes collide — or one whose ports something else already holds — still start, just not on the offset they asked for. Ports are stable across restarts in practice, not guaranteed.
+
+Which means: read the resolved values from the `[dev-runner] …` line rather than assuming them, and re-read them after a restart. `--dry-run` prints them without starting anything (it resolves only — it will not touch a `--share` mapping).
 
 ## Browser dev is single-origin
 

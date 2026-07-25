@@ -18,10 +18,12 @@ Use this skill for the web client. For iOS Simulator, Android Emulator, or physi
    (see "Share a dev server with the user" below).
 4. Keep the terminal session alive and read the selected server port, web port, base directory, and pairing URL from its output.
 
-Ports are derived from the worktree path, so each worktree gets its own stable
-pair that survives restarts. Read them from the dev-runner line rather than
-assuming `5733`/`13773`; `node scripts/dev-runner.ts dev --dry-run` prints them
-without starting anything.
+Ports are derived from the worktree path, so a worktree prefers the same pair on
+every run rather than racing others for the default. That is a preference, not a
+guarantee — the runner shifts both ports when either is already taken. Read the
+actual values from the dev-runner line rather than assuming `5733`/`13773`, and
+re-read them after a restart; `node scripts/dev-runner.ts dev --dry-run` prints
+them without starting anything.
 
 Treat a base directory as disposable only when it was created or deliberately selected for the current test. Never delete or directly seed the shared `~/.t3` directory. Prefer starting with a new temporary base directory over clearing state of uncertain ownership.
 
@@ -45,7 +47,9 @@ Treat the overall testing or implementation loop—not an assistant turn or one 
 4. Wait for the pairing exchange and redirect to finish before navigating elsewhere.
 5. Continue in the same browser context so its stored bearer session remains available.
 
-Treat pairing URLs as secrets. Do not copy them into final responses, screenshots, committed files, or durable logs. A pairing token is short-lived and single-use; opening the URL in another browser or opening it twice can consume it.
+Treat pairing URLs as secrets: they grant access to the environment. Never put one anywhere it outlives the moment — screenshots, committed files, durable logs, or a PR description.
+
+The one exception is handing access to the user who asked for it: when they want to open the app themselves (see "Share a dev server with the user"), the URL is the deliverable, so give it to them directly in the response. Do not volunteer one otherwise. A pairing token is short-lived and single-use; opening the URL in another browser or opening it twice can consume it.
 
 ## Recover a consumed or expired pairing token
 
@@ -83,6 +87,8 @@ This publishes the web port over HTTPS on the machine's tailnet and prints
 `[dev-runner] shared on tailnet: https://<host>:<port>/`. The pairing URL logged
 right after is already built against that origin, so give the user that URL
 verbatim — it is the deliverable, and it works unchanged on any of their devices.
+This is the one case where a pairing URL belongs in a response: it is going to
+the person who asked for it. It still must not go anywhere durable.
 
 Dev is single-origin: Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` to
 the backend, so one shared port covers the whole app. Do not map backend paths by
