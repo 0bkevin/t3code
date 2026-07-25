@@ -618,6 +618,69 @@ it.effect("re-issues session.ensure on reconnect and keeps streaming a turn that
 // fires, T3 keeps a session the new plugin process has never heard of, and its
 // next turn.start comes back "Call session.ensure before starting a turn" —
 // the thread is dead with no way to recover from the UI.
+// Regression: T3 restarting must not make existing Hermes threads unusable.
+// The shutdown finalizer used to `stopAll()`, which tells the plugin to drop
+// the thread — but the plugin process outlives T3, so on the next turn its
+// session map no longer had the thread and turn.start came back "Call
+// session.ensure before starting a turn". Threads created after the restart
+// were fine, which disguised a shutdown bug as a resume bug.
+it.effect("does not stop remote sessions when the adapter shuts down", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_shutdown");
+    const threadId = ThreadId.make("thread-across-restart");
+    const sent: Array<HermesGatewayT3ToPluginMessage> = [];
+    const brokerEvents = yield* PubSub.unbounded<HermesGatewayEnvelope>();
+
+    yield* Effect.gen(function* () {
+      const broker: HermesGatewayBrokerShape = {
+        createEnrollment: () => Effect.die(new Error("unused")),
+        getInstanceStatus: () => Effect.die(new Error("unused")),
+        listInstances: Effect.succeed([]),
+        renameInstance: () => Effect.die(new Error("unused")),
+        revokeInstance: () => Effect.die(new Error("unused")),
+        removeInstance: () => Effect.die(new Error("unused")),
+        registerConnection: () => Effect.die(new Error("unused")),
+        receive: () => Effect.void,
+        disconnect: () => Effect.void,
+        request: (_instanceId, message) => {
+          sent.push(message);
+          if (message.type === "session.ensure") {
+            return Effect.succeed({
+              type: "session.ready",
+              protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+              requestId: message.requestId,
+              threadId: message.threadId,
+              sessionId: HermesGatewaySessionId.make("session-across-restart"),
+              resumed: false,
+            });
+          }
+          return Effect.die(new Error(`unexpected request ${message.type}`));
+        },
+        send: (_instanceId, message) => Effect.sync(() => sent.push(message)).pipe(Effect.asVoid),
+        isConnected: () => Effect.succeed(true),
+        stream: Stream.fromPubSub(brokerEvents),
+        streamStatuses: Stream.empty,
+      };
+      const adapter = yield* makeHermesAdapter({ instanceId }).pipe(
+        Effect.provideService(HermesGatewayBroker, broker),
+      );
+      yield* Effect.yieldNow;
+      yield* adapter.startSession({
+        threadId,
+        providerInstanceId: instanceId,
+        runtimeMode: "full-access",
+      });
+    }).pipe(Effect.scoped);
+
+    // The scope closed — T3 shutting down. Hermes keeps the session, so no
+    // session.stop may have been sent on its behalf.
+    assert.isUndefined(
+      sent.find((message) => message.type === "session.stop"),
+      "shutdown must not end the remote Hermes session",
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("re-issues session.ensure when the connection is replaced without going offline", () =>
   Effect.gen(function* () {
     const instanceId = ProviderInstanceId.make("hermes_replaced");

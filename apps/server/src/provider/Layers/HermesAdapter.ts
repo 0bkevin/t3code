@@ -883,6 +883,22 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     streamEvents: Stream.fromPubSub(events),
   };
 
-  yield* Effect.addFinalizer(() => adapter.stopAll().pipe(Effect.ignore));
+  // Deliberately NOT `stopAll()`. Hermes sessions live in a separate process
+  // that outlives this one, and `session.stop` makes the plugin drop the
+  // thread from its active set — so tearing down on shutdown meant every
+  // thread open when T3 restarted came back unusable: the next turn.start was
+  // rejected with "Call session.ensure before starting a turn", with no way to
+  // recover from the UI. Threads created after the restart worked, which is
+  // what made it look like a resume bug rather than a shutdown bug.
+  //
+  // Dropping local state without telling the plugin is the correct shutdown:
+  // the resume cursor is persisted, and the next turn re-issues session.ensure
+  // against the session Hermes still holds. Explicit user-initiated stops
+  // still go through `stopSession` and do end the remote session.
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      sessions.clear();
+    }),
+  );
   return adapter;
 });
