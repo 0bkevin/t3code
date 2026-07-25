@@ -123,6 +123,13 @@ export const HermesGatewayInstanceStatus = Schema.Struct({
   lastConnectedAt: Schema.NullOr(IsoDateTime),
   pluginVersion: Schema.NullOr(TrimmedNonEmptyString),
   hermesVersion: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * The model the connected plugin reported at handshake, surfaced so the
+   * provider picker can name the model Hermes actually runs instead of a
+   * placeholder. Null when no plugin has connected yet, or when the connected
+   * plugin predates the `model` field on `connection.hello`.
+   */
+  model: Schema.NullOr(TrimmedNonEmptyString),
   activeSessionCount: NonNegativeInt,
   protocolVersion: Schema.NullOr(PositiveInt),
   capabilities: Schema.NullOr(HermesGatewayCapabilities),

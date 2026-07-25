@@ -69,6 +69,7 @@ describe("Hermes gateway management contracts", () => {
       lastConnectedAt: "2026-07-23T12:00:00.000Z",
       pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
+      model: "gpt-5.6-terra",
       activeSessionCount: 2,
       protocolVersion: 2,
       capabilities: {
@@ -82,6 +83,12 @@ describe("Hermes gateway management contracts", () => {
     });
     expect(connected.status).toBe("connected");
     expect(connected.activeSessionCount).toBe(2);
+    expect(connected.model).toBe("gpt-5.6-terra");
+
+    // A plugin that predates the `model` field still produces a valid status;
+    // the picker falls back to the generic label rather than failing to decode.
+    const withoutModel = decodeInstanceStatus({ ...connected, model: null });
+    expect(withoutModel.model).toBeNull();
 
     const upgradeRequired = decodeInstanceStatus({
       ...connected,
@@ -134,6 +141,7 @@ describe("Hermes gateway handshake", () => {
         userInput: true,
         attachments: false,
       },
+      model: "gpt-5.6-terra",
       authentication: {
         type: "instance-credential",
         instanceId: "hermes-research",
@@ -142,6 +150,35 @@ describe("Hermes gateway handshake", () => {
     });
 
     expect(hello.authentication.type).toBe("instance-credential");
+    expect(hello.model).toBe("gpt-5.6-terra");
+  });
+
+  // The plugin ships separately from the server, so a plugin that predates the
+  // `model` field must still complete the handshake rather than failing the
+  // frame decoder. T3 falls back to the generic model label.
+  it("accepts a hello from a plugin that reports no model", () => {
+    const hello = decodeHello({
+      type: "connection.hello",
+      requestId: "hello-no-model",
+      protocolVersion: 2,
+      pluginVersion: "0.2.0",
+      hermesVersion: "1.2.3",
+      capabilities: {
+        protocolVersion: 2,
+        streaming: true,
+        activity: true,
+        approvals: true,
+        userInput: true,
+        attachments: false,
+      },
+      authentication: {
+        type: "instance-credential",
+        instanceId: "hermes-research",
+        credential: "persistent-secret",
+      },
+    });
+
+    expect(hello.model).toBeUndefined();
   });
 
   it("decodes a future-version hello so the broker can reject it explicitly", () => {
