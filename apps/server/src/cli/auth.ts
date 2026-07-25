@@ -139,18 +139,23 @@ const pairingCreateCommand = Command.make("create", {
  * tokens into a database the running server never reads when guessed wrong.
  * So check both, and let the live server decide which one is right.
  */
-const findLiveServerRuntimeState = Effect.fn("auth.findLiveServerRuntimeState")(function* (
-  config: ServerConfig.ServerConfig["Service"],
+export const findLiveServerRuntimeState = Effect.fn("auth.findLiveServerRuntimeState")(function* (
+  config: Pick<ServerConfig.ServerConfig["Service"], "baseDir" | "serverRuntimeStatePath">,
 ) {
   const path = yield* Path.Path;
-  const candidates = [
+  const candidatePaths = [
     config.serverRuntimeStatePath,
     ...(["dev", "userdata"] as const).map((stateDir) =>
       path.join(config.baseDir, stateDir, "server-runtime.json"),
     ),
   ].filter((candidate, index, all) => all.indexOf(candidate) === index);
 
-  for (const statePath of candidates) {
+  const live: Array<{
+    readonly stateDir: string;
+    readonly state: PersistedServerRuntimeState;
+  }> = [];
+
+  for (const statePath of candidatePaths) {
     const state = yield* readPersistedServerRuntimeState(statePath);
     if (Option.isNone(state)) {
       continue;
@@ -159,11 +164,18 @@ const findLiveServerRuntimeState = Effect.fn("auth.findLiveServerRuntimeState")(
     // nothing is listening on. Minting against it produces a token the live
     // server rejects with `invalid_credential`.
     if (yield* isPersistedServerRuntimeStateLive(state.value)) {
-      return Option.some({ stateDir: path.dirname(statePath), state: state.value });
+      live.push({ stateDir: path.dirname(statePath), state: state.value });
     }
   }
 
-  return Option.none<{ readonly stateDir: string; readonly state: PersistedServerRuntimeState }>();
+  // `devUrl` is only recorded by a server fronted by a web dev server, so it
+  // distinguishes the dev instance from a production-style one when both are
+  // running under the same base directory. This command is about dev, so a dev
+  // server wins regardless of which state directory the flags happened to
+  // resolve to.
+  return Option.fromNullishOr(
+    live.find((candidate) => candidate.state.devUrl !== undefined) ?? live[0],
+  );
 });
 
 /**
