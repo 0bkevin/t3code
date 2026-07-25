@@ -7,6 +7,7 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
@@ -20,7 +21,11 @@ import {
   formatSessionList,
 } from "../cliAuthFormat.ts";
 import * as ServerConfig from "../config.ts";
-import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import {
+  isPersistedServerRuntimeStateLive,
+  type PersistedServerRuntimeState,
+  readPersistedServerRuntimeState,
+} from "../serverRuntimeState.ts";
 import {
   authLocationFlags,
   type CliAuthLocationFlags,
@@ -30,12 +35,11 @@ import {
 
 class NoRunningServerError extends Schema.TaggedErrorClass<NoRunningServerError>()(
   "NoRunningServerError",
-  { statePath: Schema.String },
+  { baseDir: Schema.String },
 ) {
   override get message(): string {
     return [
-      "No running T3 Code server was found for this data directory.",
-      `Looked for: ${this.statePath}`,
+      `No running T3 Code server was found under ${this.baseDir}.`,
       "Start one with `bun run dev`, or point at another directory with --base-dir.",
     ].join("\n");
   }
@@ -129,6 +133,40 @@ const pairingCreateCommand = Command.make("create", {
 );
 
 /**
+ * The state directory is `<base>/dev` for an implicit dev home and
+ * `<base>/userdata` otherwise — a split that depends on flags the caller of
+ * this command should not have to reason about, and which silently mints
+ * tokens into a database the running server never reads when guessed wrong.
+ * So check both, and let the live server decide which one is right.
+ */
+const findLiveServerRuntimeState = Effect.fn("auth.findLiveServerRuntimeState")(function* (
+  config: ServerConfig.ServerConfig["Service"],
+) {
+  const path = yield* Path.Path;
+  const candidates = [
+    config.serverRuntimeStatePath,
+    ...(["dev", "userdata"] as const).map((stateDir) =>
+      path.join(config.baseDir, stateDir, "server-runtime.json"),
+    ),
+  ].filter((candidate, index, all) => all.indexOf(candidate) === index);
+
+  for (const statePath of candidates) {
+    const state = yield* readPersistedServerRuntimeState(statePath);
+    if (Option.isNone(state)) {
+      continue;
+    }
+    // A file left behind by a killed or crashed server describes a port
+    // nothing is listening on. Minting against it produces a token the live
+    // server rejects with `invalid_credential`.
+    if (yield* isPersistedServerRuntimeStateLive(state.value)) {
+      return Option.some({ stateDir: path.dirname(statePath), state: state.value });
+    }
+  }
+
+  return Option.none<{ readonly stateDir: string; readonly state: PersistedServerRuntimeState }>();
+});
+
+/**
  * `t3 auth pairing url` — print a ready-to-open pairing link for a dev server
  * that is already running, without having to know its port, its state
  * directory, or which of those two the `--base-dir`/`--dev-url` combination
@@ -150,31 +188,40 @@ const pairingUrlCommand = Command.make("url", {
     Effect.gen(function* () {
       const logLevel = yield* GlobalFlag.LogLevel;
       const config = yield* resolveCliAuthConfig(flags, logLevel);
-      const runtimeState = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+      const live = yield* findLiveServerRuntimeState(config);
 
-      if (Option.isNone(runtimeState)) {
-        return yield* new NoRunningServerError({ statePath: config.serverRuntimeStatePath });
+      if (Option.isNone(live)) {
+        return yield* new NoRunningServerError({ baseDir: config.baseDir });
       }
+
+      // Issue against the same state directory the server is using, whichever
+      // of the two it turned out to be.
+      const derivedPaths = yield* ServerConfig.deriveServerPaths(config.baseDir, config.devUrl, {
+        stateDir: live.value.stateDir,
+      });
 
       // Prefer the web origin the user actually opens; a server with no dev URL
       // serves the app itself, so its own origin is the right target.
-      const baseUrl = runtimeState.value.devUrl ?? runtimeState.value.origin;
+      const baseUrl = live.value.state.devUrl ?? live.value.state.origin;
 
-      return yield* runWithEnvironmentAuth(
-        flags,
-        (environmentAuth) =>
-          Effect.gen(function* () {
-            const issued = yield* environmentAuth.createPairingLink({
-              scopes: AuthStandardClientScopes,
-              subject: "one-time-token",
-              ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
-              label: "cli-issued pairing url",
-            });
-            yield* Console.log(
-              formatIssuedPairingCredential(issued, { json: flags.json, baseUrl }),
-            );
-          }),
-        { quietLogs: flags.json },
+      return yield* Effect.gen(function* () {
+        const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const issued = yield* environmentAuth.createPairingLink({
+          scopes: AuthStandardClientScopes,
+          subject: "one-time-token",
+          ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
+          label: "cli-issued pairing url",
+        });
+        yield* Console.log(formatIssuedPairingCredential(issued, { json: flags.json, baseUrl }));
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(EnvironmentAuth.runtimeLayer).pipe(
+            Layer.provide(ServerConfig.layer({ ...config, ...derivedPaths })),
+            Layer.provide(
+              Layer.succeed(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
+            ),
+          ),
+        ),
       );
     }),
   ),

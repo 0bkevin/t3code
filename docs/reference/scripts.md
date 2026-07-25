@@ -2,7 +2,7 @@
 
 - `vp run dev` — Starts contracts, server, and web in watch mode.
 - `vp run dev --share` (or `vp run dev:share`) — Same, plus publishes the web port on this machine's tailnet over HTTPS via `tailscale serve`. Prints the shareable URL, and the pairing URL is built against it so it can be opened from a phone or another laptop as-is. The mapping is removed on exit; if the tailnet is unavailable, the dev server still starts locally and logs a warning.
-- `vp run dev:pair` — Prints a fresh pairing URL for the dev server already running against this data directory, resolving its port and web origin from `server-runtime.json`. Add `--base-dir <path>` only when the server was started with `--home-dir`.
+- `vp run dev:pair` — Prints a fresh pairing URL for the dev server already running against this data directory, resolving its port and web origin from `server-runtime.json`. Searches both the `dev` and `userdata` state directories and requires the recorded process to still be alive, so a crashed server's leftover state file is not mistaken for a running one. Add `--base-dir <path>` only when the server was started with `--home-dir`.
 - `vp run dev:server` — Starts just the WebSocket server. The server process runs on Bun (`@effect/platform-bun` + `BunPtyAdapter`), but task running uses `vp run`.
 - `vp run dev:web` — Starts just the Vite dev server for the web app.
 - Dev commands implicitly use `~/.t3/dev`, keeping development state separate from `~/.t3/userdata`. An explicit `--home-dir <path>` stores state under `<path>/userdata`; the base directory remains available for caches, worktrees, and other shared data.

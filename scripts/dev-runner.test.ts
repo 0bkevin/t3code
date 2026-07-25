@@ -620,6 +620,34 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       });
     });
 
+    // `tailscale serve` config outlives the process, so a dry run that shared
+    // would replace and then tear down whatever mapping the port already had.
+    it.effect("spawns nothing when --dry-run is combined with --share", () => {
+      let spawnCount = 0;
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => {
+          spawnCount += 1;
+          return Effect.succeed(mockProcess(0));
+        }),
+      );
+
+      return Effect.gen(function* () {
+        yield* runDevRunnerWithInput({
+          ...devServerInput,
+          mode: "dev",
+          port: undefined,
+          dryRun: true,
+          share: true,
+        }).pipe(
+          Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
+          Effect.provideService(HostProcessPlatform, "linux"),
+        );
+
+        assert.equal(spawnCount, 0);
+      });
+    });
+
     it.effect("reports non-zero exits without manufacturing a cause", () => {
       const spawnerLayer = Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,

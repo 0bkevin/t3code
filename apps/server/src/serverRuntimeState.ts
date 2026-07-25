@@ -107,6 +107,31 @@ export const clearPersistedServerRuntimeState = (path: string) =>
     );
   });
 
+/**
+ * Whether the process that wrote a runtime-state file is still alive.
+ *
+ * The file is removed by a release finalizer, so a server killed with SIGKILL —
+ * or one that crashed — leaves it behind. Treating a leftover file as "the
+ * server is up" points callers at a port nothing is listening on. Signal 0
+ * performs the permission and existence checks without delivering a signal.
+ *
+ * PIDs are reused eventually, so a false positive is possible in principle;
+ * that is acceptable for local dev tooling, where the alternative is an
+ * HTTP probe that has to guess how long to wait for a starting server.
+ */
+export const isPersistedServerRuntimeStateLive = (
+  state: PersistedServerRuntimeState,
+): Effect.Effect<boolean> =>
+  Effect.sync(() => {
+    try {
+      process.kill(state.pid, 0);
+      return true;
+    } catch (cause) {
+      // EPERM means the process exists but belongs to another user.
+      return (cause as NodeJS.ErrnoException).code === "EPERM";
+    }
+  });
+
 export const readPersistedServerRuntimeState = (path: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

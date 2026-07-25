@@ -56,13 +56,12 @@ bun run dev:pair                      # implicit ~/.t3 home
 bun run dev:pair -- --base-dir <base-dir>   # explicit --home-dir environment
 ```
 
-It reads the running server's own `server-runtime.json`, so it needs no port and
-builds the URL against the web origin already in use — including a `--share`
-tailnet URL. Pass `--base-dir` only when the dev server was started with
-`--home-dir`, and pass exactly the same path: `--base-dir` switches the state
-directory from `<base>/dev` to `<base>/userdata`, and a mismatch writes the token
-to a database the server isn't reading. Add `--ttl 1h` for a longer window or
-`--json` for machine-readable output.
+It finds the running server's own `server-runtime.json` under the base directory
+— checking both the `dev` and `userdata` state directories and verifying the
+recorded process is alive — so it needs no port and builds the URL against the
+web origin already in use, including a `--share` tailnet URL. Pass `--base-dir`
+only when the dev server was started with `--home-dir`. Add `--ttl 1h` for a
+longer window or `--json` for machine-readable output.
 
 Use the printed `Pair URL` once. If the command reports no running server, the
 dev process has exited — restart it and use the URL from its own startup log.
