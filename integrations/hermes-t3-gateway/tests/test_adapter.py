@@ -1506,6 +1506,35 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(self.connection.messages[frames_before:], [])
 
+    async def test_status_line_closes_before_the_assistant_message(self):
+        """The status item must complete BEFORE the terminal assistant message.
+
+        T3 folds a settled turn's activity behind the "Worked for …" row, but
+        only entries that precede the turn's terminal assistant message.
+        Completing the status item afterwards stamped it milliseconds later, so
+        it sorted below the answer, escaped the fold, and rendered as a stray
+        "Work Log" section under the reply.
+        """
+        await self._start_turn("thread-order", "turn-order")
+        turn = self.adapter._active_turns["thread-order"]
+        await self.adapter._emit_generic_activity(turn, "Reading repository")
+        await self.adapter.send("thread-order", "The answer")
+        order_start = len(self.connection.messages)
+
+        await self.adapter.send("thread-order", "The answer", metadata={"notify": True})
+
+        completions = [
+            message
+            for message in self.connection.messages[order_start:]
+            if message["type"] == "item.completed"
+        ]
+        self.assertEqual(
+            [message["itemType"] for message in completions],
+            ["status_text", "assistant_message"],
+        )
+        types_after = [m["type"] for m in self.connection.messages[order_start:]]
+        self.assertEqual(types_after[-2:], ["turn.completed", "connection.status"])
+
 
 if __name__ == "__main__":
     unittest.main()

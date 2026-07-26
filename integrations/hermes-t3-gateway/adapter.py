@@ -849,19 +849,15 @@ class T3PlatformAdapter(BasePlatformAdapter):
     async def _complete_turn(self, turn: _TurnState) -> None:
         if self._active_turns.get(turn.thread_id) is not turn:
             return
-        if turn.assistant_started:
-            await self._send_frame(
-                frame(
-                    "item.completed",
-                    threadId=turn.thread_id,
-                    sessionId=turn.session_id,
-                    turnId=turn.turn_id,
-                    itemId=turn.message_id,
-                    itemType="assistant_message",
-                    status="completed",
-                    title="Hermes response",
-                )
-            )
+        # Close the live status line BEFORE the assistant message.
+        #
+        # T3 orders the timeline by item timestamp and folds a settled turn's
+        # activity behind the "Worked for …" row — but only the entries that
+        # precede the turn's terminal assistant message. Completing the status
+        # item after that message stamped it milliseconds later, so it sorted
+        # below the answer, escaped the fold, and rendered as a stray "Work
+        # Log" section under the reply instead of joining the collapsed
+        # activity above it.
         async with turn.generic_activity_lock:
             if self._active_turns.get(turn.thread_id) is not turn:
                 return
@@ -883,6 +879,22 @@ class T3PlatformAdapter(BasePlatformAdapter):
                         ),
                     )
                 )
+        if turn.assistant_started:
+            await self._send_frame(
+                frame(
+                    "item.completed",
+                    threadId=turn.thread_id,
+                    sessionId=turn.session_id,
+                    turnId=turn.turn_id,
+                    itemId=turn.message_id,
+                    itemType="assistant_message",
+                    status="completed",
+                    title="Hermes response",
+                )
+            )
+        async with turn.generic_activity_lock:
+            if self._active_turns.get(turn.thread_id) is not turn:
+                return
             await self._send_frame(
                 frame(
                     "turn.completed",
