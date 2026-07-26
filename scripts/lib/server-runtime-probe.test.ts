@@ -5,7 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
-import { findRunningServerPid } from "./server-runtime-probe.ts";
+import { findRunningServerPid, findRunningServerPidSync } from "./server-runtime-probe.ts";
 
 /** A pid that cannot belong to a live process (above the usual pid_max). */
 const DEAD_PID = 0x7ffffffe;
@@ -104,6 +104,52 @@ describe("findRunningServerPid", () => {
     Effect.gen(function* () {
       const baseDir = yield* makeBaseDir();
       assert.isTrue(Option.isNone(yield* findRunningServerPid(baseDir)));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+/**
+ * The sync probe exists only because `seedDevDatabase` holds an open SQLite
+ * transaction and cannot await an Effect. Two implementations of one rule drift
+ * apart silently, so every case is asserted against both rather than trusting
+ * them to agree.
+ */
+describe("findRunningServerPidSync agrees with the Effect probe", () => {
+  const cases = [
+    { name: "a live server in dev", stateDir: "dev", contents: runtimeStateJson(process.pid) },
+    {
+      name: "a live server in userdata",
+      stateDir: "userdata",
+      contents: runtimeStateJson(process.pid),
+    },
+    { name: "a dead pid", stateDir: "dev", contents: runtimeStateJson(DEAD_PID) },
+    { name: "pid 0", stateDir: "dev", contents: runtimeStateJson(0) },
+    { name: "pid -1", stateDir: "dev", contents: runtimeStateJson(-1) },
+    { name: "unparseable json", stateDir: "dev", contents: "{not json" },
+    { name: "json without a pid", stateDir: "dev", contents: JSON.stringify({ version: 1 }) },
+  ] as const;
+
+  for (const testCase of cases) {
+    it.effect(testCase.name, () =>
+      Effect.gen(function* () {
+        const baseDir = yield* makeBaseDir();
+        yield* writeRuntimeState({
+          baseDir,
+          stateDir: testCase.stateDir,
+          contents: testCase.contents,
+        });
+
+        const viaEffect = Option.getOrUndefined(yield* findRunningServerPid(baseDir));
+        assert.equal(findRunningServerPidSync(baseDir), viaEffect);
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
+
+  it.effect("both report nothing when no state files exist", () =>
+    Effect.gen(function* () {
+      const baseDir = yield* makeBaseDir();
+      assert.isTrue(Option.isNone(yield* findRunningServerPid(baseDir)));
+      assert.isUndefined(findRunningServerPidSync(baseDir));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
