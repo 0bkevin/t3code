@@ -25,11 +25,7 @@ import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
-import {
-  clearExpectedServerRestart,
-  isServerRestarting,
-  useServerRestartExpected,
-} from "~/serverRestartStore";
+import { isServerRestarting, useServerRestartExpected } from "~/serverRestartStore";
 import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   parseScopedThreadKey,
@@ -1634,45 +1630,10 @@ function ChatViewContent(props: ChatViewProps) {
     restartExpected: activeEnvironmentRestartExpected,
     environmentUnavailable: activeEnvironmentUnavailable,
   });
-  // While the restart is expected, poke the supervisor on a flat cadence so a
-  // 16-second backoff sleep cannot outlast the server's return.
-  //
-  // The window also has to end at the right moment. Ending it on any healthy
-  // connection is wrong — it is armed while the old server is still connected,
-  // so that clears it before the restart it exists to cover. Never ending it
-  // is also wrong — an unrelated outage later in the window would be dressed
-  // up as an intentional restart. So it ends once this environment has gone
-  // away and come back: the restart it was armed for has been seen through.
-  const restartSawDisconnectRef = useRef(false);
-  useEffect(() => {
-    if (activeEnvironmentId === null || !activeEnvironmentRestartExpected) {
-      restartSawDisconnectRef.current = false;
-      return;
-    }
-    if (activeEnvironmentConnectionPhase === "connected") {
-      if (restartSawDisconnectRef.current) {
-        restartSawDisconnectRef.current = false;
-        clearExpectedServerRestart(activeEnvironmentId);
-      }
-      return;
-    }
-    restartSawDisconnectRef.current = true;
-    // Only wake the supervisor out of a backoff sleep; while an attempt is
-    // live, retryNow would interrupt and restart it.
-    if (activeEnvironment?.connection.retryAt == null) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      void retryEnvironment(activeEnvironmentId);
-    }, 2_000);
-    return () => clearTimeout(timer);
-  }, [
-    activeEnvironment?.connection.retryAt,
-    activeEnvironmentConnectionPhase,
-    activeEnvironmentId,
-    activeEnvironmentRestartExpected,
-    retryEnvironment,
-  ]);
+  // Reconnecting through the restart (and ending the window once its restart
+  // has been seen through) is owned by useServerRestartReconnect at the app
+  // level, since an update can be triggered from Settings → Connections too.
+  // This view only presents the result.
   const handleReconnectActiveEnvironment = useCallback(
     async (environmentId: EnvironmentId) => {
       const result = await retryEnvironment(environmentId);

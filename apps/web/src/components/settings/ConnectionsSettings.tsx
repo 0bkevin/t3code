@@ -130,6 +130,7 @@ import {
   useEnvironments,
   usePrimaryEnvironment,
 } from "~/state/environments";
+import { isServerRestarting, useServerRestartExpected } from "~/serverRestartStore";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { ServerUpdateAction } from "../ServerUpdateAction";
@@ -1353,15 +1354,24 @@ function SavedBackendListRow({
   const connectionState = environment.connection.phase;
   const isConnected = connectionState === "connected";
   const isConnecting = connectionState === "connecting" || connectionState === "reconnecting";
+  // An update started from this row restarts the server, so present that
+  // disconnect as the expected restart rather than as a connection failure —
+  // the same treatment the chat composer's skew banner gives it.
+  const isRestarting = isServerRestarting({
+    restartExpected: useServerRestartExpected(environmentId),
+    environmentUnavailable: !isConnected,
+  });
   const stateDotClassName =
     connectionState === "connected"
       ? "bg-success"
-      : connectionState === "connecting" || connectionState === "reconnecting"
+      : isRestarting || connectionState === "connecting" || connectionState === "reconnecting"
         ? "bg-warning"
         : connectionState === "error"
           ? "bg-destructive"
           : "bg-muted-foreground/40";
-  const statusTooltip = connectionStatusText(environment.connection);
+  const statusTooltip = isRestarting
+    ? "Restarting to finish the server update..."
+    : connectionStatusText(environment.connection);
   const errorTraceId = environment.connection.traceId;
   const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({
     target: "trace ID",
@@ -1440,7 +1450,13 @@ function SavedBackendListRow({
               />
             </div>
           ) : null}
-          {environment.connection.error ? (
+          {isRestarting ? (
+            <p className="flex min-w-0 items-center gap-2 text-muted-foreground text-xs">
+              <span className="truncate">
+                Restarting to finish the server update — reconnecting automatically.
+              </span>
+            </p>
+          ) : environment.connection.error ? (
             <p className="flex min-w-0 items-center gap-2 text-destructive text-xs">
               <span className="truncate">{connectionStatusText(environment.connection)}</span>
               {errorTraceId ? (
