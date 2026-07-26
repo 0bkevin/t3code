@@ -46,10 +46,13 @@ function createSchema(
   database.exec(`CREATE TABLE projection_thread_sessions (
     thread_id TEXT PRIMARY KEY, status TEXT NOT NULL, provider_name TEXT,
     active_turn_id TEXT, last_error TEXT, updated_at TEXT NOT NULL)`);
+  // Mirrors migration 005: `checkpoint_turn_count` matters because
+  // dropPendingTurnStarts keys its guard on it, and a fixture without the
+  // column only ever exercises the degraded path.
   database.exec(`CREATE TABLE projection_turns (
     row_id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, turn_id TEXT,
     state TEXT NOT NULL, requested_at TEXT NOT NULL, completed_at TEXT,
-    checkpoint_files_json TEXT NOT NULL,
+    checkpoint_turn_count INTEGER, checkpoint_files_json TEXT NOT NULL,
     UNIQUE (thread_id, turn_id))`);
   database.exec(`CREATE TABLE projection_thread_proposed_plans (
     plan_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, plan_markdown TEXT NOT NULL,
@@ -369,6 +372,40 @@ describe("seedDevDatabase", () => {
         "SELECT COUNT(*) count FROM projection_turns WHERE state = 'pending' OR turn_id IS NULL",
       );
       assert.equal(pending?.count, 0);
+    });
+  });
+
+  // The delete mirrors the server's predicate, which spares rows carrying a
+  // checkpoint. Without the `checkpoint_turn_count IS NULL` clause a checkpoint
+  // row that happened to be pending would be destroyed along with the starts.
+  it("spares a pending row that carries a checkpoint", () => {
+    withDatabases(({ source, target }) => {
+      // A checkpoint row on a thread inside the copied range.
+      const sourceDatabase = new NodeSqlite.DatabaseSync(source);
+      sourceDatabase
+        .prepare(
+          `INSERT INTO projection_turns (thread_id, turn_id, state, requested_at,
+           checkpoint_turn_count, checkpoint_files_json) VALUES ('t4', NULL, 'pending', ?, 7, '[]')`,
+        )
+        .run(SEEDED_AT);
+      sourceDatabase.close();
+
+      seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 3,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+      });
+
+      const checkpoints = query<{ checkpoint_turn_count: number }>(
+        target,
+        "SELECT checkpoint_turn_count FROM projection_turns WHERE checkpoint_turn_count IS NOT NULL",
+      );
+      assert.deepStrictEqual(
+        checkpoints.map((row) => row.checkpoint_turn_count),
+        [7],
+      );
     });
   });
 
