@@ -256,6 +256,12 @@ function settleRunningTurns(
   const setCompletedAt = hasColumn(target, "projection_turns", "completed_at")
     ? `, completed_at = requested_at`
     : "";
+  // `turn_id IS NOT NULL` mirrors the server's own settle filter
+  // (ProjectionPipeline, on the session leaving "running"). No writer produces
+  // a row that is both null-id and running today — the only null-id insert
+  // writes 'pending' — so this is guarding the invariant rather than a case,
+  // and it keeps the two predicates comparable if that ever changes.
+  //
   // 'running' is inlined, not bound: `--threads` is capped at SQLite's variable
   // ceiling, so every binding beyond one per thread puts the maximum over the
   // limit. Safe to interpolate — an internal literal, never input.
@@ -263,6 +269,7 @@ function settleRunningTurns(
     .prepare(
       `UPDATE projection_turns SET state = 'interrupted'${setCompletedAt}
        WHERE state = 'running'
+         AND turn_id IS NOT NULL
          AND thread_id IN (${placeholders(threadIds.length)})`,
     )
     .run(...threadIds);
