@@ -16,17 +16,24 @@ import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
  * unlabeled resting state.
  */
 export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
-export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze";
+export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
 export function resolveThreadListV2SwipeActions(input: {
   readonly variant: "card" | "slim";
   readonly settlementSupported: boolean;
   readonly snoozeSupported: boolean;
   readonly snoozable: boolean;
+  /** Row is on the snoozed shelf. */
+  readonly snoozed?: boolean;
 }): {
   readonly primary: Exclude<ThreadListV2SwipeAction, "snooze">;
   readonly secondary: "snooze" | null;
 } {
+  // A snoozed row's one lifecycle move is waking: settling parked work is
+  // meaningless, and re-snoozing an already-snoozed thread is a no-op.
+  if (input.snoozed === true) {
+    return { primary: "unsnooze", secondary: null };
+  }
   const primary = input.settlementSupported
     ? input.variant === "slim"
       ? "unsettle"
@@ -36,6 +43,25 @@ export function resolveThreadListV2SwipeActions(input: {
     primary,
     secondary: input.snoozeSupported && input.snoozable ? "snooze" : null,
   };
+}
+
+const HOUR_MS = 60 * 60 * 1_000;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Compact "wakes in" label for snoozed rows: "2h", "18h", "3d". Minutes
+ * round up so a snooze never reads "0m" while still hidden. Ported from
+ * web's snoozeWakeLabel (apps/web/src/components/Sidebar.snooze.ts) so both
+ * platforms describe a wake time identically.
+ */
+export function snoozeWakeLabel(snoozedUntil: string, now: Date): string {
+  const wakeMs = Date.parse(snoozedUntil);
+  if (Number.isNaN(wakeMs)) return "now";
+  const remainingMs = wakeMs - now.getTime();
+  if (remainingMs <= 0) return "now";
+  if (remainingMs < HOUR_MS) return `${Math.max(1, Math.ceil(remainingMs / 60_000))}m`;
+  if (remainingMs < DAY_MS) return `${Math.ceil(remainingMs / HOUR_MS)}h`;
+  return `${Math.ceil(remainingMs / DAY_MS)}d`;
 }
 
 /**
@@ -128,6 +154,9 @@ export interface ThreadListV2Item {
   readonly variant: "card" | "slim";
   /** First settled row after the card block draws the SETTLED divider. */
   readonly showSettledDivider: boolean;
+  /** Snoozed-shelf row: renders its wake time instead of its last-activity
+      time, and offers Wake instead of Settle. */
+  readonly snoozed: boolean;
   readonly isLast: boolean;
 }
 
@@ -135,11 +164,17 @@ export interface ThreadListV2Layout {
   readonly items: ThreadListV2Item[];
   /** Settled threads beyond the render limit (behind "Show more"). */
   readonly hiddenSettledCount: number;
-  /** Snoozed threads hidden from the list (visibility parity with web's
-      collapsed Snoozed shelf; mobile has no shelf UI yet). */
+  /** Snoozed threads matching the current filters. Drives the shelf header,
+      which shows the count while collapsed; rows only build when the shelf
+      is expanded (or for the open thread). */
   readonly snoozedCount: number;
-  /** Soonest wake time among hidden snoozed threads, or null. Callers arm
-      a timeout at this boundary so the list re-partitions the moment a
+  /** Index in `items` where the snoozed shelf header belongs, or null when
+      nothing is snoozed. Callers splice their own header element in here:
+      the header must render even while the shelf is collapsed (its count is
+      the whole shelf then), so it can't hang off a row flag. */
+  readonly snoozedShelfHeaderIndex: number | null;
+  /** Soonest wake time among snoozed threads, or null. Callers arm a
+      timeout at this boundary so the list re-partitions the moment a
       snooze expires instead of on the next minute tick. */
   readonly nextSnoozeWakeAt: string | null;
 }
@@ -177,6 +212,13 @@ export function buildThreadListV2Items(input: {
       second-precise, so classifying with the floored minute would hold a
       woken thread hidden for up to a minute. Defaults to `now`. */
   readonly snoozeNow?: string;
+  /** Expands the snoozed shelf into rows. Collapsed (the default, matching
+      web) the shelf is just its header + count. */
+  readonly snoozedShelfExpanded?: boolean;
+  /** Scoped key ("environmentId:threadId") of the open thread. A snoozed
+      thread reached by route keeps its row even while the shelf is
+      collapsed — the open thread must never vanish behind a shelf. */
+  readonly selectedThreadKey?: string | null;
 }): ThreadListV2Layout {
   const now = input.now ?? new Date().toISOString();
   const snoozeNow = input.snoozeNow ?? now;
@@ -188,7 +230,7 @@ export function buildThreadListV2Items(input: {
 
   const active: EnvironmentThreadShell[] = [];
   const settled: EnvironmentThreadShell[] = [];
-  let snoozedCount = 0;
+  const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
   for (const thread of input.threads) {
     // Callers pass live (unarchived) shells; settled threads are among them
@@ -206,7 +248,7 @@ export function buildThreadListV2Items(input: {
     // wakes (or raises its hand — effectiveSnoozed refuses blocked/failed
     // work). Snooze outranks settled classification, same as web.
     if (supportsSnooze && effectiveSnoozed(thread, { now: snoozeNow })) {
-      snoozedCount += 1;
+      snoozed.push(thread);
       if (
         thread.snoozedUntil != null &&
         (nextSnoozeWakeAt === null ||
@@ -227,6 +269,21 @@ export function buildThreadListV2Items(input: {
   }
 
   const orderedActive = sortThreadsForListV2(active);
+  // Soonest wake first: the shelf reads as a queue of what comes back next.
+  const orderedSnoozed = [...snoozed].sort(
+    (left, right) =>
+      parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
+  );
+  const selectedThreadKey = input.selectedThreadKey ?? null;
+  const visibleSnoozed =
+    input.snoozedShelfExpanded === true
+      ? orderedSnoozed
+      : // Collapsed: only the open thread survives, so a snoozed thread
+        // opened by deep link (or snoozed from another device while open)
+        // keeps its row and its Wake affordance.
+        orderedSnoozed.filter(
+          (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+        );
   const orderedSettled = [...settled].sort(
     (left, right) =>
       firstValidTimestampMs(right.latestUserMessageAt, right.updatedAt) -
@@ -238,13 +295,32 @@ export function buildThreadListV2Items(input: {
 
   const items: ThreadListV2Item[] = [];
   for (const thread of orderedActive) {
-    items.push({ thread, variant: "card", showSettledDivider: false, isLast: false });
+    items.push({
+      thread,
+      variant: "card",
+      showSettledDivider: false,
+      snoozed: false,
+      isLast: false,
+    });
+  }
+  // Snoozed shelf sits between the inbox and Settled — out of the way,
+  // never gone. Slim like settled rows: parked work, not inbox work.
+  const snoozedShelfHeaderIndex = orderedSnoozed.length > 0 ? items.length : null;
+  for (const thread of visibleSnoozed) {
+    items.push({
+      thread,
+      variant: "slim",
+      showSettledDivider: false,
+      snoozed: true,
+      isLast: false,
+    });
   }
   for (const [index, thread] of visibleSettled.entries()) {
     items.push({
       thread,
       variant: "slim",
       showSettledDivider: index === 0,
+      snoozed: false,
       isLast: false,
     });
   }
@@ -255,7 +331,8 @@ export function buildThreadListV2Items(input: {
   return {
     items,
     hiddenSettledCount: orderedSettled.length - visibleSettled.length,
-    snoozedCount,
+    snoozedCount: orderedSnoozed.length,
+    snoozedShelfHeaderIndex,
     nextSnoozeWakeAt,
   };
 }

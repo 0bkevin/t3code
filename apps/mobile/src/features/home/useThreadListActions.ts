@@ -202,10 +202,12 @@ export function useThreadListActions(): {
   readonly confirmDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly settleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly snoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  readonly unsnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unsettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
 } {
   const executeAction = useThreadActionExecutor();
   const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
+  const unsnoozeMutation = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
 
   const archiveThread = useCallback(
     (thread: EnvironmentThreadShell) => {
@@ -256,6 +258,37 @@ export function useThreadListActions(): {
     },
     [snoozeMutation],
   );
+  // Waking has no client-side precondition (canSnooze guards the way IN, not
+  // the way OUT) — a thread the user can see on the shelf can always wake.
+  const unsnoozeThread = useCallback(
+    async (thread: EnvironmentThreadShell) => {
+      if (!environmentSupportsSnooze(thread.environmentId)) {
+        Alert.alert(
+          "Could not wake thread",
+          "This environment's server does not support snoozing yet. Update the server to wake this thread.",
+        );
+        return false;
+      }
+
+      selectionHaptic();
+      const result = await unsnoozeMutation({
+        environmentId: thread.environmentId,
+        input: { threadId: thread.id, reason: "user" },
+      });
+      if (result._tag === "Failure") {
+        const error = Cause.squash(result.cause);
+        Alert.alert(
+          "Could not wake thread",
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : "The thread could not be woken.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [unsnoozeMutation],
+  );
   const unsettleThread = useCallback(
     async (thread: EnvironmentThreadShell) => (await executeAction("unsettle", thread)) === true,
     [executeAction],
@@ -263,7 +296,14 @@ export function useThreadListActions(): {
 
   const confirmDeleteThread = useConfirmDeleteThread(executeAction);
 
-  return { archiveThread, confirmDeleteThread, settleThread, snoozeThread, unsettleThread };
+  return {
+    archiveThread,
+    confirmDeleteThread,
+    settleThread,
+    snoozeThread,
+    unsnoozeThread,
+    unsettleThread,
+  };
 }
 
 export function useArchivedThreadListActions(

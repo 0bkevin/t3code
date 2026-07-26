@@ -7,6 +7,7 @@ import {
   resolveThreadListV2SnoozeGateExpiryMs,
   resolveThreadListV2SwipeActions,
   resolveThreadListV2Status,
+  snoozeWakeLabel,
   sortThreadsForListV2,
 } from "./threadListV2";
 
@@ -119,6 +120,34 @@ describe("resolveThreadListV2SwipeActions", () => {
       }),
     ).toEqual({ primary: "archive", secondary: null });
   });
+
+  it("offers wake and no snooze on a snoozed row", () => {
+    expect(
+      resolveThreadListV2SwipeActions({
+        variant: "slim",
+        settlementSupported: true,
+        snoozeSupported: true,
+        snoozable: true,
+        snoozed: true,
+      }),
+    ).toEqual({ primary: "unsnooze", secondary: null });
+  });
+});
+
+describe("snoozeWakeLabel", () => {
+  const now = new Date("2026-06-02T00:00:00.000Z");
+
+  it("formats remaining time coarsely, rounding up", () => {
+    expect(snoozeWakeLabel("2026-06-02T00:30:00.000Z", now)).toBe("30m");
+    expect(snoozeWakeLabel("2026-06-02T01:30:00.000Z", now)).toBe("2h");
+    expect(snoozeWakeLabel("2026-06-03T02:00:00.000Z", now)).toBe("2d");
+  });
+
+  it("never reads zero or negative while still snoozed", () => {
+    expect(snoozeWakeLabel("2026-06-02T00:00:30.000Z", now)).toBe("1m");
+    expect(snoozeWakeLabel("2026-06-01T23:59:59.000Z", now)).toBe("now");
+    expect(snoozeWakeLabel("not-a-date", now)).toBe("now");
+  });
 });
 
 describe("resolveThreadListV2SnoozeGateExpiryMs", () => {
@@ -218,6 +247,95 @@ describe("buildThreadListV2Items", () => {
     expect(layout.items.map((item) => item.thread.id)).toEqual(["just-woke"]);
     expect(layout.snoozedCount).toBe(1);
     expect(layout.nextSnoozeWakeAt).toBe("2026-06-02T09:00:00.000Z");
+  });
+
+  it("builds snoozed rows between active and settled when the shelf is expanded", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("active"), title: "Active" }),
+        makeThread({
+          id: ThreadId.make("settled"),
+          title: "Settled",
+          settledOverride: "settled",
+        }),
+        makeThread({
+          id: ThreadId.make("later"),
+          title: "Wakes later",
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("sooner"),
+          title: "Wakes sooner",
+          snoozedUntil: "2026-06-02T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      snoozedShelfExpanded: true,
+    });
+
+    // Soonest wake first, and the shelf sits between inbox and settled.
+    expect(layout.items.map((item) => item.thread.id)).toEqual([
+      "active",
+      "sooner",
+      "later",
+      "settled",
+    ]);
+    expect(layout.items.map((item) => item.snoozed)).toEqual([false, true, true, false]);
+    expect(layout.snoozedShelfHeaderIndex).toBe(1);
+    expect(layout.snoozedCount).toBe(2);
+  });
+
+  it("collapses to a header-only shelf, reporting the index past the last row", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({
+          id: ThreadId.make("snoozed"),
+          title: "Snoozed",
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+
+    expect(layout.items).toEqual([]);
+    expect(layout.snoozedCount).toBe(1);
+    // Header still renders — the count IS the shelf while collapsed.
+    expect(layout.snoozedShelfHeaderIndex).toBe(0);
+  });
+
+  it("keeps the open thread on a collapsed shelf so it never vanishes", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({
+          id: ThreadId.make("open"),
+          title: "Open",
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("other"),
+          title: "Other",
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      selectedThreadKey: `${environmentId}:open`,
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual(["open"]);
+    expect(layout.items[0]?.snoozed).toBe(true);
+    // Both still count: the shelf header reports everything parked.
+    expect(layout.snoozedCount).toBe(2);
   });
 
   it("keeps snoozed threads visible on environments without the snooze capability", () => {

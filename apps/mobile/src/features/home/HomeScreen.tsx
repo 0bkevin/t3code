@@ -35,13 +35,14 @@ import {
   ThreadListRow,
   ThreadListShowMoreRow,
 } from "../threads/thread-list-items";
-import { ThreadListV2Row } from "../threads/thread-list-v2-items";
+import { ThreadListV2Row, ThreadListV2SnoozedShelfHeader } from "../threads/thread-list-v2-items";
 import {
   buildThreadListV2Items,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2Item,
 } from "../threads/threadListV2";
+
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeListLayout,
@@ -63,6 +64,11 @@ import { WorkspaceConnectionStatus } from "./WorkspaceConnectionStatus";
 import { shouldShowWorkspaceConnectionStatus } from "./workspace-connection-status";
 
 /* ─── Types ──────────────────────────────────────────────────────────── */
+
+/** v2 list rows: thread rows plus the standalone snoozed-shelf header. */
+type ThreadListV2DisplayItem =
+  | { readonly type: "thread"; readonly item: ThreadListV2Item }
+  | { readonly type: "snoozed-shelf-header"; readonly count: number };
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -93,6 +99,8 @@ interface HomeScreenProps {
   readonly onSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   /** Snoozes for the swipe action's one-hour default. */
   readonly onSnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  /** Wakes a snoozed thread from the snoozed shelf. */
+  readonly onUnsnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onUnsettleThread: (thread: EnvironmentThreadShell) => void;
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
@@ -459,6 +467,12 @@ export function HomeScreen(props: HomeScreenProps) {
     },
     [props.onSnoozeThread],
   );
+  const handleUnsnoozeThread = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      void props.onUnsnoozeThread(thread);
+    },
+    [props.onUnsnoozeThread],
+  );
   const handleDeleteThread = props.onDeleteThread;
   const handleUnsettleThread = props.onUnsettleThread;
   // The settled tail renders in pages; expansion resets when the filter
@@ -476,6 +490,9 @@ export function HomeScreen(props: HomeScreenProps) {
     () => setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT),
     [],
   );
+  // Collapsed by default, like web: the shelf is a shelf, not a second inbox.
+  const [snoozedShelfExpanded, setSnoozedShelfExpanded] = useState(false);
+  const toggleSnoozedShelf = useCallback(() => setSnoozedShelfExpanded((value) => !value), []);
   // now is quantized to the minute and ticks so the inactivity auto-settle
   // boundary is actually crossed while the app stays open (mirrors web);
   // without a clock dependency the partition memoizes a frozen "now".
@@ -516,7 +533,13 @@ export function HomeScreen(props: HomeScreenProps) {
   }, [serverConfigs]);
   const threadListV2Layout = useMemo(() => {
     if (!threadListV2Enabled)
-      return { items: [], hiddenSettledCount: 0, snoozedCount: 0, nextSnoozeWakeAt: null };
+      return {
+        items: [],
+        hiddenSettledCount: 0,
+        snoozedCount: 0,
+        snoozedShelfHeaderIndex: null,
+        nextSnoozeWakeAt: null,
+      };
     // Settled threads are live shells; archived threads keep their original
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
@@ -530,11 +553,16 @@ export function HomeScreen(props: HomeScreenProps) {
       settledLimit: settledVisibleCount,
       now: `${nowMinute}:00.000Z`,
       snoozeNow: new Date().toISOString(),
+      snoozedShelfExpanded,
+      // Phones navigate away on select, so no row is ever "open" here — the
+      // collapsed-shelf exception is an iPad split-view concern.
+      selectedThreadKey: null,
     });
   }, [
     changeRequestStateByKey,
     nowMinute,
     snoozeWakeTick,
+    snoozedShelfExpanded,
     settledVisibleCount,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -558,57 +586,93 @@ export function HomeScreen(props: HomeScreenProps) {
     // unchanged: after a clamped fire (wake beyond the 32-bit setTimeout
     // range) the boundary string is identical and the chain would die.
   }, [nextSnoozeWakeAt, snoozeWakeTick]);
-  const threadListV2Items = threadListV2Layout.items;
+  // The shelf header is a list row of its own: it must render even when the
+  // shelf is collapsed and has no rows to hang it on.
+  const threadListV2Items = useMemo((): ThreadListV2DisplayItem[] => {
+    const rows: ThreadListV2DisplayItem[] = threadListV2Layout.items.map((item) => ({
+      type: "thread" as const,
+      item,
+    }));
+    const headerIndex = threadListV2Layout.snoozedShelfHeaderIndex;
+    if (headerIndex !== null) {
+      rows.splice(headerIndex, 0, {
+        type: "snoozed-shelf-header",
+        count: threadListV2Layout.snoozedCount,
+      });
+    }
+    return rows;
+  }, [
+    threadListV2Layout.items,
+    threadListV2Layout.snoozedCount,
+    threadListV2Layout.snoozedShelfHeaderIndex,
+  ]);
 
   const renderV2Item = useCallback(
-    ({ item }: { readonly item: ThreadListV2Item }) => (
-      <ThreadListV2Row
-        thread={item.thread}
-        variant={item.variant}
-        showSettledDivider={item.showSettledDivider}
-        project={
-          projectByKey.get(scopedProjectKey(item.thread.environmentId, item.thread.projectId)) ??
-          null
-        }
-        projectTitle={v2ProjectTitleByProjectKey.get(
-          scopedProjectKey(item.thread.environmentId, item.thread.projectId),
-        )}
-        providerDriver={
-          serverConfigs
-            .get(item.thread.environmentId)
-            ?.providers.find(
-              (provider) =>
-                provider.instanceId ===
-                (item.thread.session?.providerInstanceId ?? item.thread.modelSelection.instanceId),
-            )?.driver ?? null
-        }
-        environmentLabel={
-          Object.keys(props.savedConnectionsById).length > 1
-            ? (props.savedConnectionsById[item.thread.environmentId]?.environmentLabel ?? null)
-            : null
-        }
-        onSelectThread={props.onSelectThread}
-        onDeleteThread={handleDeleteThread}
-        onArchiveThread={props.onArchiveThread}
-        settlementSupported={settlementEnvironmentIds.has(item.thread.environmentId)}
-        onSettleThread={handleSettleThread}
-        snoozeSupported={snoozeEnvironmentIds.has(item.thread.environmentId)}
-        onSnoozeThread={handleSnoozeThread}
-        onUnsettleThread={handleUnsettleThread}
-        onChangeRequestState={handleChangeRequestState}
-        projectCwd={
-          projectCwdByKey.get(scopedProjectKey(item.thread.environmentId, item.thread.projectId)) ??
-          null
-        }
-        onSwipeableClose={handleSwipeableClose}
-        onSwipeableWillOpen={handleSwipeableWillOpen}
-      />
-    ),
+    ({ item: displayItem }: { readonly item: ThreadListV2DisplayItem }) => {
+      if (displayItem.type === "snoozed-shelf-header") {
+        return (
+          <ThreadListV2SnoozedShelfHeader
+            count={displayItem.count}
+            expanded={snoozedShelfExpanded}
+            onToggle={toggleSnoozedShelf}
+          />
+        );
+      }
+      const item = displayItem.item;
+      return (
+        <ThreadListV2Row
+          thread={item.thread}
+          variant={item.variant}
+          showSettledDivider={item.showSettledDivider}
+          snoozed={item.snoozed}
+          project={
+            projectByKey.get(scopedProjectKey(item.thread.environmentId, item.thread.projectId)) ??
+            null
+          }
+          projectTitle={v2ProjectTitleByProjectKey.get(
+            scopedProjectKey(item.thread.environmentId, item.thread.projectId),
+          )}
+          providerDriver={
+            serverConfigs
+              .get(item.thread.environmentId)
+              ?.providers.find(
+                (provider) =>
+                  provider.instanceId ===
+                  (item.thread.session?.providerInstanceId ??
+                    item.thread.modelSelection.instanceId),
+              )?.driver ?? null
+          }
+          environmentLabel={
+            Object.keys(props.savedConnectionsById).length > 1
+              ? (props.savedConnectionsById[item.thread.environmentId]?.environmentLabel ?? null)
+              : null
+          }
+          onSelectThread={props.onSelectThread}
+          onDeleteThread={handleDeleteThread}
+          onArchiveThread={props.onArchiveThread}
+          settlementSupported={settlementEnvironmentIds.has(item.thread.environmentId)}
+          onSettleThread={handleSettleThread}
+          snoozeSupported={snoozeEnvironmentIds.has(item.thread.environmentId)}
+          onSnoozeThread={handleSnoozeThread}
+          onUnsnoozeThread={handleUnsnoozeThread}
+          onUnsettleThread={handleUnsettleThread}
+          onChangeRequestState={handleChangeRequestState}
+          projectCwd={
+            projectCwdByKey.get(
+              scopedProjectKey(item.thread.environmentId, item.thread.projectId),
+            ) ?? null
+          }
+          onSwipeableClose={handleSwipeableClose}
+          onSwipeableWillOpen={handleSwipeableWillOpen}
+        />
+      );
+    },
     [
       handleChangeRequestState,
       handleDeleteThread,
       handleSettleThread,
       handleSnoozeThread,
+      handleUnsnoozeThread,
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleUnsettleThread,
@@ -620,11 +684,16 @@ export function HomeScreen(props: HomeScreenProps) {
       serverConfigs,
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
+      snoozedShelfExpanded,
+      toggleSnoozedShelf,
       v2ProjectTitleByProjectKey,
     ],
   );
   const v2KeyExtractor = useCallback(
-    (item: ThreadListV2Item) => `${item.thread.environmentId}:${item.thread.id}`,
+    (item: ThreadListV2DisplayItem) =>
+      item.type === "snoozed-shelf-header"
+        ? "snoozed-shelf-header"
+        : `${item.item.thread.environmentId}:${item.item.thread.id}`,
     [],
   );
 
@@ -857,31 +926,13 @@ export function HomeScreen(props: HomeScreenProps) {
   // Self-contained: v1's listEmpty keys off projectGroups, which ignores the
   // v2 project scope, so it can be null (results elsewhere) while this list
   // is empty. Search outranks the scope — "No results" names the actionable
-  // fact when a query is active. Snoozed threads outrank the rest: "No
-  // threads yet" over an inbox that is merely all-snoozed reads as data
-  // loss. Pending tasks render in the header, so the list showing them
-  // isn't empty in the user's eyes.
-  const v2SnoozedCount = threadListV2Layout.snoozedCount;
+  // fact when a query is active. Pending tasks render in the header, so the
+  // list showing them isn't empty in the user's eyes. Snoozed threads need
+  // no empty-state case: the shelf header renders as a list row whenever
+  // anything is snoozed, so an all-snoozed list is never actually empty.
   const v2ListEmpty =
     v2PendingTasks.length > 0 ? null : hasSearchQuery ? (
-      v2SnoozedCount > 0 ? (
-        // The snoozed threads already passed this search filter: "No
-        // results" would claim nothing matched when matches are merely
-        // parked.
-        <EmptyState
-          title={
-            v2SnoozedCount === 1 ? "1 matching thread snoozed" : `All matching threads snoozed`
-          }
-          detail={`Threads matching "${props.searchQuery}" are snoozed and return when their wake time passes.`}
-        />
-      ) : (
-        <EmptyState title="No results" detail={`No threads matching "${props.searchQuery}".`} />
-      )
-    ) : v2SnoozedCount > 0 ? (
-      <EmptyState
-        title={v2SnoozedCount === 1 ? "1 thread snoozed" : `${v2SnoozedCount} threads snoozed`}
-        detail="Snoozed threads return when their wake time passes."
-      />
+      <EmptyState title="No results" detail={`No threads matching "${props.searchQuery}".`} />
     ) : v2ScopedProjectGroup !== null ? (
       <EmptyState
         title={`No threads in ${v2ScopedProjectGroup.title}`}

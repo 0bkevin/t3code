@@ -63,7 +63,7 @@ import {
   ThreadListRow,
   ThreadListShowMoreRow,
 } from "./thread-list-items";
-import { ThreadListV2Row } from "./thread-list-v2-items";
+import { ThreadListV2Row, ThreadListV2SnoozedShelfHeader } from "./thread-list-v2-items";
 import {
   buildThreadListV2Items,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
@@ -83,6 +83,11 @@ type SidebarListItem =
       readonly isLast: boolean;
     }
   | { readonly type: "v2-thread"; readonly key: string; readonly item: ThreadListV2Item }
+  | {
+      readonly type: "v2-snoozed-shelf-header";
+      readonly key: string;
+      readonly count: number;
+    }
   | { readonly type: "v2-show-more"; readonly key: string; readonly hiddenCount: number };
 
 /**
@@ -194,8 +199,14 @@ function ThreadNavigationSidebarPane(
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const headerIsOverContentRef = useRef(false);
   const sidebarScrollGesture = useMemo(() => Gesture.Native(), []);
-  const { archiveThread, confirmDeleteThread, settleThread, snoozeThread, unsettleThread } =
-    useThreadListActions();
+  const {
+    archiveThread,
+    confirmDeleteThread,
+    settleThread,
+    snoozeThread,
+    unsnoozeThread,
+    unsettleThread,
+  } = useThreadListActions();
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled =
     AsyncResult.isSuccess(preferencesResult) &&
@@ -395,6 +406,9 @@ function ThreadNavigationSidebarPane(
     () => setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT),
     [],
   );
+  // Collapsed by default, like web: the shelf is a shelf, not a second inbox.
+  const [snoozedShelfExpanded, setSnoozedShelfExpanded] = useState(false);
+  const toggleSnoozedShelf = useCallback(() => setSnoozedShelfExpanded((value) => !value), []);
   // now ticks per minute so the inactivity auto-settle boundary is actually
   // crossed while the pane stays open; without a clock dependency the
   // partition memoizes a frozen "now".
@@ -435,7 +449,13 @@ function ThreadNavigationSidebarPane(
   }, [serverConfigs]);
   const threadListV2Layout = useMemo(() => {
     if (!threadListV2Enabled)
-      return { items: [], hiddenSettledCount: 0, snoozedCount: 0, nextSnoozeWakeAt: null };
+      return {
+        items: [],
+        hiddenSettledCount: 0,
+        snoozedCount: 0,
+        snoozedShelfHeaderIndex: null,
+        nextSnoozeWakeAt: null,
+      };
     return buildThreadListV2Items({
       threads: threads.filter((thread) => thread.archivedAt === null),
       environmentId: options.selectedEnvironmentId,
@@ -447,11 +467,17 @@ function ThreadNavigationSidebarPane(
       settledLimit: settledVisibleCount,
       now: `${nowMinute}:00.000Z`,
       snoozeNow: new Date().toISOString(),
+      snoozedShelfExpanded,
+      // Split view keeps a thread open beside the list: a snoozed one must
+      // keep its row (and its Wake action) even while the shelf is closed.
+      selectedThreadKey: props.selectedThreadKey ?? null,
     });
   }, [
     changeRequestStateByKey,
     nowMinute,
     snoozeWakeTick,
+    snoozedShelfExpanded,
+    props.selectedThreadKey,
     options.selectedEnvironmentId,
     props.searchQuery,
     settledVisibleCount,
@@ -500,13 +526,22 @@ function ThreadNavigationSidebarPane(
       pendingTask,
       isLast: index === v2PendingTasks.length - 1,
     }));
-    for (const item of threadListV2Layout.items) {
-      items.push({
-        type: "v2-thread" as const,
-        key: scopedThreadKey(item.thread.environmentId, item.thread.id),
-        item,
+    const threadRows: SidebarListItem[] = threadListV2Layout.items.map((item) => ({
+      type: "v2-thread" as const,
+      key: scopedThreadKey(item.thread.environmentId, item.thread.id),
+      item,
+    }));
+    // The shelf header is a row of its own: collapsed, it IS the shelf, so
+    // it has no thread row to hang off. splice() handles the all-snoozed
+    // case (index lands at the end) without a separate branch.
+    if (threadListV2Layout.snoozedShelfHeaderIndex !== null) {
+      threadRows.splice(threadListV2Layout.snoozedShelfHeaderIndex, 0, {
+        type: "v2-snoozed-shelf-header",
+        key: "v2-snoozed-shelf-header",
+        count: threadListV2Layout.snoozedCount,
       });
     }
+    items.push(...threadRows);
     if (threadListV2Layout.hiddenSettledCount > 0) {
       items.push({
         type: "v2-show-more",
@@ -715,6 +750,9 @@ function ThreadNavigationSidebarPane(
       if (previous.type === "v2-show-more" && item.type === "v2-show-more") {
         return previous.hiddenCount === item.hiddenCount;
       }
+      if (previous.type === "v2-snoozed-shelf-header" && item.type === "v2-snoozed-shelf-header") {
+        return previous.count === item.count;
+      }
       if (previous.type === "v2-pending-task" && item.type === "v2-pending-task") {
         return previous.pendingTask === item.pendingTask && previous.isLast === item.isLast;
       }
@@ -722,9 +760,11 @@ function ThreadNavigationSidebarPane(
         previous.type === "v2-thread" ||
         previous.type === "v2-show-more" ||
         previous.type === "v2-pending-task" ||
+        previous.type === "v2-snoozed-shelf-header" ||
         item.type === "v2-thread" ||
         item.type === "v2-show-more" ||
-        item.type === "v2-pending-task"
+        item.type === "v2-pending-task" ||
+        item.type === "v2-snoozed-shelf-header"
       ) {
         return false;
       }
@@ -774,6 +814,7 @@ function ThreadNavigationSidebarPane(
               thread={thread}
               variant={item.item.variant}
               showSettledDivider={item.item.showSettledDivider}
+              snoozed={item.item.snoozed}
               project={projectByKey.get(scopeKey) ?? null}
               projectTitle={projectTitleByProjectKey.get(scopeKey)}
               providerDriver={
@@ -802,6 +843,7 @@ function ThreadNavigationSidebarPane(
               onSettleThread={settleThread}
               snoozeSupported={snoozeEnvironmentIds.has(thread.environmentId)}
               onSnoozeThread={snoozeThread}
+              onUnsnoozeThread={unsnoozeThread}
               onUnsettleThread={unsettleThread}
               onChangeRequestState={handleChangeRequestState}
               projectCwd={projectCwdByKey.get(scopeKey) ?? null}
@@ -811,6 +853,15 @@ function ThreadNavigationSidebarPane(
             />
           );
         }
+        case "v2-snoozed-shelf-header":
+          return (
+            <ThreadListV2SnoozedShelfHeader
+              count={item.count}
+              expanded={snoozedShelfExpanded}
+              onToggle={toggleSnoozedShelf}
+              pane="sidebar"
+            />
+          );
         case "v2-show-more":
           return (
             <Pressable
@@ -966,28 +1017,17 @@ function ThreadNavigationSidebarPane(
       }),
     [filterIcon, filterMenu, props.onOpenSettings],
   );
-  // "No threads yet" over an inbox that is merely all-snoozed reads as
-  // data loss; name the snoozed threads instead.
-  const snoozedCount = threadListV2Layout.snoozedCount;
+  // Snoozed threads need no case here: the shelf header renders as a list
+  // row whenever anything is snoozed, so an all-snoozed pane is never empty.
   const listEmpty = (
     <Text className="px-2 py-4 text-sm text-foreground-muted">
       {catalogState.isLoadingConnections
         ? "Loading threads…"
         : props.searchQuery.trim().length > 0
-          ? snoozedCount > 0
-            ? // Snoozed matches passed this same search filter — "No
-              // matching threads" would misreport them as nonexistent.
-              snoozedCount === 1
-              ? "1 matching thread snoozed"
-              : "All matching threads snoozed"
-            : "No matching threads"
-          : snoozedCount > 0
-            ? snoozedCount === 1
-              ? "1 thread snoozed"
-              : `${snoozedCount} threads snoozed`
-            : selectedProjectScope !== null
-              ? `No threads in ${selectedProjectScope.title}`
-              : "No threads yet"}
+          ? "No matching threads"
+          : selectedProjectScope !== null
+            ? `No threads in ${selectedProjectScope.title}`
+            : "No threads yet"}
     </Text>
   );
 
