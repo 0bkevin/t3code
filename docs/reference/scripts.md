@@ -51,7 +51,7 @@ An isolated dev database starts empty. `bun run dev:seed` copies projection data
 
 `dev:seed` refuses to run while a server is using the target directory: it replaces the projections and event log that server is holding open, and it has no way to tell the running process its read model was swapped underneath it. Stop the server, seed, then start it again.
 
-Both source and target follow whichever state directory actually holds a database — `userdata` when present, otherwise `dev` — so a main-checkout `bun run dev`, whose state lives in `~/.t3/dev`, is seedable without naming the directory.
+Both source and target follow whichever state directory actually holds a database, so a main-checkout `bun run dev` — whose state lives in `~/.t3/dev` — is seedable without naming the directory. When a base directory holds both, the more recently written one wins, since that is the database the last server to run had open. The resolved path is printed in the summary.
 
 ## Running multiple dev instances
 
