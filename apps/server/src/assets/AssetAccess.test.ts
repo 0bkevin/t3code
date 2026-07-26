@@ -25,38 +25,6 @@ const testLayer = Layer.mergeAll(
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
 describe("AssetAccess", () => {
-  it.effect("issues exact download URLs for non-preview workspace files", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-download-workspace-",
-      });
-      const textPath = path.join(root, "notes with spaces.txt");
-      yield* fileSystem.writeFileString(textPath, "download me");
-      const canonicalTextPath = yield* fileSystem.realPath(textPath);
-
-      const result = yield* issueAssetUrl({
-        resource: {
-          _tag: "workspace-file-download",
-          threadId: ThreadId.make("thread-1"),
-          path: textPath,
-        },
-        workspaceRoot: root,
-      });
-      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-      const separatorIndex = suffix.indexOf("/");
-
-      expect(
-        yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
-      ).toEqual({
-        kind: "file",
-        path: canonicalTextPath,
-      });
-      expect(result.relativeUrl.endsWith("/notes%20with%20spaces.txt")).toBe(true);
-    }).pipe(Effect.provide(testLayer)),
-  );
-
   it.effect("issues workspace URLs that resolve the entry file and sibling assets", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

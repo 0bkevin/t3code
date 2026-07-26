@@ -255,7 +255,6 @@ function makeTestLayer(input: {
               input.openedExternalUrls?.push(url);
               return true;
             }),
-          downloadAndReveal: () => Effect.die("not implemented"),
           copyText: () => Effect.void,
         } satisfies ElectronShell.ElectronShell["Service"]),
         electronThemeLayer,
@@ -349,7 +348,6 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
           electronMenuLayer,
           Layer.succeed(ElectronShell.ElectronShell, {
             openExternal: () => Effect.succeed(true),
-            downloadAndReveal: () => Effect.die("not implemented"),
             copyText: () => Effect.void,
           } satisfies ElectronShell.ElectronShell["Service"]),
           electronThemeLayer,
