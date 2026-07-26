@@ -119,7 +119,9 @@ function AgentSkillRow(props: {
         />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">
-            <span className="text-sm font-medium text-foreground">
+            {/* Skill names are agent-authored and can be long and unbroken;
+                `flex-wrap` alone cannot split a single word. */}
+            <span className="min-w-0 break-all text-sm font-medium text-foreground">
               {formatProviderSkillDisplayName(skill)}
             </span>
             {sourceLabel ? (
@@ -139,7 +141,10 @@ function AgentSkillRow(props: {
         </span>
       </button>
       {isExpanded ? (
-        <div className="px-2 pb-3 pl-7">
+        // `min-w-0` matters here: a skill body is arbitrary authored markdown,
+        // so it can contain a wide code fence or an unbroken URL. Without it
+        // that content sets the row's width and pushes the whole page sideways.
+        <div className="min-w-0 overflow-x-auto px-2 pb-3 pl-7">
           {body === undefined || body.status === "loading" ? (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <LoaderIcon className="size-3.5 animate-spin" />
@@ -322,242 +327,257 @@ export function AgentPage({ instanceId }: { readonly instanceId: ProviderInstanc
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
-      <SettingsPageContainer>
-        <header className="space-y-3 px-3 sm:px-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              aria-hidden
-              className={cn(
-                "size-2 shrink-0 rounded-full",
-                PROVIDER_STATUS_STYLES[agentStatusDotStyleKey(status)].dot,
-              )}
-            />
-            <h1 className="text-2xl font-semibold tracking-[-0.025em] text-foreground">{title}</h1>
-            <Badge variant={agentStatusBadgeVariant(status)} size="sm">
-              {agentStatusLabel(status)}
-            </Badge>
-          </div>
-          <p className="text-[13px] text-muted-foreground">
-            {description?.connection.detail?.trim() || agentStatusGuidance(status)}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="default"
-              disabled={isBusy || environmentId === null}
-              onClick={() => void handleNewAgentThread()}
-            >
-              {pendingAction === "newThread" ? (
-                <LoaderIcon className="animate-spin" />
-              ) : (
-                <MessageSquarePlusIcon />
-              )}
-              New thread
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={isBusy || environmentId === null}
-              onClick={() => void refresh()}
-            >
-              {pendingAction === "describe" ? (
-                <LoaderIcon className="animate-spin" />
-              ) : (
-                <RefreshCwIcon />
-              )}
-              Refresh
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={isBusy || environmentId === null}
-              onClick={() => void handleReconnect()}
-            >
-              {pendingAction === "reconnect" ? (
-                <LoaderIcon className="animate-spin" />
-              ) : (
-                <PlugZapIcon />
-              )}
-              Reconnect
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={isBusy}
-              onClick={() => void navigate({ to: "/settings/providers" })}
-            >
-              <SettingsIcon />
-              Open settings
-            </Button>
-          </div>
-          {error ? <p className="text-xs text-destructive">{error}</p> : null}
-          {instanceNotFound ? (
-            <p className="text-xs text-muted-foreground">
-              This server has no provider instance named <code>{instanceId}</code>. It may have been
-              removed in provider settings.
-            </p>
-          ) : null}
-        </header>
-
-        <SettingsSection title="Status" icon={<ServerIcon className="size-4" />}>
-          <SectionCard>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
-              <DefinitionField label="Instance" value={instanceId} />
-              <DefinitionField
-                label="Driver"
-                value={
-                  description
-                    ? formatProviderDriverKindLabel(description.identity.driver)
-                    : AGENT_FIELD_NOT_REPORTED
-                }
+      {/* `SettingsPageContainer` is `flex-1 overflow-y-auto`, and a flex child
+          defaults to `min-height: auto` — without this `min-h-0` wrapper it
+          refuses to shrink below its content, so the page grows past the
+          `h-dvh overflow-hidden` inset instead of scrolling inside it. The
+          settings route wraps its own `<Outlet/>` the same way. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <SettingsPageContainer>
+          <header className="space-y-3 px-3 sm:px-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                aria-hidden
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  PROVIDER_STATUS_STYLES[agentStatusDotStyleKey(status)].dot,
+                )}
               />
-              <DefinitionField label="Host" value={formatAgentText(description?.identity.host)} />
-              <DefinitionField
-                label="Last connected"
-                value={formatAgentTimestamp(description?.connection.lastConnectedAt)}
-              />
-              <DefinitionField
-                label="Active sessions"
-                value={formatAgentCount(description?.connection.activeSessionCount)}
-              />
-              <DefinitionField
-                label="Connection generation"
-                value={formatAgentCount(description?.connection.connectionGeneration)}
-              />
-              <DefinitionField
-                label="Agent version"
-                value={formatAgentVersion(description?.identity.agentVersion)}
-              />
-              <DefinitionField
-                label="Plugin version"
-                value={formatAgentVersion(description?.identity.pluginVersion)}
-              />
-              <DefinitionField
-                label="Protocol"
-                value={formatAgentProtocolVersion(description?.identity.protocolVersion)}
-              />
-              <DefinitionField
-                label="Described at"
-                value={formatAgentTimestamp(description?.describedAt)}
-              />
-            </dl>
-            <div className="mt-3 border-t border-border/50 pt-3">
-              <p className="text-xs text-muted-foreground">Reported capabilities</p>
-              {capabilities.length === 0 ? (
-                <p className="mt-1 text-xs text-muted-foreground/70 italic">
-                  This agent did not report any capability flags.
-                </p>
-              ) : (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {capabilities.map((capability) => (
-                    <Badge
-                      key={capability.key}
-                      size="sm"
-                      variant={capability.enabled ? "success" : "secondary"}
-                    >
-                      {capability.label}
-                    </Badge>
-                  ))}
-                </div>
-              )}
+              {/* Falls back to the instance id, which is an unbroken slug like
+                  `hermes-siva-local-c9cc0b168af9` — at 2xl that overruns a
+                  narrow viewport unless it is allowed to wrap mid-word. */}
+              <h1 className="min-w-0 break-words text-2xl font-semibold tracking-[-0.025em] text-foreground">
+                {title}
+              </h1>
+              <Badge variant={agentStatusBadgeVariant(status)} size="sm">
+                {agentStatusLabel(status)}
+              </Badge>
             </div>
-          </SectionCard>
-        </SettingsSection>
-
-        <SettingsSection title="Model" icon={<CpuIcon className="size-4" />}>
-          <SectionCard>
-            {description !== null && description.model === null ? (
-              <p className="text-xs text-muted-foreground/70 italic">
-                This agent did not report a model.
+            <p className="text-[13px] text-muted-foreground">
+              {description?.connection.detail?.trim() || agentStatusGuidance(status)}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                disabled={isBusy || environmentId === null}
+                onClick={() => void handleNewAgentThread()}
+              >
+                {pendingAction === "newThread" ? (
+                  <LoaderIcon className="animate-spin" />
+                ) : (
+                  <MessageSquarePlusIcon />
+                )}
+                New thread
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isBusy || environmentId === null}
+                onClick={() => void refresh()}
+              >
+                {pendingAction === "describe" ? (
+                  <LoaderIcon className="animate-spin" />
+                ) : (
+                  <RefreshCwIcon />
+                )}
+                Refresh
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isBusy || environmentId === null}
+                onClick={() => void handleReconnect()}
+              >
+                {pendingAction === "reconnect" ? (
+                  <LoaderIcon className="animate-spin" />
+                ) : (
+                  <PlugZapIcon />
+                )}
+                Reconnect
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isBusy}
+                onClick={() => void navigate({ to: "/settings/providers" })}
+              >
+                <SettingsIcon />
+                Open settings
+              </Button>
+            </div>
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            {instanceNotFound ? (
+              <p className="text-xs text-muted-foreground">
+                This server has no provider instance named <code>{instanceId}</code>. It may have
+                been removed in provider settings.
               </p>
-            ) : (
+            ) : null}
+          </header>
+
+          <SettingsSection title="Status" icon={<ServerIcon className="size-4" />}>
+            <SectionCard>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+                <DefinitionField label="Instance" value={instanceId} />
                 <DefinitionField
-                  label="Model"
-                  value={formatAgentText(
-                    description?.model?.displayName ?? description?.model?.id ?? null,
-                  )}
+                  label="Driver"
+                  value={
+                    description
+                      ? formatProviderDriverKindLabel(description.identity.driver)
+                      : AGENT_FIELD_NOT_REPORTED
+                  }
                 />
-                <DefinitionField label="Model id" value={formatAgentText(description?.model?.id)} />
+                <DefinitionField label="Host" value={formatAgentText(description?.identity.host)} />
                 <DefinitionField
-                  label="Vendor"
-                  value={formatAgentText(description?.model?.vendor)}
+                  label="Last connected"
+                  value={formatAgentTimestamp(description?.connection.lastConnectedAt)}
                 />
                 <DefinitionField
-                  label="Reasoning effort"
-                  value={formatAgentText(description?.model?.reasoningEffortLabel)}
+                  label="Active sessions"
+                  value={formatAgentCount(description?.connection.activeSessionCount)}
                 />
                 <DefinitionField
-                  label="Context window"
-                  value={formatAgentContextWindow(description?.model?.contextWindow)}
+                  label="Connection generation"
+                  value={formatAgentCount(description?.connection.connectionGeneration)}
+                />
+                <DefinitionField
+                  label="Agent version"
+                  value={formatAgentVersion(description?.identity.agentVersion)}
+                />
+                <DefinitionField
+                  label="Plugin version"
+                  value={formatAgentVersion(description?.identity.pluginVersion)}
+                />
+                <DefinitionField
+                  label="Protocol"
+                  value={formatAgentProtocolVersion(description?.identity.protocolVersion)}
+                />
+                <DefinitionField
+                  label="Described at"
+                  value={formatAgentTimestamp(description?.describedAt)}
                 />
               </dl>
-            )}
-          </SectionCard>
-        </SettingsSection>
-
-        <SettingsSection
-          title="Skills"
-          icon={<SparklesIcon className="size-4" />}
-          headerAction={
-            skills.length > 0 ? (
-              <span className="text-xs text-muted-foreground">{skills.length}</span>
-            ) : null
-          }
-        >
-          <SectionCard>
-            {skills.length === 0 ? (
-              <p className="text-xs text-muted-foreground/70 italic">
-                This agent did not report any skills.
-              </p>
-            ) : (
-              <div className="grid gap-2">
-                <div className="relative">
-                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={skillQuery}
-                    onChange={(event) => setSkillQuery(event.target.value)}
-                    placeholder="Filter skills"
-                    spellCheck={false}
-                    className="pl-8"
-                    aria-label="Filter skills"
-                  />
-                </div>
-                {visibleSkills.length === 0 ? (
-                  <p className="px-2 py-3 text-xs text-muted-foreground">
-                    No skills match “{skillQuery}”.
+              <div className="mt-3 border-t border-border/50 pt-3">
+                <p className="text-xs text-muted-foreground">Reported capabilities</p>
+                {capabilities.length === 0 ? (
+                  <p className="mt-1 text-xs text-muted-foreground/70 italic">
+                    This agent did not report any capability flags.
                   </p>
                 ) : (
-                  <div className="rounded-lg border border-border/60 bg-background/60">
-                    {visibleSkills.map((skill) => (
-                      <AgentSkillRow
-                        key={skill.name}
-                        skill={skill}
-                        isExpanded={expandedSkillName === skill.name}
-                        body={skillBodies.get(skill.name)}
-                        onToggle={handleToggleSkill}
-                      />
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {capabilities.map((capability) => (
+                      <Badge
+                        key={capability.key}
+                        size="sm"
+                        variant={capability.enabled ? "success" : "secondary"}
+                      >
+                        {capability.label}
+                      </Badge>
                     ))}
                   </div>
                 )}
               </div>
-            )}
-          </SectionCard>
-        </SettingsSection>
+            </SectionCard>
+          </SettingsSection>
 
-        <SettingsSection title="MCP servers" icon={<ServerIcon className="size-4" />}>
-          <SectionCard>
-            <p className="text-xs text-muted-foreground/70 italic">
-              Not yet reported. No driver publishes its connected MCP servers today; this section
-              fills in once they do.
-            </p>
-          </SectionCard>
-        </SettingsSection>
-      </SettingsPageContainer>
+          <SettingsSection title="Model" icon={<CpuIcon className="size-4" />}>
+            <SectionCard>
+              {description !== null && description.model === null ? (
+                <p className="text-xs text-muted-foreground/70 italic">
+                  This agent did not report a model.
+                </p>
+              ) : (
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+                  <DefinitionField
+                    label="Model"
+                    value={formatAgentText(
+                      description?.model?.displayName ?? description?.model?.id ?? null,
+                    )}
+                  />
+                  <DefinitionField
+                    label="Model id"
+                    value={formatAgentText(description?.model?.id)}
+                  />
+                  <DefinitionField
+                    label="Vendor"
+                    value={formatAgentText(description?.model?.vendor)}
+                  />
+                  <DefinitionField
+                    label="Reasoning effort"
+                    value={formatAgentText(description?.model?.reasoningEffortLabel)}
+                  />
+                  <DefinitionField
+                    label="Context window"
+                    value={formatAgentContextWindow(description?.model?.contextWindow)}
+                  />
+                </dl>
+              )}
+            </SectionCard>
+          </SettingsSection>
+
+          <SettingsSection
+            title="Skills"
+            icon={<SparklesIcon className="size-4" />}
+            headerAction={
+              skills.length > 0 ? (
+                <span className="text-xs text-muted-foreground">{skills.length}</span>
+              ) : null
+            }
+          >
+            <SectionCard>
+              {skills.length === 0 ? (
+                <p className="text-xs text-muted-foreground/70 italic">
+                  This agent did not report any skills.
+                </p>
+              ) : (
+                <div className="grid gap-2">
+                  <div className="relative">
+                    <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={skillQuery}
+                      onChange={(event) => setSkillQuery(event.target.value)}
+                      placeholder="Filter skills"
+                      spellCheck={false}
+                      className="pl-8"
+                      aria-label="Filter skills"
+                    />
+                  </div>
+                  {visibleSkills.length === 0 ? (
+                    <p className="px-2 py-3 text-xs text-muted-foreground">
+                      No skills match “{skillQuery}”.
+                    </p>
+                  ) : (
+                    <div className="rounded-lg border border-border/60 bg-background/60">
+                      {visibleSkills.map((skill) => (
+                        <AgentSkillRow
+                          key={skill.name}
+                          skill={skill}
+                          isExpanded={expandedSkillName === skill.name}
+                          body={skillBodies.get(skill.name)}
+                          onToggle={handleToggleSkill}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </SectionCard>
+          </SettingsSection>
+
+          <SettingsSection title="MCP servers" icon={<ServerIcon className="size-4" />}>
+            <SectionCard>
+              <p className="text-xs text-muted-foreground/70 italic">
+                Not yet reported. No driver publishes its connected MCP servers today; this section
+                fills in once they do.
+              </p>
+            </SectionCard>
+          </SettingsSection>
+        </SettingsPageContainer>
+      </div>
     </SidebarInset>
   );
 }
