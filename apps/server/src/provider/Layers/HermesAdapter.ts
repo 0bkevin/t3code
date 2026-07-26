@@ -14,6 +14,7 @@ import {
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ServerProviderSkill,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -756,9 +757,104 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     };
   });
 
+  /**
+   * Enrich the snapshot-derived description with what the live plugin knows.
+   *
+   * Hermes runs on its own machine, so almost everything worth showing on the
+   * Agent page — skills, reasoning effort, the agent's own version — is only
+   * knowable by asking. Fields the plugin omits (because it could not read
+   * them from Hermes) deliberately fall through to the base description rather
+   * than overwriting it with a null.
+   */
+  const describe: NonNullable<HermesAdapterShape["describe"]> = (base) =>
+    Effect.gen(function* () {
+      yield* requireConnected("describe.request");
+      const response = yield* broker.request(input.instanceId, {
+        type: "describe.request",
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+        requestId: yield* requestId,
+      });
+      if (response.type !== "describe.response") {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "describe.request",
+          detail:
+            response.type === "protocol.error"
+              ? response.message
+              : `Expected describe.response, received '${response.type}'.`,
+        });
+      }
+      return {
+        ...base,
+        identity: {
+          ...base.identity,
+          agentVersion: response.hermesVersion,
+          pluginVersion: response.pluginVersion,
+          protocolVersion: response.protocolVersion,
+        },
+        model:
+          response.model === undefined && response.reasoningEffort === undefined
+            ? base.model
+            : {
+                id: response.model ?? base.model?.id ?? null,
+                displayName: response.model ?? base.model?.displayName ?? null,
+                vendor: base.model?.vendor ?? null,
+                contextWindow: base.model?.contextWindow ?? null,
+                reasoningEffortLabel:
+                  response.reasoningEffort ?? base.model?.reasoningEffortLabel ?? null,
+              },
+        skills: response.skills.map(
+          (skill): ServerProviderSkill => ({
+            name: skill.name,
+            ...(skill.description !== undefined ? { description: skill.description } : {}),
+            // Hermes' public skills surface publishes no on-disk path; its
+            // category is the closest analogue and doubles as the scope chip.
+            path: skill.source ?? skill.name,
+            ...(skill.source !== undefined ? { scope: skill.source } : {}),
+            enabled: skill.enabled,
+          }),
+        ),
+        // The wire struct mixes a version number in with the boolean flags;
+        // the description's capability map is booleans only, and the version
+        // is already carried on `identity.protocolVersion`.
+        capabilities: {
+          streaming: response.capabilities.streaming,
+          activity: response.capabilities.activity,
+          approvals: response.capabilities.approvals,
+          userInput: response.capabilities.userInput,
+          attachments: response.capabilities.attachments,
+        },
+        describedAt: response.describedAt,
+      };
+    });
+
+  const getSkillBody: NonNullable<HermesAdapterShape["getSkillBody"]> = (skillName) =>
+    Effect.gen(function* () {
+      yield* requireConnected("skill.body.request");
+      const response = yield* broker.request(input.instanceId, {
+        type: "skill.body.request",
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+        requestId: yield* requestId,
+        skillName,
+      });
+      if (response.type !== "skill.body.response") {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "skill.body.request",
+          detail:
+            response.type === "protocol.error"
+              ? response.message
+              : `Expected skill.body.response, received '${response.type}'.`,
+        });
+      }
+      return { skillName: response.skillName, markdown: response.markdown };
+    });
+
   const adapter: HermesAdapterShape = {
     provider: PROVIDER,
     capabilities: { sessionModelSwitch: "unsupported" },
+    describe,
+    getSkillBody,
     startSession,
     sendTurn,
     interruptTurn: (threadId, selectedTurnId) =>

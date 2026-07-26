@@ -6,11 +6,13 @@ import {
   HermesGatewayItemId,
   HermesGatewayRequestId,
   HermesGatewaySessionId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type HermesGatewayInstanceStatus,
   type HermesGatewayT3ToPluginMessage,
+  type ProviderInstanceDescription,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -1132,5 +1134,204 @@ it.effect("drops frames for a session it no longer tracks", () =>
     assert.equal(seen.length, 0, "frames for an untracked session must not be forwarded");
 
     yield* Fiber.interrupt(fiber);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+/**
+ * Base description the registry hands to `describe` — the snapshot-derived
+ * default every driver starts from. Deliberately sparse: Hermes runs on
+ * another machine, so a snapshot alone knows almost nothing about it.
+ */
+const makeBaseDescription = (instanceId: ProviderInstanceId): ProviderInstanceDescription => ({
+  identity: {
+    instanceId,
+    driver: ProviderDriverKind.make("hermes"),
+    displayName: "Hermes",
+    agentVersion: null,
+    pluginVersion: null,
+    protocolVersion: null,
+    host: null,
+  },
+  connection: {
+    status: "ready",
+    detail: null,
+    lastConnectedAt: null,
+    activeSessionCount: null,
+    connectionGeneration: null,
+  },
+  model: null,
+  skills: [],
+  capabilities: null,
+  describedAt: "2024-01-01T00:00:00.000Z",
+});
+
+const makeDescribeBroker = (
+  respond: (
+    message: HermesGatewayT3ToPluginMessage,
+  ) => ReturnType<HermesGatewayBrokerShape["request"]> | undefined,
+  options: { readonly connected?: boolean } = {},
+): HermesGatewayBrokerShape => ({
+  createEnrollment: () => Effect.die(new Error("unused")),
+  getInstanceStatus: () => Effect.die(new Error("unused")),
+  listInstances: Effect.succeed([]),
+  renameInstance: () => Effect.die(new Error("unused")),
+  revokeInstance: () => Effect.die(new Error("unused")),
+  removeInstance: () => Effect.die(new Error("unused")),
+  registerConnection: () => Effect.die(new Error("unused")),
+  receive: () => Effect.void,
+  disconnect: () => Effect.void,
+  request: (_instanceId, message) =>
+    respond(message) ?? Effect.die(new Error(`unexpected request ${message.type}`)),
+  send: () => Effect.void,
+  isConnected: () => Effect.succeed(options.connected ?? true),
+  stream: Stream.empty,
+  streamStatuses: Stream.empty,
+});
+
+it.effect("enriches the base description with what the plugin reports", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_remote");
+    const broker = makeDescribeBroker((message) =>
+      message.type === "describe.request"
+        ? Effect.succeed({
+            type: "describe.response",
+            protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+            requestId: message.requestId,
+            pluginVersion: "0.4.1",
+            hermesVersion: "0.19.0",
+            capabilities: {
+              protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+              streaming: true,
+              activity: true,
+              approvals: true,
+              userInput: true,
+              attachments: false,
+            },
+            model: "claude-opus-5",
+            reasoningEffort: "high",
+            skills: [
+              { name: "deploy", description: "Ship it", source: "workflow", enabled: true },
+              { name: "bare", enabled: true },
+            ],
+            describedAt: "2024-06-01T10:00:00.000Z",
+          } as const)
+        : undefined,
+    );
+    const adapter = yield* makeHermesAdapter({ instanceId }).pipe(
+      Effect.provideService(HermesGatewayBroker, broker),
+    );
+
+    const description = yield* adapter.describe!(makeBaseDescription(instanceId));
+
+    assert.equal(description.identity.agentVersion, "0.19.0");
+    assert.equal(description.identity.pluginVersion, "0.4.1");
+    assert.equal(description.identity.protocolVersion, HERMES_GATEWAY_PROTOCOL_VERSION);
+    assert.equal(description.model?.displayName, "claude-opus-5");
+    assert.equal(description.model?.reasoningEffortLabel, "high");
+    assert.equal(description.describedAt, "2024-06-01T10:00:00.000Z");
+    assert.equal(description.skills.length, 2);
+    assert.equal(description.skills[0]?.scope, "workflow");
+    // No on-disk path in Hermes' skills surface: the category stands in, and a
+    // skill without one falls back to its own name rather than an empty path.
+    assert.equal(description.skills[1]?.path, "bare");
+    // The wire capability struct carries a version alongside the flags; only
+    // the booleans belong in the description's capability map.
+    assert.deepEqual(description.capabilities, {
+      streaming: true,
+      activity: true,
+      approvals: true,
+      userInput: true,
+      attachments: false,
+    });
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps base values for fields the plugin omitted", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_remote");
+    const broker = makeDescribeBroker((message) =>
+      message.type === "describe.request"
+        ? Effect.succeed({
+            type: "describe.response",
+            protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+            requestId: message.requestId,
+            pluginVersion: "0.4.1",
+            hermesVersion: "0.19.0",
+            capabilities: {
+              protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+              streaming: true,
+              activity: true,
+              approvals: true,
+              userInput: true,
+              attachments: false,
+            },
+            skills: [],
+            describedAt: "2024-06-01T10:00:00.000Z",
+          } as const)
+        : undefined,
+    );
+    const adapter = yield* makeHermesAdapter({ instanceId }).pipe(
+      Effect.provideService(HermesGatewayBroker, broker),
+    );
+
+    const base = makeBaseDescription(instanceId);
+    const description = yield* adapter.describe!({
+      ...base,
+      model: {
+        id: "snapshot-model",
+        displayName: "Snapshot Model",
+        vendor: "Anthropic",
+        contextWindow: null,
+        reasoningEffortLabel: "medium",
+      },
+    });
+
+    // Omitted model/effort must not blank out what the snapshot already knew.
+    assert.equal(description.model?.displayName, "Snapshot Model");
+    assert.equal(description.model?.reasoningEffortLabel, "medium");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("fails describe rather than reporting stale data when the gateway is offline", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_remote");
+    const broker = makeDescribeBroker(() => undefined, { connected: false });
+    const adapter = yield* makeHermesAdapter({ instanceId }).pipe(
+      Effect.provideService(HermesGatewayBroker, broker),
+    );
+
+    const result = yield* Effect.result(adapter.describe!(makeBaseDescription(instanceId)));
+
+    // The caller (ProviderRegistry) turns this failure into "render the
+    // snapshot default", which is why failing here is correct.
+    assert.equal(result._tag, "Failure");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("reads a skill body and passes a null body through unchanged", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_remote");
+    const broker = makeDescribeBroker((message) =>
+      message.type === "skill.body.request"
+        ? Effect.succeed({
+            type: "skill.body.response",
+            protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+            requestId: message.requestId,
+            skillName: message.skillName,
+            markdown: message.skillName === "empty" ? null : "# Deploy\n",
+          } as const)
+        : undefined,
+    );
+    const adapter = yield* makeHermesAdapter({ instanceId }).pipe(
+      Effect.provideService(HermesGatewayBroker, broker),
+    );
+
+    const body = yield* adapter.getSkillBody!("deploy");
+    assert.equal(body.skillName, "deploy");
+    assert.equal(body.markdown, "# Deploy\n");
+
+    // "Asked, and there is nothing to show" is distinct from a dropped reply.
+    const empty = yield* adapter.getSkillBody!("empty");
+    assert.equal(empty.markdown, null);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

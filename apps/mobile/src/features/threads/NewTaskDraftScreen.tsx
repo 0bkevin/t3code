@@ -44,6 +44,7 @@ import {
 } from "../../state/use-composer-drafts";
 import { useProjects } from "../../state/entities";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
+import { selectWorkspaceProjects } from "../../lib/repositoryGroups";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage, removeThreadOutboxMessage } from "../../state/thread-outbox";
 import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
@@ -73,7 +74,12 @@ export function NewTaskDraftScreen(props: {
   /** Durable native share inbox item to merge into this project draft. */
   readonly incomingShareId?: string;
 }) {
-  const projects = useProjects();
+  // Filtered wholesale: mobile has no agent surface, so a route (or share
+  // reservation) pointing at a synthetic agent project should fall through to
+  // "return to the project picker" rather than open a draft against an empty
+  // agent directory.
+  const allProjects = useProjects();
+  const projects = useMemo(() => selectWorkspaceProjects(allProjects), [allProjects]);
   const createProjectThread = useCreateProjectThread();
   const flow = useNewTaskFlow();
   const navigation = useNavigation();

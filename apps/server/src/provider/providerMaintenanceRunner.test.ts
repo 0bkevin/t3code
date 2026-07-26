@@ -5,7 +5,7 @@ import {
   type ServerProvider,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
-import { ServerProviderUpdateError } from "@t3tools/contracts";
+import { ProviderDescribeError, ServerProviderUpdateError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -189,6 +189,22 @@ function makeRegistry(
       getProviders: Ref.get(providersRef),
       refresh: () => Ref.get(providersRef),
       refreshInstance: () => Ref.get(providersRef),
+      describeInstance: (instanceId) =>
+        Effect.fail(
+          new ProviderDescribeError({
+            code: "unsupported",
+            message: "describeInstance is not exercised by maintenance-runner tests.",
+            instanceId,
+          }),
+        ),
+      getSkillBody: ({ instanceId }) =>
+        Effect.fail(
+          new ProviderDescribeError({
+            code: "unsupported",
+            message: "getSkillBody is not exercised by maintenance-runner tests.",
+            instanceId,
+          }),
+        ),
       getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
         Effect.succeed(lifecycleFor(provider)),
       setProviderMaintenanceActionState,

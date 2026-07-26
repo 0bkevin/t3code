@@ -26,10 +26,13 @@ from .connection import T3GatewayConnection, dependency_available
 from .protocol import (
     canonical_tool_data,
     canonical_tool_item_type,
+    describe_response,
     frame,
     iso_now,
     item_id,
     protocol_error,
+    skill_body,
+    skill_body_response,
     validate_server_frame,
 )
 
@@ -364,6 +367,10 @@ class T3PlatformAdapter(BasePlatformAdapter):
                         sentAt=message.get("sentAt") or iso_now(),
                     )
                 )
+            elif frame_type == "describe.request":
+                await self._describe(message)
+            elif frame_type == "skill.body.request":
+                await self._send_skill_body(message)
         except ValueError as exc:
             await self._send_frame(
                 protocol_error(
@@ -383,6 +390,46 @@ class T3PlatformAdapter(BasePlatformAdapter):
                     related_request_id=str(request) if request else None,
                 )
             )
+
+    async def _describe(self, message: dict[str, Any]) -> None:
+        """Answer `describe.request` with what this plugin knows about itself.
+
+        Correlated by the request's own `requestId`, exactly like `ping` →
+        `pong`. Every Hermes-sourced field degrades to omitted inside
+        `describe_response`, so this branch has no failure path of its own:
+        an unreadable config or an older Hermes yields a thinner reply, never
+        a `protocol.error` and never a dropped connection.
+        """
+        await self._send_frame(
+            describe_response(
+                request_id_value=str(message["requestId"]),
+                hermes_version=_hermes_version(),
+            )
+        )
+
+    async def _send_skill_body(self, message: dict[str, Any]) -> None:
+        """Answer `skill.body.request` with one skill's markdown.
+
+        Fired on row expand, never eagerly — bodies are the reason skills are
+        reported as metadata only. An unknown or unreadable skill replies with
+        `markdown: null` rather than an error, so the UI can render "no body
+        available" instead of showing the user a protocol failure.
+
+        A *missing* skill name is different from an unreadable skill: the
+        response carries `skillName` back for the client to key on, and an
+        empty one would not decode. That case takes the ordinary correlated
+        `protocol.error` path instead of echoing a name that was never sent.
+        """
+        skill_name = str(message.get("skillName") or "").strip()
+        if not skill_name:
+            raise ValueError("skill.body.request requires a skillName")
+        await self._send_frame(
+            skill_body_response(
+                request_id_value=str(message["requestId"]),
+                skill_name=skill_name,
+                markdown=skill_body(skill_name),
+            )
+        )
 
     async def _ensure_session(self, message: dict[str, Any]) -> None:
         thread_id = str(message["threadId"])

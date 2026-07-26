@@ -23,7 +23,7 @@ import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
-import { groupProjectsByRepository } from "../../lib/repositoryGroups";
+import { groupProjectsByRepository, selectWorkspaceProjects } from "../../lib/repositoryGroups";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
@@ -168,7 +168,12 @@ type NewTaskFlowContextValue = {
 const NewTaskFlowContext = React.createContext<NewTaskFlowContextValue | null>(null);
 
 export function NewTaskFlowProvider(props: React.PropsWithChildren) {
-  const projects = useProjects();
+  // Every use of this list is part of choosing a destination for a new task,
+  // so synthetic agent projects are excluded once, here, rather than at each
+  // of the environment/project selection sites below. Memoized because the
+  // downstream grouping/selection memos take it as a dependency.
+  const allProjects = useProjects();
+  const projects = useMemo(() => selectWorkspaceProjects(allProjects), [allProjects]);
   const threads = useThreadShells();
   const { savedConnectionsById } = useSavedRemoteConnections();
 

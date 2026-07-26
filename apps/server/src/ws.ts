@@ -47,6 +47,7 @@ import {
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   OrchestrationReplayEventsError,
+  ProviderDescribeError,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
   AssetWorkspaceContextNotFoundError,
@@ -71,6 +72,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { getOrCreateAgentProject } from "./orchestration/agentProjects.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -308,6 +310,9 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverGetProcessDiagnostics, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetProcessResourceHistory, AuthOrchestrationReadScope],
   [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
+  [WS_METHODS.providerDescribeInstance, AuthOrchestrationReadScope],
+  [WS_METHODS.providerGetSkillBody, AuthOrchestrationReadScope],
+  [WS_METHODS.providerEnsureAgentProject, AuthOrchestrationOperateScope],
   [WS_METHODS.hermesGatewayCreateEnrollment, AuthOrchestrationOperateScope],
   [WS_METHODS.hermesGatewayGetInstanceStatus, AuthOrchestrationReadScope],
   [WS_METHODS.hermesGatewayListInstances, AuthOrchestrationReadScope],
@@ -1528,6 +1533,57 @@ const makeWsRpcLayer = (
             {
               "rpc.aggregate": "server",
             },
+          ),
+        [WS_METHODS.providerDescribeInstance]: ({ instanceId }) =>
+          observeRpcEffect(
+            WS_METHODS.providerDescribeInstance,
+            providerRegistry.describeInstance(instanceId),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerGetSkillBody]: (input) =>
+          observeRpcEffect(WS_METHODS.providerGetSkillBody, providerRegistry.getSkillBody(input), {
+            "rpc.aggregate": "provider",
+          }),
+        [WS_METHODS.providerEnsureAgentProject]: ({ instanceId }) =>
+          observeRpcEffect(
+            WS_METHODS.providerEnsureAgentProject,
+            Effect.gen(function* () {
+              const providers = yield* providerRegistry.getProviders;
+              const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+              if (!provider) {
+                return yield* new ProviderDescribeError({
+                  code: "instance-not-found",
+                  message: `Provider instance '${instanceId}' is not configured.`,
+                  instanceId,
+                });
+              }
+              const project = yield* getOrCreateAgentProject({
+                instanceId,
+                title: provider.displayName ?? instanceId,
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("agent project resolution failed", {
+                    instanceId,
+                    cause: Cause.pretty(cause),
+                  }).pipe(
+                    Effect.andThen(
+                      new ProviderDescribeError({
+                        code: "unavailable",
+                        message: "Could not resolve this agent's project.",
+                        instanceId,
+                      }),
+                    ),
+                  ),
+                ),
+              );
+              return {
+                projectId: project.id,
+                instanceId,
+                workspaceRoot: project.workspaceRoot,
+                title: project.title,
+              };
+            }),
+            { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.hermesGatewayCreateEnrollment]: (input) =>
           observeRpcEffect(

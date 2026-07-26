@@ -21,6 +21,7 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import { readThreadShell, useProjects, useThread } from "../state/entities";
+import { selectProjectsOfKind } from "../sidebarProjectGrouping";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import { primaryServerSettingsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
@@ -300,9 +301,12 @@ export function useHandleNewThread() {
       : null,
   );
   const projects = useProjects();
+  // `defaultProjectRef` is the implicit target of the new-thread shortcut and
+  // the command palette's "new thread" action, so it must resolve to a
+  // workspace the user actually added — never a synthetic agent project.
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
-      items: projects,
+      items: selectProjectsOfKind(projects, "workspace"),
       preferredIds: projectOrder,
       getId: getProjectOrderKey,
       getPreferenceIds: (project) => [

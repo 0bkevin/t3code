@@ -56,6 +56,11 @@ export function buildHomeProjectScopes(input: {
   readonly environmentId: EnvironmentId | null;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
 }): ReadonlyArray<HomeProjectScope> {
+  // NOTE: agent projects are deliberately *not* filtered here. This builder
+  // feeds both the project filter menu (a picker — callers pass an
+  // agent-free list, see `selectWorkspaceProjects`) and the thread list
+  // itself. Excluding agent projects here would silently drop every agent
+  // thread from mobile, which has no Agents surface to show them in instead.
   const projects = input.projects.filter(
     (project) => input.environmentId === null || project.environmentId === input.environmentId,
   );

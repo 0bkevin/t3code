@@ -24,12 +24,14 @@
  */
 import {
   defaultInstanceIdForDriver,
+  ProviderDescribeError,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
@@ -51,6 +53,7 @@ import {
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
+import { describeFromServerProvider } from "../providerDescribe.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
@@ -704,12 +707,85 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* Ref.get(providersRef);
     });
 
+    const describeInstance = Effect.fn("describeInstance")(function* (
+      instanceId: ProviderInstanceId,
+    ) {
+      const providers = yield* Ref.get(providersRef);
+      const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+      if (!provider) {
+        return yield* new ProviderDescribeError({
+          code: "instance-not-found",
+          message: `Provider instance '${instanceId}' is not configured.`,
+          instanceId,
+        });
+      }
+      const describedAt = DateTime.formatIso(yield* DateTime.now);
+      const base = describeFromServerProvider({ provider, describedAt });
+      const instance = yield* instanceRegistry.getInstance(instanceId);
+      const describe = instance?.adapter.describe;
+      if (!describe) {
+        return base;
+      }
+      // Enrichment is best-effort by design: an agent that is offline right
+      // now must still render a page from its cached snapshot rather than an
+      // error screen. See `ProviderAdapterShape.describe`.
+      return yield* describe(base).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider describe enrichment failed; using snapshot", {
+            instanceId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(base)),
+        ),
+      );
+    });
+
+    const getSkillBody = Effect.fn("getSkillBody")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly skillName: string;
+    }) {
+      const instance = yield* instanceRegistry.getInstance(input.instanceId);
+      if (!instance) {
+        return yield* new ProviderDescribeError({
+          code: "instance-not-found",
+          message: `Provider instance '${input.instanceId}' is not available.`,
+          instanceId: input.instanceId,
+        });
+      }
+      const read = instance.adapter.getSkillBody;
+      if (!read) {
+        return yield* new ProviderDescribeError({
+          code: "unsupported",
+          message: "This provider cannot read skill contents.",
+          instanceId: input.instanceId,
+        });
+      }
+      return yield* read(input.skillName).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider skill body read failed", {
+            instanceId: input.instanceId,
+            skillName: input.skillName,
+            cause: Cause.pretty(cause),
+          }).pipe(
+            Effect.andThen(
+              new ProviderDescribeError({
+                code: "unavailable",
+                message: `Could not read skill '${input.skillName}'.`,
+                instanceId: input.instanceId,
+              }),
+            ),
+          ),
+        ),
+      );
+    });
+
     return {
       getProviders: Ref.get(providersRef),
       refresh: (provider?: ProviderDriverKind) =>
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      describeInstance,
+      getSkillBody,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {

@@ -7,8 +7,11 @@
  * @module ProviderRegistry
  */
 import type {
+  ProviderDescribeError,
+  ProviderInstanceDescription,
   ProviderInstanceId,
   ProviderDriverKind,
+  ProviderSkillBody,
   ServerProvider,
   ServerProviderUpdateState,
 } from "@t3tools/contracts";
@@ -68,6 +71,28 @@ export interface ProviderRegistryShape {
     readonly action: ProviderMaintenanceActionKind;
     readonly state: ServerProviderUpdateState | null;
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Provider-generic description of one configured instance, for the Agent
+   * page. Always answerable from the cached snapshot; drivers that can reach
+   * their agent enrich it via `ProviderAdapterShape.describe`.
+   *
+   * Enrichment failure is not description failure — an unreachable agent
+   * still yields the snapshot-derived description, so the page renders
+   * last-known state instead of an error. Only an unknown instance fails.
+   */
+  readonly describeInstance: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<ProviderInstanceDescription, ProviderDescribeError>;
+
+  /**
+   * Read one skill's markdown body from the instance's adapter. Fired on row
+   * expand — never eagerly, since bodies are unbounded and rarely opened.
+   */
+  readonly getSkillBody: (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly skillName: string;
+  }) => Effect.Effect<ProviderSkillBody, ProviderDescribeError>;
 
   /**
    * Stream of provider snapshot updates — one emission per aggregated

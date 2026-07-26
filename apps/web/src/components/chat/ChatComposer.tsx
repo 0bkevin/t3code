@@ -33,6 +33,8 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "@tanstack/react-router";
+import { HermesIcon } from "../HermesIcon";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -170,7 +172,11 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../providerModels";
+import {
+  getProviderDisplayName,
+  getProviderInstanceRequiresWorkspace,
+  getProviderInteractionModeToggle,
+} from "../../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -266,6 +272,22 @@ function isInsideComposerFloatingLayer(element: Element): boolean {
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
   showInteractionModeToggle: boolean;
+  /**
+   * Whether the Supervised / Auto-accept / Auto / Full-access selector renders.
+   * Those modes scope filesystem and command access, so a provider with no
+   * workspace has nothing for them to scope and the control would imply a
+   * guarantee nothing enforces.
+   */
+  showRuntimeModeSelector: boolean;
+  /**
+   * Opens the Agent page for the instance this composer is bound to.
+   *
+   * Rendered in the slot the Build toggle vacates: providers with no workspace
+   * set `showInteractionModeToggle: false`, so for them that slot is empty and
+   * the two controls never compete for it. Null when the composer has no
+   * agent to open (every workspace provider).
+   */
+  onOpenAgent: (() => void) | null;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
   showPlanToggle: boolean;
@@ -320,7 +342,9 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
     </>
   ) : null;
 
-  return (
+  // The separator belongs to the selector: leaving it behind would render a
+  // dangling rule with nothing on either side of it.
+  const runtimeModeSelector = props.showRuntimeModeSelector ? (
     <>
       <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
 
@@ -366,8 +390,40 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         </Select>
         <TooltipPopup side="top">{runtimeModeOption.description}</TooltipPopup>
       </Tooltip>
+    </>
+  ) : null;
+
+  const agentButton = props.onOpenAgent ? (
+    <>
+      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+              size="sm"
+              type="button"
+              onClick={props.onOpenAgent}
+              aria-label="Open agent details"
+            />
+          }
+        >
+          <HermesIcon />
+          <span className="sr-only sm:not-sr-only">Agent</span>
+        </TooltipTrigger>
+        <TooltipPopup side="top">Open agent details</TooltipPopup>
+      </Tooltip>
+    </>
+  ) : null;
+
+  return (
+    <>
+      {runtimeModeSelector}
 
       {interactionModeToggle}
+
+      {agentButton}
 
       {props.showPlanToggle ? (
         <>
@@ -622,6 +678,7 @@ export interface ChatComposerProps {
 // --------------------------------------------------------------------------
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
+  const navigate = useNavigate();
   const {
     composerDraftTarget,
     environmentId,
@@ -894,8 +951,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         providerStatuses,
         selectedProvider,
       ),
+      // Resolved per instance, not per driver kind: the composer already
+      // knows the exact instance the next turn routes to, and providers
+      // whose instances are always user-authored (Hermes) have no default
+      // instance for a kind-keyed lookup to find.
+      showRuntimeModeSelector: getProviderInstanceRequiresWorkspace(
+        providerStatuses,
+        selectedInstanceId,
+      ),
     }),
-    [providerStatuses, selectedProvider],
+    [providerStatuses, selectedInstanceId, selectedProvider],
+  );
+  // Only providers with no workspace get an agent button; for everyone else
+  // this stays null and the Build toggle keeps the slot.
+  const openAgentPage = useMemo(
+    () =>
+      composerProviderControls.showRuntimeModeSelector
+        ? null
+        : () => {
+            void navigate({
+              to: "/agents/$instanceId",
+              params: { instanceId: selectedInstanceId },
+            });
+          },
+    [composerProviderControls.showRuntimeModeSelector, navigate, selectedInstanceId],
   );
   const selectedModelSelection = useMemo<ModelSelection>(
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
@@ -2705,6 +2784,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     planSidebarOpen={planSidebarOpen}
                     runtimeMode={runtimeMode}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                    showRuntimeModeSelector={composerProviderControls.showRuntimeModeSelector}
+                    onOpenAgent={openAgentPage}
                     traitsMenuContent={providerTraitsMenuContent}
                     onToggleInteractionMode={toggleInteractionMode}
                     onTogglePlanSidebar={togglePlanSidebar}
@@ -2720,6 +2801,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     ) : null}
                     <ComposerFooterModeControls
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                      showRuntimeModeSelector={composerProviderControls.showRuntimeModeSelector}
+                      onOpenAgent={openAgentPage}
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}
                       showPlanToggle={showPlanSidebarToggle}

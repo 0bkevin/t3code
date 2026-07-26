@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import enum
 import importlib.util
@@ -157,6 +158,36 @@ def load_plugin_modules():
 
 
 adapter_module = load_plugin_modules()
+protocol_module = sys.modules[f"{PACKAGE}.protocol"]
+
+
+@contextlib.contextmanager
+def hermes_without_describe_surfaces():
+    """Model an older Hermes: the modules import, the accessors are absent."""
+    names = ("hermes_cli", "hermes_cli.config", "tools", "tools.skills_tool")
+    saved = {name: sys.modules.get(name) for name in names}
+    hermes_cli = types.ModuleType("hermes_cli")
+    hermes_cli.__path__ = []
+    config = types.ModuleType("hermes_cli.config")
+    tools = types.ModuleType("tools")
+    tools.__path__ = []
+    skills_tool = types.ModuleType("tools.skills_tool")
+    sys.modules.update(
+        {
+            "hermes_cli": hermes_cli,
+            "hermes_cli.config": config,
+            "tools": tools,
+            "tools.skills_tool": skills_tool,
+        }
+    )
+    try:
+        yield
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 class FakeConnection:
@@ -1009,6 +1040,143 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.connection.messages[-1]["type"], "connection.status")
         self.assertEqual(self.connection.messages[-1]["activeSessionCount"], 0)
         self.assertEqual(self.adapter._sessions["thread-3"], session_id)
+
+    async def test_describe_request_replies_with_the_requests_own_id(self):
+        with unittest.mock.patch.object(
+            adapter_module, "_hermes_version", return_value="0.19.0"
+        ), unittest.mock.patch.object(
+            adapter_module,
+            "describe_response",
+            wraps=adapter_module.describe_response,
+        ) as describe:
+            await self.adapter._handle_server_frame(
+                {
+                    "type": "describe.request",
+                    "protocolVersion": 2,
+                    "requestId": "describe-1",
+                }
+            )
+
+        reply = self.connection.messages[-1]
+        self.assertEqual(reply["type"], "describe.response")
+        # Correlation, exactly like ping -> pong.
+        self.assertEqual(reply["requestId"], "describe-1")
+        self.assertEqual(reply["protocolVersion"], 2)
+        self.assertEqual(reply["hermesVersion"], "0.19.0")
+        self.assertIsInstance(reply["skills"], list)
+        self.assertIn("capabilities", reply)
+        self.assertEqual(describe.call_count, 1)
+
+    async def test_describe_request_survives_hermes_being_unreadable(self):
+        # An older Hermes whose modules exist but export none of the accessors
+        # the plugin reads. The reply gets thinner; it never becomes an error
+        # and never breaks the connection.
+        with hermes_without_describe_surfaces():
+            await self.adapter._handle_server_frame(
+                {
+                    "type": "describe.request",
+                    "protocolVersion": 2,
+                    "requestId": "describe-degraded",
+                }
+            )
+        reply = self.connection.messages[-1]
+        self.assertEqual(reply["type"], "describe.response")
+        self.assertEqual(reply["requestId"], "describe-degraded")
+        self.assertNotIn("reasoningEffort", reply)
+        self.assertNotIn("model", reply)
+        self.assertEqual(reply["skills"], [])
+        self.assertEqual(reply["pluginVersion"], protocol_module.PLUGIN_VERSION)
+
+    async def test_skill_body_request_survives_hermes_being_unreadable(self):
+        with hermes_without_describe_surfaces():
+            await self.adapter._handle_server_frame(
+                {
+                    "type": "skill.body.request",
+                    "protocolVersion": 2,
+                    "requestId": "body-degraded",
+                    "skillName": "codex",
+                }
+            )
+        reply = self.connection.messages[-1]
+        self.assertEqual(reply["type"], "skill.body.response")
+        self.assertEqual(reply["requestId"], "body-degraded")
+        self.assertEqual(reply["skillName"], "codex")
+        self.assertIsNone(reply["markdown"])
+
+    async def test_skill_body_request_replies_with_correlated_markdown(self):
+        with unittest.mock.patch.object(
+            adapter_module, "skill_body", return_value="# Codex\n"
+        ) as read_body:
+            await self.adapter._handle_server_frame(
+                {
+                    "type": "skill.body.request",
+                    "protocolVersion": 2,
+                    "requestId": "body-1",
+                    "skillName": "codex",
+                }
+            )
+
+        reply = self.connection.messages[-1]
+        self.assertEqual(reply["type"], "skill.body.response")
+        self.assertEqual(reply["requestId"], "body-1")
+        self.assertEqual(reply["skillName"], "codex")
+        self.assertEqual(reply["markdown"], "# Codex\n")
+        read_body.assert_called_once_with("codex")
+
+    async def test_skill_body_request_replies_null_for_an_unknown_skill(self):
+        await self.adapter._handle_server_frame(
+            {
+                "type": "skill.body.request",
+                "protocolVersion": 2,
+                "requestId": "body-2",
+                "skillName": "does-not-exist",
+            }
+        )
+        reply = self.connection.messages[-1]
+        self.assertEqual(reply["type"], "skill.body.response")
+        self.assertEqual(reply["requestId"], "body-2")
+        self.assertEqual(reply["skillName"], "does-not-exist")
+        # Present but null, not an error the UI would have to render.
+        self.assertIn("markdown", reply)
+        self.assertIsNone(reply["markdown"])
+
+    async def test_skill_body_request_without_a_name_is_a_correlated_error(self):
+        # `skillName` is echoed back for the client to key on and is non-empty
+        # on the wire, so a nameless request cannot be answered with a
+        # response frame — it takes the ordinary protocol.error path.
+        await self.adapter._handle_server_frame(
+            {
+                "type": "skill.body.request",
+                "protocolVersion": 2,
+                "requestId": "body-3",
+            }
+        )
+        reply = self.connection.messages[-1]
+        self.assertEqual(reply["type"], "protocol.error")
+        self.assertEqual(reply["requestId"], "body-3")
+        self.assertEqual(reply["code"], "unsupported-message")
+        self.assertTrue(reply["recoverable"])
+
+    async def test_describe_frames_never_emit_a_protocol_error(self):
+        for message in (
+            {
+                "type": "describe.request",
+                "protocolVersion": 2,
+                "requestId": "describe-no-error",
+            },
+            {
+                "type": "skill.body.request",
+                "protocolVersion": 2,
+                "requestId": "body-no-error",
+                "skillName": "codex",
+            },
+        ):
+            with self.subTest(frame_type=message["type"]):
+                await self.adapter._handle_server_frame(message)
+        self.assertNotIn(
+            "protocol.error",
+            [message["type"] for message in self.connection.messages],
+        )
 
 
 if __name__ == "__main__":

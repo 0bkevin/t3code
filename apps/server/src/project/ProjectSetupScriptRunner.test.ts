@@ -19,6 +19,7 @@ const makeProject = (scripts: OrchestrationProject["scripts"]): OrchestrationPro
   workspaceRoot: "/repo/project",
   defaultModelSelection: null,
   scripts,
+  agentInstanceId: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   deletedAt: null,
@@ -36,6 +37,7 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
       Effect.succeed(
         workspaceRoot === project.workspaceRoot ? Option.some(project) : Option.none(),
       ),
+    getActiveAgentProject: () => Effect.succeed(Option.none()),
     getProjectShellById: (projectId) =>
       Effect.succeed(projectId === project.id ? Option.some(project) : Option.none()),
     getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),

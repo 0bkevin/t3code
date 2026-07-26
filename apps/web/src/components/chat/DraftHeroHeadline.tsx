@@ -14,6 +14,7 @@ import {
 import { useProjects, useThreadShells } from "~/state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { sortLogicalProjectsForSidebar } from "../Sidebar.logic";
+import { AGENT_DRAFT_HEADLINE, resolveDraftHeroHeadline } from "./DraftHeroHeadline.logic";
 import {
   Menu,
   MenuItem,
@@ -27,11 +28,18 @@ import {
 interface DraftHeroHeadlineProps {
   readonly activeProjectRef: ScopedProjectRef | null;
   readonly activeProjectTitle: string | null;
+  /**
+   * Whether the thread's provider works inside a workspace directory. False
+   * for directoryless agents, where "what should we build in <project>?" is
+   * the wrong question and the project picker has nothing to scope.
+   */
+  readonly requiresWorkspace: boolean;
 }
 
 export function DraftHeroHeadline({
   activeProjectRef,
   activeProjectTitle,
+  requiresWorkspace,
 }: DraftHeroHeadlineProps) {
   const projects = useProjects();
   const threads = useThreadShells();
@@ -95,6 +103,11 @@ export function DraftHeroHeadline({
   const activeProjectDisplayName = activeProjectGroup?.displayName ?? activeProjectTitle;
   const hasResolvedProject = activeProjectTitle !== null;
   const canChooseProject = projectPickerEntries.length > 0;
+  const headline = resolveDraftHeroHeadline({
+    requiresWorkspace,
+    hasResolvedProject,
+    canChooseProject,
+  });
   const shouldShowProjectMenu = canChooseProject;
 
   const projectSelector = shouldShowProjectMenu ? (
@@ -146,9 +159,11 @@ export function DraftHeroHeadline({
 
   return (
     <h1 className="mx-auto w-full max-w-5xl text-center font-normal text-2xl text-foreground tracking-tight sm:text-3xl">
-      {hasResolvedProject ? (
+      {headline.kind === "agent" ? (
+        AGENT_DRAFT_HEADLINE
+      ) : headline.kind === "build-in-project" ? (
         <>What should we build in {projectSelector}?</>
-      ) : canChooseProject ? (
+      ) : headline.kind === "choose-project" ? (
         <>{projectSelector} to start</>
       ) : (
         <>Add a project to start</>

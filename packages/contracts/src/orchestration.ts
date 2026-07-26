@@ -216,6 +216,19 @@ export const OrchestrationProject = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /**
+   * Set when this row is a *synthetic agent project* standing in for a
+   * provider instance that has no workspace of its own (Hermes today).
+   * `thread.project_id` is `NOT NULL`, so directoryless agent threads still
+   * need a project row to point at; this column is the discriminator that
+   * keeps that row out of every "pick a project" surface.
+   *
+   * `null` on every real project. Decoding default is `null` so snapshots
+   * produced before this field existed keep decoding.
+   */
+  agentInstanceId: Schema.NullOr(ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -393,6 +406,12 @@ export const OrchestrationProjectShell = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  // Mirrors `OrchestrationProject.agentInstanceId`. The shell snapshot is what
+  // the sidebar and every project picker actually read, so the discriminator
+  // has to reach here or agent projects cannot be filtered out client-side.
+  agentInstanceId: Schema.NullOr(ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -521,6 +540,8 @@ export const ProjectCreateCommand = Schema.Struct({
   workspaceRoot: TrimmedNonEmptyString,
   createWorkspaceRootIfMissing: Schema.optional(Schema.Boolean),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  // Set only by the agent-project lifecycle; real project creation omits it.
+  agentInstanceId: Schema.optional(Schema.NullOr(ProviderInstanceId)),
   createdAt: IsoDateTime,
 });
 
@@ -929,6 +950,11 @@ export const ProjectCreatedPayload = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  // See `OrchestrationProject.agentInstanceId`. Decoding default keeps
+  // pre-existing events in the log replayable.
+  agentInstanceId: Schema.NullOr(ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

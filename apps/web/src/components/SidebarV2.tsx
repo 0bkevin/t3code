@@ -77,6 +77,7 @@ import {
 } from "../logicalProject";
 import {
   buildSidebarProjectSnapshots,
+  selectProjectsOfKind,
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
@@ -990,6 +991,11 @@ function latestTurnDiff(
 
 export default function SidebarV2() {
   const projects = useProjects();
+  // Project *groups* are already agent-free (the grouping builder excludes
+  // them by default); this is for the raw-count checks that gate "no projects
+  // yet" and the new-thread button, which must not be satisfied by a
+  // synthetic agent project.
+  const workspaceProjects = useMemo(() => selectProjectsOfKind(projects, "workspace"), [projects]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const router = useRouter();
@@ -2240,7 +2246,7 @@ export default function SidebarV2() {
                       type="button"
                       className="relative size-8 justify-center rounded-md border-0 bg-transparent p-0 text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                       onClick={handleNewThreadClick}
-                      disabled={projects.length === 0}
+                      disabled={workspaceProjects.length === 0}
                       aria-label="New thread"
                     />
                   }
@@ -2526,7 +2532,7 @@ export default function SidebarV2() {
           </TooltipProvider>
           {activeThreads.length + snoozedThreads.length + settledThreads.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {projects.length === 0 ? (
+              {workspaceProjects.length === 0 ? (
                 <>
                   <span>No projects yet</span>
                   <button

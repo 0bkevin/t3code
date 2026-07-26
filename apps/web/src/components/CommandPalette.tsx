@@ -131,6 +131,7 @@ import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore"
 import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
+  selectProjectsOfKind,
 } from "../sidebarProjectGrouping";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
@@ -521,10 +522,16 @@ function OpenCommandPaletteDialog(props: {
       ),
     [environments],
   );
+  // Everything in the palette that *offers* a project — the project search
+  // list, "new thread in …", the add-project dedupe — works from this list.
+  // Agent projects are synthetic and have no workspace to open, browse, or
+  // add. Id-keyed lookup maps below still read the unfiltered list: they
+  // resolve a project the user is already in, they do not offer one.
+  const workspaceProjects = useMemo(() => selectProjectsOfKind(projects, "workspace"), [projects]);
   const orderedProjects = useMemo(
     () =>
       orderItemsByPreferredIds({
-        items: projects,
+        items: workspaceProjects,
         preferredIds: projectOrder,
         getId: getProjectOrderKey,
         getPreferenceIds: (project) => [
@@ -532,12 +539,13 @@ function OpenCommandPaletteDialog(props: {
           legacyProjectCwdPreferenceKey(project.workspaceRoot),
         ],
       }),
-    [projectOrder, projects],
+    [projectOrder, workspaceProjects],
   );
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects: clientSettings.sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
+        projects:
+          clientSettings.sidebarProjectSortOrder === "manual" ? orderedProjects : workspaceProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
@@ -548,7 +556,7 @@ function OpenCommandPaletteDialog(props: {
       orderedProjects,
       primaryEnvironmentId,
       projectGroupingSettings,
-      projects,
+      workspaceProjects,
     ],
   );
   const projectGroups = useMemo(
@@ -1147,7 +1155,7 @@ function OpenCommandPaletteDialog(props: {
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
-  if (projects.length > 0) {
+  if (workspaceProjects.length > 0) {
     const activeProjectTitle =
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
       (currentProjectId ? (projectTitleById.get(currentProjectId) ?? null) : null);
@@ -1297,7 +1305,7 @@ function OpenCommandPaletteDialog(props: {
       if (cwd.length === 0) return;
 
       const existing = findProjectByPath(
-        projects.filter((project) => project.environmentId === input.environmentId),
+        workspaceProjects.filter((project) => project.environmentId === input.environmentId),
         cwd,
       );
       if (existing) {
@@ -1387,7 +1395,7 @@ function OpenCommandPaletteDialog(props: {
       environments,
       navigate,
       primaryEnvironmentId,
-      projects,
+      workspaceProjects,
       providers,
       setOpen,
       clientSettings.sidebarThreadSortOrder,

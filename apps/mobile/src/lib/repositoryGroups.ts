@@ -58,10 +58,34 @@ function deriveProjectLatestActivity(
   return latestThread?.updatedAt ?? latestThread?.createdAt ?? project.updatedAt;
 }
 
-export function groupProjectsByRepository(input: {
+/**
+ * True for the synthetic project row backing an agent instance
+ * (`OrchestrationProjectShell.agentInstanceId`). Such a row is a legal project
+ * with a real — but empty — workspace directory, created only so an agent
+ * thread can satisfy `project_id NOT NULL`. It is never a workspace the user
+ * chose, so it must not appear in any surface that offers a project to pick.
+ */
+export function isAgentProject(project: Pick<EnvironmentProject, "agentInstanceId">): boolean {
+  // `!= null` on purpose: the contract decodes a default of `null`, but an
+  // older snapshot (or a partial fixture) can omit the field entirely, and
+  // "not reported" must mean "ordinary project", never "agent".
+  return project.agentInstanceId != null;
+}
+
+/** Drop synthetic agent projects from a list destined for a picker. */
+export function selectWorkspaceProjects<
+  TProject extends Pick<EnvironmentProject, "agentInstanceId">,
+>(projects: ReadonlyArray<TProject>): TProject[] {
+  return projects.filter((project) => !isAgentProject(project));
+}
+
+export function groupProjectsByRepository(rawInput: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
 }): ReadonlyArray<RepositoryGroup> {
+  // This grouping only ever feeds the "choose a project" screens, so the
+  // exclusion lives here rather than at each call site.
+  const input = { ...rawInput, projects: selectWorkspaceProjects(rawInput.projects) };
   const threadsByProjectKey = new Map<string, EnvironmentThreadShell[]>();
 
   for (const thread of input.threads) {

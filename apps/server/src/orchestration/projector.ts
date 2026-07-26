@@ -213,6 +213,7 @@ export function projectEvent(
             workspaceRoot: payload.workspaceRoot,
             defaultModelSelection: payload.defaultModelSelection,
             scripts: payload.scripts,
+            agentInstanceId: payload.agentInstanceId,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             deletedAt: null,

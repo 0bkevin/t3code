@@ -12,6 +12,8 @@ import {
   buildPhysicalToLogicalProjectKeyMap,
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
+  isAgentProject,
+  selectProjectsOfKind,
 } from "./sidebarProjectGrouping";
 import { orderItemsByPreferredIds } from "./components/Sidebar.logic";
 import { legacyProjectCwdPreferenceKey } from "./uiStateStore";
@@ -46,6 +48,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     scripts: [],
+    agentInstanceId: null,
     ...overrides,
   };
 }
@@ -348,5 +351,104 @@ describe("environment grouping", () => {
     });
 
     expect(groups.map((group) => group.displayName)).toEqual(["separate", "shared-repo"]);
+  });
+});
+
+describe("agent project exclusion", () => {
+  const agentInstanceId = ProviderInstanceId.make("hermes_workstation");
+
+  function makeAgentProject(overrides: Partial<Project> = {}): Project {
+    return makeProject({
+      id: ProjectId.make("project-agent"),
+      title: "Workstation",
+      workspaceRoot: "/home/user/.t3/agents/hermes_workstation",
+      agentInstanceId,
+      ...overrides,
+    });
+  }
+
+  it("identifies an agent project by its instance id", () => {
+    expect(isAgentProject(makeAgentProject())).toBe(true);
+    expect(isAgentProject(makeProject())).toBe(false);
+  });
+
+  it("splits a mixed project list by kind", () => {
+    const workspace = makeProject();
+    const agent = makeAgentProject();
+
+    expect(selectProjectsOfKind([workspace, agent], "workspace")).toEqual([workspace]);
+    expect(selectProjectsOfKind([workspace, agent], "agent")).toEqual([agent]);
+  });
+
+  it("excludes agent projects from sidebar snapshots by default", () => {
+    const snapshots = buildSidebarProjectSnapshots({
+      projects: [makeProject(), makeAgentProject()],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+
+    expect(snapshots.map((snapshot) => snapshot.title)).toEqual(["shared-repo"]);
+  });
+
+  it("returns only agent projects when the agent kind is requested", () => {
+    const snapshots = buildSidebarProjectSnapshots({
+      projects: [makeProject(), makeAgentProject()],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+      kind: "agent",
+    });
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.agentInstanceId).toBe(agentInstanceId);
+    expect(snapshots[0]?.displayName).toBe("Workstation");
+  });
+
+  it("never offers an agent project as a picker entry, even if one reaches the builder", () => {
+    // Deliberately routes agent groups into the picker builder to prove the
+    // second gate holds on its own — this is the shape a future caller that
+    // forgets `kind` would produce.
+    const groups = buildSidebarProjectSnapshots({
+      projects: [makeProject(), makeAgentProject()],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+      kind: "agent",
+    });
+    expect(groups).toHaveLength(1);
+
+    const entries = buildSidebarProjectPickerEntries({
+      groups,
+      preferredProjectRef: null,
+    });
+
+    expect(entries).toEqual([]);
+  });
+
+  it("keeps a real project selectable when an agent project sits beside it", () => {
+    const groups = [
+      ...buildSidebarProjectSnapshots({
+        projects: [makeProject()],
+        settings: defaultGroupingSettings,
+        primaryEnvironmentId,
+        resolveEnvironmentLabel: () => null,
+      }),
+      ...buildSidebarProjectSnapshots({
+        projects: [makeAgentProject()],
+        settings: defaultGroupingSettings,
+        primaryEnvironmentId,
+        resolveEnvironmentLabel: () => null,
+        kind: "agent",
+      }),
+    ];
+
+    const entries = buildSidebarProjectPickerEntries({
+      groups,
+      preferredProjectRef: null,
+    });
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.group.title).toBe("shared-repo");
   });
 });

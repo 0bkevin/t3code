@@ -15,6 +15,7 @@ import {
   useThreadShells,
 } from "../state/entities";
 import { useEnvironments } from "../state/environments";
+import { selectProjectsOfKind } from "../sidebarProjectGrouping";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { cn } from "~/lib/utils";
@@ -44,10 +45,16 @@ function IndexDraftLanding() {
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
+  // Agent projects are excluded: landing on "/" must open the most recent
+  // *workspace*, never drop the user into a synthetic agent directory.
   const mostRecentProject = useMemo(
     () =>
       bootstrapped
-        ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
+        ? (sortScopedProjectsForSidebar(
+            selectProjectsOfKind(projects, "workspace"),
+            threads,
+            "updated_at",
+          )[0] ?? null)
         : null,
     [bootstrapped, projects, threads],
   );

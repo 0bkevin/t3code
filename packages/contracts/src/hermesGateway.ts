@@ -392,6 +392,26 @@ export const HermesGatewaySessionStop = Schema.Struct({
 });
 export type HermesGatewaySessionStop = typeof HermesGatewaySessionStop.Type;
 
+/**
+ * Ask a connected plugin to describe the agent it fronts — versions, model,
+ * reasoning effort, and installed skills. Backs the Agent page.
+ */
+export const HermesGatewayDescribeRequest = Schema.Struct({
+  type: Schema.Literal("describe.request"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  requestId: HermesGatewayRequestId,
+});
+export type HermesGatewayDescribeRequest = typeof HermesGatewayDescribeRequest.Type;
+
+/** Ask for one skill's markdown body. Fired on row expand, never eagerly. */
+export const HermesGatewaySkillBodyRequest = Schema.Struct({
+  type: Schema.Literal("skill.body.request"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  requestId: HermesGatewayRequestId,
+  skillName: TrimmedNonEmptyString,
+});
+export type HermesGatewaySkillBodyRequest = typeof HermesGatewaySkillBodyRequest.Type;
+
 export const HermesGatewayPing = Schema.Struct({
   type: Schema.Literal("ping"),
   protocolVersion: HermesGatewayProtocolVersion,
@@ -560,6 +580,51 @@ export const HermesGatewaySessionExited = Schema.Struct({
 });
 export type HermesGatewaySessionExited = typeof HermesGatewaySessionExited.Type;
 
+/**
+ * One skill as the plugin reports it.
+ *
+ * `source` is Hermes' category, the closest thing its public skills surface
+ * publishes to an install source — there is no on-disk path in that surface,
+ * so T3 must not expect one. Optional fields are *omitted* by the plugin when
+ * unreadable rather than sent as null.
+ */
+export const HermesGatewayDescribedSkill = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
+  source: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.Boolean,
+});
+export type HermesGatewayDescribedSkill = typeof HermesGatewayDescribedSkill.Type;
+
+export const HermesGatewayDescribeResponse = Schema.Struct({
+  type: Schema.Literal("describe.response"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  requestId: HermesGatewayRequestId,
+  pluginVersion: TrimmedNonEmptyString,
+  hermesVersion: TrimmedNonEmptyString,
+  capabilities: HermesGatewayHelloCapabilities,
+  // Optional on the wire: the plugin omits what it could not read from Hermes
+  // so T3 falls back to its own generic labels instead of rendering an empty
+  // value as if it were reported.
+  model: Schema.optional(TrimmedNonEmptyString),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
+  skills: Schema.Array(HermesGatewayDescribedSkill),
+  describedAt: IsoDateTime,
+});
+export type HermesGatewayDescribeResponse = typeof HermesGatewayDescribeResponse.Type;
+
+export const HermesGatewaySkillBodyResponse = Schema.Struct({
+  type: Schema.Literal("skill.body.response"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  requestId: HermesGatewayRequestId,
+  skillName: TrimmedNonEmptyString,
+  // Explicitly nullable, unlike the omit-on-failure fields above: the request
+  // named a skill, so the caller must be able to tell "nothing to show for
+  // this one" apart from a reply that never arrived.
+  markdown: Schema.NullOr(Schema.String),
+});
+export type HermesGatewaySkillBodyResponse = typeof HermesGatewaySkillBodyResponse.Type;
+
 export const HermesGatewayPong = Schema.Struct({
   type: Schema.Literal("pong"),
   protocolVersion: HermesGatewayProtocolVersion,
@@ -598,6 +663,8 @@ export const HermesGatewayT3ToPluginMessage = Schema.Union([
   HermesGatewayApprovalResponse,
   HermesGatewayUserInputResponse,
   HermesGatewaySessionStop,
+  HermesGatewayDescribeRequest,
+  HermesGatewaySkillBodyRequest,
   HermesGatewayPing,
 ]);
 export type HermesGatewayT3ToPluginMessage = typeof HermesGatewayT3ToPluginMessage.Type;
@@ -619,6 +686,8 @@ export const HermesGatewayPluginToT3Message = Schema.Union([
   HermesGatewayTurnCompleted,
   HermesGatewayTurnAborted,
   HermesGatewaySessionExited,
+  HermesGatewayDescribeResponse,
+  HermesGatewaySkillBodyResponse,
   HermesGatewayPong,
   HermesGatewayProtocolError,
 ]);

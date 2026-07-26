@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   archiveSelectedThreadEntries,
+  buildAgentSidebarEntries,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
+  formatAgentSidebarLabel,
+  resolveAgentStatusKey,
+  type AgentSidebarProjectInput,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -34,6 +38,7 @@ import {
   OrchestrationLatestTurn,
   ProjectId,
   ProviderInstanceId,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -1057,6 +1062,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     createdAt: "2026-03-09T10:00:00.000Z",
     updatedAt: "2026-03-09T10:00:00.000Z",
     scripts: [],
+    agentInstanceId: null,
     ...rest,
   };
 }
@@ -1422,5 +1428,125 @@ describe("sortLogicalProjectsForSidebar", () => {
         (project) => project.projectKey,
       ),
     ).toEqual(["logical-newer", "logical-older"]);
+  });
+});
+
+describe("agents sidebar section", () => {
+  const instanceId = ProviderInstanceId.make("hermes_workstation");
+
+  function makeServerProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
+    return {
+      instanceId,
+      driver: "hermes",
+      displayName: "Hermes · Workstation",
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated", type: "gateway" },
+      checkedAt: "2026-03-09T10:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+      ...overrides,
+    } as ServerProvider;
+  }
+
+  function makeAgentProject(overrides: Partial<AgentSidebarProjectInput> = {}) {
+    return {
+      agentInstanceId: instanceId,
+      title: "Workstation",
+      displayName: "Workstation",
+      ...overrides,
+    };
+  }
+
+  it("maps a connected instance to the ready dot", () => {
+    expect(resolveAgentStatusKey(makeServerProvider())).toBe("ready");
+  });
+
+  it("treats a disabled instance as disabled regardless of probe status", () => {
+    expect(resolveAgentStatusKey(makeServerProvider({ enabled: false, status: "ready" }))).toBe(
+      "disabled",
+    );
+  });
+
+  it("treats an offline gateway's warning probe as a warning dot", () => {
+    expect(resolveAgentStatusKey(makeServerProvider({ status: "warning" }))).toBe("warning");
+  });
+
+  it("treats a missing snapshot as a warning, not as disabled", () => {
+    // An enrolled agent whose provider entry has not arrived yet is
+    // "check on this", never "you turned this off".
+    expect(resolveAgentStatusKey(undefined)).toBe("warning");
+  });
+
+  it("strips the Hermes brand prefix from the row label", () => {
+    expect(
+      formatAgentSidebarLabel({
+        providerDisplayName: "Hermes · Workstation",
+        projectTitle: "Workstation",
+        instanceId,
+      }),
+    ).toBe("Workstation");
+  });
+
+  it("falls back to the project title, then the instance id, when no provider name exists", () => {
+    expect(
+      formatAgentSidebarLabel({
+        providerDisplayName: undefined,
+        projectTitle: "Workstation",
+        instanceId,
+      }),
+    ).toBe("Workstation");
+    expect(
+      formatAgentSidebarLabel({
+        providerDisplayName: "Hermes · ",
+        projectTitle: "   ",
+        instanceId,
+      }),
+    ).toBe("hermes_workstation");
+  });
+
+  it("builds one entry per agent project, label-sorted and status-resolved", () => {
+    const secondInstanceId = ProviderInstanceId.make("hermes_laptop");
+    const entries = buildAgentSidebarEntries({
+      projects: [
+        makeAgentProject(),
+        makeAgentProject({
+          agentInstanceId: secondInstanceId,
+          title: "Laptop",
+          displayName: "Laptop",
+        }),
+      ],
+      providerByInstanceId: new Map([
+        [String(instanceId), makeServerProvider()],
+        [
+          String(secondInstanceId),
+          makeServerProvider({ instanceId: secondInstanceId, status: "warning" }),
+        ],
+      ]),
+      providerDisplayNameByInstanceId: new Map([
+        [String(instanceId), "Hermes · Workstation"],
+        [String(secondInstanceId), "Hermes · Laptop"],
+      ]),
+    });
+
+    expect(entries.map((entry) => entry.label)).toEqual(["Laptop", "Workstation"]);
+    expect(entries.map((entry) => entry.statusKey)).toEqual(["warning", "ready"]);
+    expect(entries.map((entry) => entry.statusLabel)).toEqual(["Not connected", "Connected"]);
+  });
+
+  it("skips projects that are not agent projects", () => {
+    const entries = buildAgentSidebarEntries({
+      projects: [
+        makeAgentProject(),
+        { agentInstanceId: null, title: "Real project", displayName: "Real project" },
+      ],
+      providerByInstanceId: new Map([[String(instanceId), makeServerProvider()]]),
+    });
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.instanceId).toBe(instanceId);
   });
 });

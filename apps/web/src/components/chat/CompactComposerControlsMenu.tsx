@@ -2,6 +2,7 @@ import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon, ListTodoIcon } from "lucide-react";
 import { Button } from "../ui/button";
+import { HermesIcon } from "../HermesIcon";
 import {
   Menu,
   MenuItem,
@@ -19,6 +20,16 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   planSidebarOpen: boolean;
   runtimeMode: RuntimeMode;
   showInteractionModeToggle: boolean;
+  /**
+   * Mirrors the wide-layout gate in `ComposerFooterModeControls`. Both call
+   * sites must be gated or the runtime-mode control survives at narrow widths.
+   */
+  showRuntimeModeSelector: boolean;
+  /**
+   * Mirrors the wide-layout agent button. Null when this composer's provider
+   * has no agent page to open.
+   */
+  onOpenAgent: (() => void) | null;
   traitsMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
@@ -58,22 +69,37 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               <MenuRadioItem value="default">Chat</MenuRadioItem>
               <MenuRadioItem value="plan">Plan</MenuRadioItem>
             </MenuRadioGroup>
-            <MenuDivider />
+            {/* Trailing rule only when something follows it — the plan item
+                brings its own leading divider. */}
+            {props.showRuntimeModeSelector ? <MenuDivider /> : null}
           </>
         ) : null}
-        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
-        <MenuRadioGroup
-          value={props.runtimeMode}
-          onValueChange={(value) => {
-            if (!value || value === props.runtimeMode) return;
-            props.onRuntimeModeChange(value as RuntimeMode);
-          }}
-        >
-          <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-          <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
-          <MenuRadioItem value="auto">Auto</MenuRadioItem>
-          <MenuRadioItem value="full-access">Full access</MenuRadioItem>
-        </MenuRadioGroup>
+        {props.showRuntimeModeSelector ? (
+          <>
+            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
+            <MenuRadioGroup
+              value={props.runtimeMode}
+              onValueChange={(value) => {
+                if (!value || value === props.runtimeMode) return;
+                props.onRuntimeModeChange(value as RuntimeMode);
+              }}
+            >
+              <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
+              <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
+              <MenuRadioItem value="auto">Auto</MenuRadioItem>
+              <MenuRadioItem value="full-access">Full access</MenuRadioItem>
+            </MenuRadioGroup>
+          </>
+        ) : null}
+        {props.onOpenAgent ? (
+          <>
+            <MenuDivider />
+            <MenuItem onClick={props.onOpenAgent}>
+              <HermesIcon className="size-4 shrink-0" />
+              Agent details
+            </MenuItem>
+          </>
+        ) : null}
         {props.activePlan ? (
           <>
             <MenuDivider />

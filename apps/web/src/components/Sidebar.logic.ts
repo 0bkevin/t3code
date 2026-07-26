@@ -1,6 +1,7 @@
 import * as React from "react";
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import type { ProviderStatusKey } from "./settings/providerStatus";
 import {
   getThreadSortTimestamp,
   sortThreads,
@@ -829,5 +830,123 @@ export function sortScopedProjectsForSidebar<
       left.title.localeCompare(right.title) ||
       left.environmentId.localeCompare(right.environmentId) ||
       left.id.localeCompare(right.id),
+  );
+}
+
+/**
+ * Sidebar "Agents" section — pure logic.
+ *
+ * An agent is presented as a top-level peer to a project: a header row (its
+ * nickname + connection dot) with its threads underneath. Structurally it is
+ * still a `SidebarProjectSnapshot`, because the threads hang off the synthetic
+ * project row created for the instance — the only differences are how the row
+ * is labelled and that the leading affordance is a live connection dot rather
+ * than a favicon.
+ */
+
+/** Minimal shape the agent-section helpers need off a grouped project. */
+export interface AgentSidebarProjectInput {
+  readonly agentInstanceId: ProviderInstanceId | null;
+  readonly title: string;
+  readonly displayName: string;
+}
+
+export interface AgentSidebarEntry<TProject extends AgentSidebarProjectInput> {
+  readonly instanceId: ProviderInstanceId;
+  readonly project: TProject;
+  /** Nickname, with the redundant "Hermes · " prefix stripped. */
+  readonly label: string;
+  readonly statusKey: ProviderStatusKey;
+  readonly statusLabel: string;
+  /** True while the instance is mid-handshake, so the dot can pulse. */
+  readonly statusPulse: boolean;
+}
+
+const AGENT_STATUS_LABELS: Record<ProviderStatusKey, string> = {
+  ready: "Connected",
+  // A provider snapshot reports `warning` both while an agent has never dialled
+  // in and when it dropped. Either way the user's next action is the same, so
+  // one honest label covers both rather than guessing which it is.
+  warning: "Not connected",
+  error: "Error",
+  disabled: "Disabled",
+};
+
+/**
+ * Presentation status for one agent instance, read off the pushed
+ * `ServerProvider` snapshot.
+ *
+ * A missing snapshot is `warning`, not `disabled`: the agent project row
+ * exists because the instance was enrolled, so an absent provider entry means
+ * the server has not reported on it yet, which is a "check on this" state
+ * rather than a deliberate off switch.
+ */
+export function resolveAgentStatusKey(provider: ServerProvider | undefined): ProviderStatusKey {
+  if (!provider) return "warning";
+  if (!provider.enabled) return "disabled";
+  switch (provider.status) {
+    case "ready":
+    case "error":
+    case "disabled":
+      return provider.status;
+    default:
+      return "warning";
+  }
+}
+
+/**
+ * Strip the driver-level prefix an instance display name carries so the
+ * sidebar row shows the nickname the user actually chose. `providerInstances`
+ * renders Hermes instances as "Hermes · workstation"; inside a section already
+ * titled "Agents", repeating the brand on every row is noise.
+ */
+export function formatAgentSidebarLabel(input: {
+  readonly providerDisplayName: string | undefined;
+  readonly projectTitle: string;
+  readonly instanceId: ProviderInstanceId;
+}): string {
+  const fromProvider = input.providerDisplayName?.replace(/^Hermes\s*[·:–—-]\s*/u, "").trim();
+  if (fromProvider) return fromProvider;
+  const fromProject = input.projectTitle.trim();
+  if (fromProject) return fromProject;
+  return String(input.instanceId);
+}
+
+/**
+ * Project grouped agent projects into renderable sidebar entries, ordered by
+ * label so the list is stable across status changes (a reconnecting agent
+ * must not jump position under the pointer).
+ */
+export function buildAgentSidebarEntries<TProject extends AgentSidebarProjectInput>(input: {
+  readonly projects: ReadonlyArray<TProject>;
+  readonly providerByInstanceId: ReadonlyMap<string, ServerProvider>;
+  readonly providerDisplayNameByInstanceId?: ReadonlyMap<string, string>;
+}): AgentSidebarEntry<TProject>[] {
+  const entries: AgentSidebarEntry<TProject>[] = [];
+  for (const project of input.projects) {
+    const instanceId = project.agentInstanceId;
+    // `== null` covers both the decoded `null` and an older snapshot that
+    // omits the field; neither is an agent.
+    if (instanceId == null) continue;
+    const provider = input.providerByInstanceId.get(instanceId);
+    const statusKey = resolveAgentStatusKey(provider);
+    entries.push({
+      instanceId,
+      project,
+      label: formatAgentSidebarLabel({
+        providerDisplayName: input.providerDisplayNameByInstanceId?.get(instanceId),
+        projectTitle: project.displayName || project.title,
+        instanceId,
+      }),
+      statusKey,
+      statusLabel: AGENT_STATUS_LABELS[statusKey],
+      statusPulse: statusKey === "warning" && provider?.auth.status === "unauthenticated",
+    });
+  }
+
+  return entries.toSorted(
+    (left, right) =>
+      left.label.localeCompare(right.label) ||
+      String(left.instanceId).localeCompare(String(right.instanceId)),
   );
 }

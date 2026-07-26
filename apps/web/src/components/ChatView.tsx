@@ -2377,7 +2377,13 @@ function ChatViewContent(props: ChatViewProps) {
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
-  const showComposerContextStrip = isGitRepo && activeProject !== null;
+  // Read the flag off the instance the thread is actually bound to, not off
+  // the driver kind: Hermes instance ids are user-authored slugs
+  // (`hermes-<label>-<suffix>`) and no `hermes` default instance is ever
+  // synthesized, so a kind-keyed lookup would never find one. Absent means
+  // true, so every provider that predates the flag keeps its directory UI.
+  const providerRequiresWorkspace = activeProviderStatus?.requiresWorkspace !== false;
+  const showComposerContextStrip = isGitRepo && activeProject !== null && providerRequiresWorkspace;
   const initialDiffPanelGitScope =
     gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
   const diffPanelGitStatusResolutionKey = gitStatusQuery.data ? "resolved" : "pending";
@@ -5648,6 +5654,7 @@ function ChatViewContent(props: ChatViewProps) {
             availableEditors={availableEditors}
             rightPanelOpen={rightPanelOpen}
             gitCwd={gitCwd}
+            requiresWorkspace={providerRequiresWorkspace}
             onRunProjectScript={runProjectScript}
             onAddProjectScript={saveProjectScript}
             onUpdateProjectScript={updateProjectScript}
@@ -5759,6 +5766,7 @@ function ChatViewContent(props: ChatViewProps) {
                         <DraftHeroHeadline
                           activeProjectRef={activeProjectRef}
                           activeProjectTitle={activeProject?.title ?? null}
+                          requiresWorkspace={providerRequiresWorkspace}
                         />
                       </div>
                       <ComposerBannerStack className="relative z-0" items={composerBannerItems} />

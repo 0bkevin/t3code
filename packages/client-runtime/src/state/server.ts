@@ -315,6 +315,24 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId }) => environmentId,
       },
     }),
+    providerDescribeInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:describe-instance",
+      tag: WS_METHODS.providerDescribeInstance,
+    }),
+    providerGetSkillBody: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:get-skill-body",
+      tag: WS_METHODS.providerGetSkillBody,
+    }),
+    providerEnsureAgentProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:ensure-agent-project",
+      tag: WS_METHODS.providerEnsureAgentProject,
+      // Idempotent get-or-create: collapsing concurrent calls per instance
+      // keeps a burst of thread starts from racing on the same row.
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => input.instanceId,
+      },
+    }),
     hermesGatewayCreateEnrollment: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:hermes-gateway-create-enrollment",
       tag: WS_METHODS.hermesGatewayCreateEnrollment,

@@ -22,6 +22,8 @@ import {
   ThreadWorktreeIndicator,
 } from "./ThreadStatusIndicators";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { HermesIcon } from "./HermesIcon";
+import { PROVIDER_STATUS_STYLES } from "./settings/providerStatus";
 import { useAtomValue } from "@effect/atom-react";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -171,7 +173,9 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { openCommandPalette } from "../commandPaletteBus";
 import {
   archiveSelectedThreadEntries,
+  buildAgentSidebarEntries,
   buildMultiSelectThreadContextMenuItems,
+  type AgentSidebarEntry,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
@@ -191,7 +195,8 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { CommandDialogTrigger } from "./ui/command";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
-import { primaryServerKeybindingsAtom } from "../state/server";
+import { primaryServerKeybindingsAtom, primaryServerProvidersAtom } from "../state/server";
+import { deriveProviderInstanceEntries } from "../providerInstances";
 import {
   derivePhysicalProjectKey,
   deriveProjectGroupingOverrideKey,
@@ -202,6 +207,7 @@ import type { SidebarThreadSummary } from "../types";
 import {
   buildPhysicalToLogicalProjectKeyMap,
   buildSidebarProjectSnapshots,
+  selectProjectsOfKind,
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
@@ -1055,6 +1061,14 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
 
 interface SidebarProjectItemProps {
   project: SidebarProjectSnapshot;
+  /**
+   * Present when this row belongs to the Agents section. The row then renders
+   * the agent's mark plus a live connection dot instead of the folder favicon,
+   * navigates to the agent page instead of toggling on header click, and skips
+   * the project context menu (an agent's synthetic workspace is not something
+   * the user renames, regroups, or removes from here).
+   */
+  agent?: AgentSidebarEntry<SidebarProjectSnapshot> | null;
   isThreadListExpanded: boolean;
   activeRouteThreadKey: string | null;
   newThreadShortcutLabel: string | null;
@@ -1075,6 +1089,7 @@ interface SidebarProjectItemProps {
 const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjectItemProps) {
   const {
     project,
+    agent = null,
     isThreadListExpanded,
     activeRouteThreadKey,
     newThreadShortcutLabel,
@@ -1344,6 +1359,21 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     visibleProjectThreads,
   ]);
 
+  const openAgentPage = useCallback(() => {
+    if (!agent) return;
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+    void router.navigate({
+      to: "/agents/$instanceId",
+      params: { instanceId: agent.instanceId },
+    });
+  }, [agent, isMobile, router, setOpenMobile]);
+
+  const toggleProjectExpanded = useCallback(() => {
+    setProjectExpanded(projectPreferenceKeys, !projectExpanded);
+  }, [projectExpanded, projectPreferenceKeys, setProjectExpanded]);
+
   const handleProjectButtonClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       if (suppressProjectClickForContextMenuRef.current) {
@@ -1366,16 +1396,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       if (useThreadSelectionStore.getState().hasSelection()) {
         clearSelection();
       }
-      setProjectExpanded(projectPreferenceKeys, !projectExpanded);
+      // An agent header is a link to the agent, not a disclosure: the threads
+      // are toggled by the dedicated chevron button rendered beside it.
+      if (agent) {
+        openAgentPage();
+        return;
+      }
+      toggleProjectExpanded();
     },
     [
+      agent,
       clearSelection,
       dragInProgressRef,
-      projectExpanded,
-      projectPreferenceKeys,
-      setProjectExpanded,
+      openAgentPage,
       suppressProjectClickAfterDragRef,
       suppressProjectClickForContextMenuRef,
+      toggleProjectExpanded,
     ],
   );
 
@@ -1386,9 +1422,13 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       if (dragInProgressRef.current) {
         return;
       }
-      setProjectExpanded(projectPreferenceKeys, !projectExpanded);
+      if (agent) {
+        openAgentPage();
+        return;
+      }
+      toggleProjectExpanded();
     },
-    [dragInProgressRef, projectExpanded, projectPreferenceKeys, setProjectExpanded],
+    [agent, dragInProgressRef, openAgentPage, toggleProjectExpanded],
   );
 
   const handleProjectButtonPointerDownCapture = useCallback(
@@ -1580,6 +1620,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const handleProjectButtonContextMenu = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
+      // Rename / Group into… / Copy Path / Remove are all workspace verbs.
+      // An agent's synthetic project is owned by its enrollment lifecycle, so
+      // there is nothing here for the user to act on.
+      if (agent) return;
       suppressProjectClickForContextMenuRef.current = true;
       void (async () => {
         const api = readLocalApi();
@@ -1675,6 +1719,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       })();
     },
     [
+      agent,
       copyPathToClipboard,
       handleRemoveProject,
       openProjectGroupingDialog,
@@ -2230,7 +2275,32 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           onKeyDown={handleProjectButtonKeyDown}
           onContextMenu={handleProjectButtonContextMenu}
         >
-          {!projectExpanded && projectStatus ? (
+          {agent ? (
+            // Agents replace both leading affordances at once: the connection
+            // dot is the status (it comes from the pushed provider snapshot,
+            // not from thread activity), and the Hermes mark stands in for the
+            // project favicon since there is no site to fetch one from.
+            <>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      aria-label={`${agent.label}: ${agent.statusLabel}`}
+                      className="-ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center"
+                    />
+                  }
+                >
+                  <span
+                    className={`size-[9px] rounded-full ${PROVIDER_STATUS_STYLES[agent.statusKey].dot} ${
+                      agent.statusPulse ? "animate-status-pulse" : ""
+                    }`}
+                  />
+                </TooltipTrigger>
+                <TooltipPopup side="top">{agent.statusLabel}</TooltipPopup>
+              </Tooltip>
+              <HermesIcon className="size-4 shrink-0 text-muted-foreground/80" />
+            </>
+          ) : !projectExpanded && projectStatus ? (
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -2258,18 +2328,57 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               }`}
             />
           )}
-          <ProjectFavicon environmentId={project.environmentId} cwd={project.workspaceRoot} />
+          {agent ? null : (
+            <ProjectFavicon environmentId={project.environmentId} cwd={project.workspaceRoot} />
+          )}
           <span className="flex min-w-0 flex-1 items-center gap-2">
             <span className="truncate text-sm font-medium text-sidebar-foreground/90">
-              {project.displayName}
+              {agent ? agent.label : project.displayName}
             </span>
-            {project.groupedProjectCount > 1 ? (
+            {!agent && project.groupedProjectCount > 1 ? (
               <span className="shrink-0 text-[10px] text-muted-foreground/60">
                 {project.groupedProjectCount} projects
               </span>
             ) : null}
           </span>
         </SidebarMenuButton>
+        {/* Agents need an explicit disclosure control: their header click
+            navigates to the agent page, so the thread list has no other way
+            to open. */}
+        {agent ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <div className="absolute top-[calc(50%+1px)] right-7 -translate-y-1/2 opacity-0 transition-opacity duration-150 max-sm:opacity-100 group-hover/project-header:opacity-100 group-focus-within/project-header:opacity-100">
+                  <button
+                    type="button"
+                    aria-label={
+                      projectExpanded
+                        ? `Collapse threads for ${agent.label}`
+                        : `Expand threads for ${agent.label}`
+                    }
+                    aria-expanded={projectExpanded}
+                    className={SIDEBAR_ICON_ACTION_BUTTON_CLASS}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleProjectExpanded();
+                    }}
+                  >
+                    <ChevronRightIcon
+                      className={`size-3.5 transition-transform duration-150 ${
+                        projectExpanded ? "rotate-90" : ""
+                      }`}
+                    />
+                  </button>
+                </div>
+              }
+            />
+            <TooltipPopup side="top">
+              {projectExpanded ? "Hide threads" : "Show threads"}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         {/* Environment badge – visible by default, crossfades with the
             "new thread" button on hover using the same pointer-events +
             opacity pattern as the thread row archive/timestamp swap. */}
@@ -2485,6 +2594,84 @@ const SidebarProjectListRow = memo(function SidebarProjectListRow(props: Sidebar
     <SidebarMenuItem className="rounded-md">
       <SidebarProjectItem {...props} />
     </SidebarMenuItem>
+  );
+});
+
+interface SidebarAgentsContentProps {
+  agents: readonly AgentSidebarEntry<SidebarProjectSnapshot>[];
+  expandedThreadListsByProject: ReadonlySet<string>;
+  activeRouteProjectKey: string | null;
+  routeThreadKey: string | null;
+  newThreadShortcutLabel: string | null;
+  handleNewThread: ReturnType<typeof useNewThreadHandler>;
+  archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
+  deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
+  threadJumpLabelByKey: ReadonlyMap<string, string>;
+  attachThreadListAutoAnimateRef: (node: HTMLElement | null) => void;
+  expandThreadListForProject: (projectKey: string) => void;
+  collapseThreadListForProject: (projectKey: string) => void;
+  dragInProgressRef: React.RefObject<boolean>;
+  suppressProjectClickAfterDragRef: React.RefObject<boolean>;
+  suppressProjectClickForContextMenuRef: React.RefObject<boolean>;
+  attachAgentListAutoAnimateRef: (node: HTMLElement | null) => void;
+}
+
+/**
+ * Top-level "Agents" section, peer to Projects.
+ *
+ * Structurally a trimmed copy of `SidebarProjectsContent`'s list branch: same
+ * `SidebarGroup` → header → `SidebarMenu` → row shape, so agent rows inherit
+ * every interaction affordance project rows have (thread rows, selection,
+ * hover actions, jump hints, auto-animate). Deliberately omitted:
+ *
+ * - **The manual-sort / DnD branch.** Manual project order is a persisted
+ *   user preference keyed on workspace path (`projectOrder` in the UI store);
+ *   agents have no meaningful hand-ordering, and reusing that store would let
+ *   an agent's synthetic path leak into the project order preference. Agents
+ *   sort by label, which is stable across status changes.
+ * - **The sort menu and "add project" button.** Neither applies — agents
+ *   arrive by enrollment in provider settings, not by picking a folder.
+ *
+ * The whole group renders nothing when no agent is enrolled, so users without
+ * a Hermes instance never see an empty section.
+ */
+const SidebarAgentsContent = memo(function SidebarAgentsContent(props: SidebarAgentsContentProps) {
+  if (props.agents.length === 0) {
+    return null;
+  }
+
+  return (
+    <SidebarGroup className="px-2 pt-0 pb-2">
+      <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
+        <span className="text-xs font-medium text-sidebar-muted-foreground/80">Agents</span>
+      </div>
+      <SidebarMenu ref={props.attachAgentListAutoAnimateRef}>
+        {props.agents.map((agent) => (
+          <SidebarProjectListRow
+            key={agent.project.projectKey}
+            project={agent.project}
+            agent={agent}
+            isThreadListExpanded={props.expandedThreadListsByProject.has(agent.project.projectKey)}
+            activeRouteThreadKey={
+              props.activeRouteProjectKey === agent.project.projectKey ? props.routeThreadKey : null
+            }
+            newThreadShortcutLabel={props.newThreadShortcutLabel}
+            handleNewThread={props.handleNewThread}
+            archiveThread={props.archiveThread}
+            deleteThread={props.deleteThread}
+            threadJumpLabelByKey={props.threadJumpLabelByKey}
+            attachThreadListAutoAnimateRef={props.attachThreadListAutoAnimateRef}
+            expandThreadListForProject={props.expandThreadListForProject}
+            collapseThreadListForProject={props.collapseThreadListForProject}
+            dragInProgressRef={props.dragInProgressRef}
+            suppressProjectClickAfterDragRef={props.suppressProjectClickAfterDragRef}
+            suppressProjectClickForContextMenuRef={props.suppressProjectClickForContextMenuRef}
+            isManualProjectSorting={false}
+            dragHandleProps={null}
+          />
+        ))}
+      </SidebarMenu>
+    </SidebarGroup>
   );
 });
 
@@ -2760,7 +2947,9 @@ interface SidebarProjectsContentProps {
   suppressProjectClickAfterDragRef: React.RefObject<boolean>;
   suppressProjectClickForContextMenuRef: React.RefObject<boolean>;
   attachProjectListAutoAnimateRef: (node: HTMLElement | null) => void;
+  attachAgentListAutoAnimateRef: (node: HTMLElement | null) => void;
   projectsLength: number;
+  agents: readonly AgentSidebarEntry<SidebarProjectSnapshot>[];
 }
 
 const SidebarProjectsContent = memo(function SidebarProjectsContent(
@@ -2800,7 +2989,9 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     suppressProjectClickAfterDragRef,
     suppressProjectClickForContextMenuRef,
     attachProjectListAutoAnimateRef,
+    attachAgentListAutoAnimateRef,
     projectsLength,
+    agents,
   } = props;
 
   const handleProjectSortOrderChange = useCallback(
@@ -2981,6 +3172,25 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </div>
         )}
       </SidebarGroup>
+
+      <SidebarAgentsContent
+        agents={agents}
+        expandedThreadListsByProject={expandedThreadListsByProject}
+        activeRouteProjectKey={activeRouteProjectKey}
+        routeThreadKey={routeThreadKey}
+        newThreadShortcutLabel={newThreadShortcutLabel}
+        handleNewThread={handleNewThread}
+        archiveThread={archiveThread}
+        deleteThread={deleteThread}
+        threadJumpLabelByKey={threadJumpLabelByKey}
+        attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
+        expandThreadListForProject={expandThreadListForProject}
+        collapseThreadListForProject={collapseThreadListForProject}
+        dragInProgressRef={dragInProgressRef}
+        suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
+        suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
+        attachAgentListAutoAnimateRef={attachAgentListAutoAnimateRef}
+      />
     </SidebarContent>
   );
 });
@@ -3054,6 +3264,9 @@ export default function Sidebar() {
       ),
     [environments],
   );
+  // "No projects yet" must not be suppressed by an agent project: a user whose
+  // only project row is a synthetic agent still has no workspace.
+  const workspaceProjects = useMemo(() => selectProjectsOfKind(projects, "workspace"), [projects]);
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
       items: projects,
@@ -3102,6 +3315,42 @@ export default function Sidebar() {
     projectGroupingSettings,
     primaryEnvironmentId,
   ]);
+
+  // Agent projects are excluded from `sidebarProjects` by the builder's
+  // default; the Agents section asks for them explicitly. `orderedProjects`
+  // is passed through unchanged: it still carries agent rows, and the
+  // physical→logical key maps built from it are what let agent *threads*
+  // resolve to their agent row.
+  const agentProjects = useMemo<SidebarProjectSnapshot[]>(
+    () =>
+      buildSidebarProjectSnapshots({
+        projects: orderedProjects,
+        settings: projectGroupingSettings,
+        primaryEnvironmentId,
+        resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
+        kind: "agent",
+      }),
+    [environmentLabelById, orderedProjects, projectGroupingSettings, primaryEnvironmentId],
+  );
+  const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  // Push path, not polling: `primaryServerProvidersAtom` is fed by
+  // `subscribeServerConfig`, so a gateway connecting or dropping repaints the
+  // dot without the sidebar asking.
+  const agentEntries = useMemo(() => {
+    const providerByInstanceId = new Map(
+      serverProviders.map((provider) => [String(provider.instanceId), provider] as const),
+    );
+    const providerDisplayNameByInstanceId = new Map(
+      deriveProviderInstanceEntries(serverProviders).map(
+        (entry) => [String(entry.instanceId), entry.displayName] as const,
+      ),
+    );
+    return buildAgentSidebarEntries({
+      projects: agentProjects,
+      providerByInstanceId,
+      providerDisplayNameByInstanceId,
+    });
+  }, [agentProjects, serverProviders]);
 
   const sidebarProjectByKey = useMemo(
     () => new Map(sidebarProjects.map((project) => [project.projectKey, project] as const)),
@@ -3249,6 +3498,15 @@ export default function Sidebar() {
     animatedProjectListsRef.current.add(node);
   }, []);
 
+  const animatedAgentListsRef = useRef(new WeakSet<HTMLElement>());
+  const attachAgentListAutoAnimateRef = useCallback((node: HTMLElement | null) => {
+    if (!node || animatedAgentListsRef.current.has(node)) {
+      return;
+    }
+    autoAnimate(node, SIDEBAR_LIST_ANIMATION_OPTIONS);
+    animatedAgentListsRef.current.add(node);
+  }, []);
+
   const animatedThreadListsRef = useRef(new WeakSet<HTMLElement>());
   const attachThreadListAutoAnimateRef = useCallback((node: HTMLElement | null) => {
     if (!node || animatedThreadListsRef.current.has(node)) {
@@ -3294,9 +3552,16 @@ export default function Sidebar() {
     visibleThreads,
   ]);
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
+  // Agent rows render after the Projects group, so their threads continue the
+  // same visible ordering: thread-jump shortcuts and prev/next traversal reach
+  // an agent's threads exactly as they reach a project's.
+  const visibleSidebarSections = useMemo(
+    () => [...sortedProjects, ...agentEntries.map((agent) => agent.project)],
+    [agentEntries, sortedProjects],
+  );
   const visibleSidebarThreadKeys = useMemo(
     () =>
-      sortedProjects.flatMap((project) => {
+      visibleSidebarSections.flatMap((project) => {
         const projectThreads = sortThreads(
           (threadsByProjectKey.get(project.projectKey) ?? []).filter(
             (thread) => thread.archivedAt === null,
@@ -3337,7 +3602,7 @@ export default function Sidebar() {
       expandedThreadListsByProject,
       projectExpandedById,
       routeThreadKey,
-      sortedProjects,
+      visibleSidebarSections,
       threadsByProjectKey,
     ],
   );
@@ -3631,7 +3896,9 @@ export default function Sidebar() {
             suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
             suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
             attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
-            projectsLength={projects.length}
+            attachAgentListAutoAnimateRef={attachAgentListAutoAnimateRef}
+            projectsLength={workspaceProjects.length}
+            agents={agentEntries}
           />
 
           <SidebarSeparator />

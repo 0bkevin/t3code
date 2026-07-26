@@ -23,6 +23,7 @@ import {
   type OrchestrationThreadShell,
   ModelSelection,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
@@ -113,6 +114,9 @@ const WorkspaceRootLookupInput = Schema.Struct({
 });
 const ProjectIdLookupInput = Schema.Struct({
   projectId: ProjectId,
+});
+const AgentInstanceLookupInput = Schema.Struct({
+  agentInstanceId: ProviderInstanceId,
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -235,6 +239,7 @@ function mapProjectShellRow(
     repositoryIdentity,
     defaultModelSelection: row.defaultModelSelection,
     scripts: row.scripts,
+    agentInstanceId: row.agentInstanceId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -308,6 +313,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          agent_instance_id AS "agentInstanceId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -681,6 +687,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          agent_instance_id AS "agentInstanceId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -703,12 +710,43 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          agent_instance_id AS "agentInstanceId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
         FROM projection_projects
         WHERE project_id = ${projectId}
           AND deleted_at IS NULL
+        LIMIT 1
+      `,
+  });
+
+  /**
+   * Active agent project for one provider instance.
+   *
+   * Ordered oldest-first so a duplicate — which the enrollment lock is meant
+   * to prevent but a crash between dispatch and commit could still leave —
+   * resolves to the same row every time rather than flapping between two.
+   */
+  const getActiveAgentProjectRow = SqlSchema.findOneOption({
+    Request: AgentInstanceLookupInput,
+    Result: ProjectionProjectLookupRowSchema,
+    execute: ({ agentInstanceId }) =>
+      sql`
+        SELECT
+          project_id AS "projectId",
+          title,
+          workspace_root AS "workspaceRoot",
+          default_model_selection_json AS "defaultModelSelection",
+          scripts_json AS "scripts",
+          agent_instance_id AS "agentInstanceId",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          deleted_at AS "deletedAt"
+        FROM projection_projects
+        WHERE agent_instance_id = ${agentInstanceId}
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC, project_id ASC
         LIMIT 1
       `,
   });
@@ -1184,6 +1222,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
                 defaultModelSelection: row.defaultModelSelection,
                 scripts: row.scripts,
+                agentInstanceId: row.agentInstanceId,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 deletedAt: row.deletedAt,
@@ -1310,6 +1349,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   workspaceRoot: row.workspaceRoot,
                   defaultModelSelection: row.defaultModelSelection,
                   scripts: row.scripts,
+                  agentInstanceId: row.agentInstanceId,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
@@ -1758,6 +1798,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     repositoryIdentity,
                     defaultModelSelection: option.value.defaultModelSelection,
                     scripts: option.value.scripts,
+                    agentInstanceId: option.value.agentInstanceId,
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,
                     deletedAt: option.value.deletedAt,
@@ -1766,6 +1807,38 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
         ),
       );
+
+  const getActiveAgentProject: ProjectionSnapshotQueryShape["getActiveAgentProject"] = (
+    agentInstanceId,
+  ) =>
+    getActiveAgentProjectRow({ agentInstanceId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getActiveAgentProject:query",
+          "ProjectionSnapshotQuery.getActiveAgentProject:decodeRow",
+        ),
+      ),
+      Effect.map((option) =>
+        Option.map(
+          option,
+          (row): OrchestrationProject => ({
+            id: row.projectId,
+            title: row.title,
+            workspaceRoot: row.workspaceRoot,
+            // Agent projects are not checkouts, so there is no remote to
+            // resolve — skipping the resolver keeps this off the git path
+            // entirely rather than paying for a lookup that returns null.
+            repositoryIdentity: null,
+            defaultModelSelection: row.defaultModelSelection,
+            scripts: row.scripts,
+            agentInstanceId: row.agentInstanceId,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            deletedAt: row.deletedAt,
+          }),
+        ),
+      ),
+    );
 
   const getProjectShellById: ProjectionSnapshotQueryShape["getProjectShellById"] = (projectId) =>
     getActiveProjectRowById({ projectId }).pipe(
@@ -2111,6 +2184,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getSnapshotSequence,
     getCounts,
     getActiveProjectByWorkspaceRoot,
+    getActiveAgentProject,
     getProjectShellById,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,

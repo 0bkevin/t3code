@@ -124,6 +124,7 @@ describe("OrchestrationEngine", () => {
             model: "gpt-5-codex",
           },
           scripts: [],
+          agentInstanceId: null,
           createdAt: "2026-03-03T00:00:00.000Z",
           updatedAt: "2026-03-03T00:00:01.000Z",
           deletedAt: null,
@@ -172,6 +173,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getActiveAgentProject: () => Effect.succeed(Option.none()),
           getCommandReadModel: () => Effect.succeed(commandReadModel),
           getSnapshot: () =>
             Effect.sync(() => {

@@ -167,6 +167,19 @@ export const ServerProvider = Schema.Struct({
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
+  /**
+   * Whether threads on this instance are rooted in a workspace directory.
+   *
+   * Absent means `true`: every legacy producer and cached snapshot omits the
+   * field, and every driver except Hermes drives a local checkout. Consumers
+   * must default to `true` (see `getProviderRequiresWorkspace`) so a missing
+   * or unknown snapshot never strips a real coding thread's directory UI.
+   *
+   * `false` marks an agent that owns its own machine: no breadcrumb project,
+   * checkout picker, branch selector, Open-in-editor, git actions, or runtime
+   * access mode — there is no filesystem here for those controls to scope.
+   */
+  requiresWorkspace: Schema.optional(Schema.Boolean),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),

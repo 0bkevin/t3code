@@ -79,6 +79,7 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
           continuation: { groupKey: continuationIdentity.continuationKey },
           showInteractionModeToggle: false,
           requiresNewThreadForModelChange: true,
+          requiresWorkspace: false,
           enabled,
           installed: true,
           version: status?.hermesVersion ?? null,

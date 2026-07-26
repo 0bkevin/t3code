@@ -22,6 +22,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { selectWorkspaceProjects } from "../../lib/repositoryGroups";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useProjects, useThreadShells } from "../../state/entities";
@@ -228,13 +229,19 @@ function ThreadNavigationSidebarPane(
       }),
     [options.projectGroupingMode, options.selectedEnvironmentId, projects],
   );
+  // The scope list above stays complete so agent threads remain visible and
+  // scopable; only the *picker* built from it drops agent projects.
   const projectFilterOptions = useMemo(
     () =>
-      projectScopes.map((scope) => ({
+      buildHomeProjectScopes({
+        projects: selectWorkspaceProjects(projects),
+        environmentId: options.selectedEnvironmentId,
+        projectGroupingMode: options.projectGroupingMode,
+      }).map((scope) => ({
         key: scope.key,
         label: scope.title,
       })),
-    [projectScopes],
+    [options.projectGroupingMode, options.selectedEnvironmentId, projects],
   );
   const projectTitleByProjectKey = useMemo(
     () =>

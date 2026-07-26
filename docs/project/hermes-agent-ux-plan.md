@@ -104,7 +104,11 @@ satisfies both without touching either.
 - Contract: `OrchestrationProject.agentInstanceId?: NullOr(ProviderInstanceId)` with a
   decoding default of `null`.
 
-**Lifecycle** — hook the existing Hermes enrollment path in
+**Lifecycle** — _superseded during implementation._ See "Agent projects are
+converge-on-read" below; the enrollment/removal hooks described here were replaced by
+a single idempotent `getOrCreateAgentProject` precondition. Original design:
+
+Hook the existing Hermes enrollment path in
 `apps/server/src/provider/Layers/HermesGatewayBroker.ts` (durable `InstanceRecord`
 at `:144-148`, persisted via `readHermesConfig` at `:222-232`):
 
@@ -323,3 +327,80 @@ filterable, but every new "list projects" surface must remember to filter. If th
 proves leaky in practice, the migration to a nullable `project_id` remains available as a
 follow-up — and the `agentInstanceId` column is exactly the discriminator that migration
 would need anyway, so this is not wasted work.
+
+## Found during implementation — follow-up surfaces
+
+The synthetic project turns out to be leakier than the plan's "list projects" framing
+suggested. Because an agent project is a **real, non-null project row**, every surface
+that gates on `activeProject !== null` — rather than on a workspace capability — now
+answers "yes" for a directoryless thread. Two classes of this were found:
+
+- **Fixed in this change:** `ProjectScriptsControl` in `ChatHeader`. It gated on
+  `activeProjectScripts &&`, and an agent project carries `scripts: []`, which is
+  truthy — so the control rendered on a thread with no directory to run a script in.
+  Now gated on `requiresWorkspace` as well.
+- **Not fixed — deliberate scope hold.** `ChatView.tsx` gates the terminal
+  (`:5518`), right panel (`:5521`), and file surfaces (`:6010`, `:6037`) on
+  `activeProject !== null`. All three will be enabled for Hermes threads and point at
+  `<t3home>/agents/<instanceId>/`, an empty directory. That is not _wrong_ — the
+  directory is real and writable — but it is almost certainly not wanted, and deciding
+  what a terminal should mean for an agent that owns its own machine is a product
+  question this change did not have a mandate to answer.
+
+The general lesson for the follow-up: `activeProject !== null` is no longer a reliable
+proxy for "this thread has a workspace." `requiresWorkspace` is. A sweep replacing that
+predicate at every capability-shaped call site would close the class, and is the natural
+companion to the nullable-`project_id` migration already noted above.
+
+## Agent projects are converge-on-read, not lifecycle-managed
+
+The create-on-enrollment / delete-on-removal design above was replaced. Tying the
+project's existence to enrollment events lets the system reach states it cannot recover
+from without manual repair:
+
+| Failure                                     | Lifecycle design                                        | `getOrCreateAgentProject`                |
+| ------------------------------------------- | ------------------------------------------------------- | ---------------------------------------- |
+| Enrollment succeeds, project dispatch fails | Instance has no project, permanently                    | Heals on next call                       |
+| Instance enrolled before this shipped       | No project, ever                                        | Heals on next call                       |
+| Project soft-deleted while instance is live | Threads unopenable                                      | Recreates                                |
+| Two thread starts race                      | Duplicate-workspace-root rejection surfaces to the user | Loser re-reads and uses the winner's row |
+
+`apps/server/src/orchestration/agentProjects.ts` exposes one function that reads and
+creates only what is missing. It is a **precondition every caller runs**, not an event
+one caller owns: the common path is a single indexed read on
+`projection_projects.agent_instance_id`, so it is cheap enough to call on every agent
+thread start. Enrollment may still call it to warm the row, but nothing depends on that
+call having happened.
+
+Wiring:
+
+- Query: `ProjectionSnapshotQuery.getActiveAgentProject(instanceId)` — indexed lookup,
+  `deleted_at IS NULL`, oldest-first so a duplicate resolves stably.
+- RPC: `provider.ensureAgentProject` → `{ projectId, instanceId, workspaceRoot, title }`.
+  Single-flighted per instance on the client so a burst of thread starts collapses to
+  one call.
+- The Agent page's **New thread** action calls it first and uses the returned
+  `projectId`, rather than assuming a project exists.
+
+The race-recovery read is the subtle part: the decider rejects a second project on the
+same workspace root, so a losing concurrent caller sees a _dispatch failure_. It re-reads
+before surfacing that error, and returns the winner's row if one now exists — a genuine
+failure still propagates.
+
+## "Reconnect" does not exist as an action
+
+Part 5 lists **Reconnect — Hermes gateway reconnect via the broker** among the Agent
+page's four actions. There is no such call, at any layer: `WS_METHODS` exposes only
+createEnrollment / getInstanceStatus / listInstances / rename / revoke / remove, and
+`HermesGatewayBrokerShape` has no reconnect method either.
+
+That is not an oversight to fill in — it is architectural. **T3 never dials out.** The
+plugin dials in to T3 and T3 accepts the socket, so there is no address for T3 to
+reconnect _to_. Reconnection is the plugin's job; the only thing T3 can do is re-observe.
+
+Implemented instead as a forced re-observe: `server.refreshProviders({ instanceId })`,
+then — for gateway drivers only — `hermesGateway.getInstanceStatus` for the
+authoritative state, then a quiet re-describe. The driver gate matters: a Claude or
+Codex instance has no gateway status, and calling it anyway would surface
+`instance-not-found` for what should be a no-op. If a genuine server-side reconnect ever
+lands, one call swaps out.

@@ -429,6 +429,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           repositoryIdentity: null,
           defaultModelSelection: null,
           scripts: [],
+          agentInstanceId: null,
           createdAt: now,
           updatedAt: now,
         } satisfies OrchestrationProjectShell;
@@ -587,6 +588,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           repositoryIdentity: null,
           defaultModelSelection: null,
           scripts: [],
+          agentInstanceId: null,
           createdAt: now,
           updatedAt: now,
         } satisfies OrchestrationProjectShell;

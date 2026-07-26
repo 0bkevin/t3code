@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
-import { groupProjectsByRepository } from "./repositoryGroups";
+import { groupProjectsByRepository, isAgentProject } from "./repositoryGroups";
 import { EnvironmentProject, EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
 function makeProject(
@@ -188,5 +188,52 @@ describe("groupProjectsByRepository", () => {
     expect(groups[0]?.key).toBe("env-local:project-local");
     expect(groups[0]?.title).toBe("Scratchpad");
     expect(groups[0]?.subtitle).toBeNull();
+  });
+});
+
+describe("agent project exclusion", () => {
+  const environmentId = EnvironmentId.make("env-local");
+  const agentInstanceId = ProviderInstanceId.make("hermes_workstation");
+
+  it("keeps a project with no reported agent instance", () => {
+    // Older snapshots omit `agentInstanceId` entirely; that must read as an
+    // ordinary project, not as an agent.
+    expect(
+      isAgentProject(
+        makeProject({ environmentId, id: ProjectId.make("project-legacy"), title: "Legacy" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("identifies a synthetic agent project", () => {
+    expect(
+      isAgentProject(
+        makeProject({
+          environmentId,
+          id: ProjectId.make("project-agent"),
+          title: "Workstation",
+          agentInstanceId,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("omits agent projects from repository groups", () => {
+    const workspace = makeProject({
+      environmentId,
+      id: ProjectId.make("project-real"),
+      title: "Real",
+    });
+    const agent = makeProject({
+      environmentId,
+      id: ProjectId.make("project-agent"),
+      title: "Workstation",
+      agentInstanceId,
+    });
+
+    const groups = groupProjectsByRepository({ projects: [workspace, agent], threads: [] });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.projects[0]?.project.id).toBe(workspace.id);
   });
 });

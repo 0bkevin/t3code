@@ -17,6 +17,7 @@ import type {
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadShell,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -113,6 +114,18 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getActiveProjectByWorkspaceRoot: (
     workspaceRoot: string,
+  ) => Effect.Effect<Option.Option<OrchestrationProject>, ProjectionRepositoryError>;
+
+  /**
+   * Read the active *agent project* for one provider instance — the synthetic
+   * row that lets a directoryless agent thread satisfy `project_id NOT NULL`.
+   *
+   * `Option.none` means no such project exists yet (or it was soft-deleted),
+   * which callers treat as "create one", not as an error. See
+   * `getOrCreateAgentProject`.
+   */
+  readonly getActiveAgentProject: (
+    agentInstanceId: ProviderInstanceId,
   ) => Effect.Effect<Option.Option<OrchestrationProject>, ProjectionRepositoryError>;
 
   /**

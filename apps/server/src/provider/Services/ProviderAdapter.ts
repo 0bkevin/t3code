@@ -11,6 +11,8 @@ import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
+  ProviderInstanceDescription,
+  ProviderSkillBody,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
@@ -118,6 +120,29 @@ export interface ProviderAdapterShape<TError> {
    * Stop all sessions owned by this adapter.
    */
   readonly stopAll: () => Effect.Effect<void, TError>;
+
+  /**
+   * Driver-specific enrichment for the Agent page.
+   *
+   * OPTIONAL by design. The caller always builds a complete description from
+   * the `ServerProvider` snapshot first (`describeFromServerProvider`), then
+   * lets an adapter that knows more overwrite parts of it. A driver that
+   * implements nothing here still gets a working Agent page, and one that
+   * cannot reach its agent right now should fail rather than return a
+   * half-filled description — the caller falls back to the snapshot default.
+   */
+  readonly describe?: (
+    base: ProviderInstanceDescription,
+  ) => Effect.Effect<ProviderInstanceDescription, TError>;
+
+  /**
+   * Fetch one skill's markdown body. Fired on row expand, never eagerly —
+   * bodies are unbounded in size and most are never opened.
+   *
+   * Returning `markdown: null` means "this skill exists but its body is not
+   * retrievable"; failing means the request itself could not be made.
+   */
+  readonly getSkillBody?: (skillName: string) => Effect.Effect<ProviderSkillBody, TError>;
 
   /**
    * Canonical runtime event stream emitted by this adapter.

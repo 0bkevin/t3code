@@ -53,6 +53,44 @@ export function getProviderInteractionModeToggle(
   return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
 }
 
+/**
+ * Whether threads on this driver's default instance are rooted in a workspace
+ * directory.
+ *
+ * Absent means `true`: every provider that predates the flag, and every cached
+ * snapshot decoded before it existed, is a coding provider working in a
+ * checkout. Inverting this default would strip the directory UI (breadcrumb,
+ * checkout picker, branch selector, Open / Create PR) from every real thread.
+ *
+ * Driver-kind keyed, so it only ever resolves the *default* instance for the
+ * kind (`defaultInstanceIdForDriver`). Drivers whose instances are always
+ * user-authored — Hermes ids look like `hermes-<label>-<suffix>` and the
+ * registry never synthesizes a `hermes` default — will not be found here and
+ * fall through to `true`. Use {@link getProviderInstanceRequiresWorkspace} when
+ * the caller knows the instance a thread is actually bound to.
+ */
+export function getProviderRequiresWorkspace(
+  providers: ReadonlyArray<ServerProvider>,
+  provider: ProviderDriverKind,
+): boolean {
+  return getProviderSnapshot(providers, provider)?.requiresWorkspace ?? true;
+}
+
+/**
+ * Per-instance counterpart of {@link getProviderRequiresWorkspace}, resolved by
+ * exact `instanceId` rather than by driver kind. Same absent-means-`true`
+ * default for unknown instances.
+ */
+export function getProviderInstanceRequiresWorkspace(
+  providers: ReadonlyArray<ServerProvider>,
+  instanceId: ProviderInstanceId | null | undefined,
+): boolean {
+  if (!instanceId) return true;
+  return (
+    providers.find((candidate) => candidate.instanceId === instanceId)?.requiresWorkspace ?? true
+  );
+}
+
 export function isProviderEnabled(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind,

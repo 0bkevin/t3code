@@ -12,6 +12,7 @@ describe("shouldShowOpenInPicker", () => {
         activeProjectName: "codething-mvp",
         activeThreadEnvironmentId: primaryEnvironmentId,
         primaryEnvironmentId,
+        requiresWorkspace: true,
       }),
     ).toBe(true);
   });
@@ -22,6 +23,7 @@ describe("shouldShowOpenInPicker", () => {
         activeProjectName: "codething-mvp",
         activeThreadEnvironmentId: EnvironmentId.make("environment-remote"),
         primaryEnvironmentId: null,
+        requiresWorkspace: true,
       }),
     ).toBe(false);
   });
@@ -32,6 +34,7 @@ describe("shouldShowOpenInPicker", () => {
         activeProjectName: "codething-mvp",
         activeThreadEnvironmentId: EnvironmentId.make("environment-remote"),
         primaryEnvironmentId,
+        requiresWorkspace: true,
       }),
     ).toBe(false);
   });
@@ -42,6 +45,18 @@ describe("shouldShowOpenInPicker", () => {
         activeProjectName: undefined,
         activeThreadEnvironmentId: primaryEnvironmentId,
         primaryEnvironmentId,
+        requiresWorkspace: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("hides the picker for a provider that does not work in a workspace", () => {
+    expect(
+      shouldShowOpenInPicker({
+        activeProjectName: "codething-mvp",
+        activeThreadEnvironmentId: primaryEnvironmentId,
+        primaryEnvironmentId,
+        requiresWorkspace: false,
       }),
     ).toBe(false);
   });

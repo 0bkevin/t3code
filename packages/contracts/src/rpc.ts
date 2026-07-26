@@ -60,6 +60,15 @@ import {
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  ProviderDescribeError,
+  ProviderDescribeInstanceInput,
+  ProviderGetSkillBodyInput,
+  ProviderAgentProjectResult,
+  ProviderEnsureAgentProjectInput,
+  ProviderInstanceDescription,
+  ProviderSkillBody,
+} from "./provider.ts";
+import {
   HermesGatewayCreateEnrollmentInput,
   HermesGatewayEnrollmentResult,
   HermesGatewayGetInstanceStatusInput,
@@ -233,6 +242,11 @@ export const WS_METHODS = {
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverSignalProcess: "server.signalProcess",
 
+  // Provider instance introspection (Agent page)
+  providerDescribeInstance: "provider.describeInstance",
+  providerGetSkillBody: "provider.getSkillBody",
+  providerEnsureAgentProject: "provider.ensureAgentProject",
+
   // Hermes gateway instance management
   hermesGatewayCreateEnrollment: "hermesGateway.createEnrollment",
   hermesGatewayGetInstanceStatus: "hermesGateway.getInstanceStatus",
@@ -354,6 +368,30 @@ export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess,
   payload: ServerSignalProcessInput,
   success: ServerSignalProcessResult,
   error: EnvironmentAuthorizationError,
+});
+
+export const WsProviderDescribeInstanceRpc = Rpc.make(WS_METHODS.providerDescribeInstance, {
+  payload: ProviderDescribeInstanceInput,
+  success: ProviderInstanceDescription,
+  error: Schema.Union([ProviderDescribeError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderGetSkillBodyRpc = Rpc.make(WS_METHODS.providerGetSkillBody, {
+  payload: ProviderGetSkillBodyInput,
+  success: ProviderSkillBody,
+  error: Schema.Union([ProviderDescribeError, EnvironmentAuthorizationError]),
+});
+
+/**
+ * Resolve (creating if needed) the synthetic project that backs this
+ * instance's directoryless threads. Idempotent — clients call it as a
+ * precondition before starting an agent thread rather than assuming some
+ * earlier lifecycle event created the row.
+ */
+export const WsProviderEnsureAgentProjectRpc = Rpc.make(WS_METHODS.providerEnsureAgentProject, {
+  payload: ProviderEnsureAgentProjectInput,
+  success: ProviderAgentProjectResult,
+  error: Schema.Union([ProviderDescribeError, EnvironmentAuthorizationError]),
 });
 
 export const WsHermesGatewayCreateEnrollmentRpc = Rpc.make(
@@ -777,6 +815,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
+  WsProviderDescribeInstanceRpc,
+  WsProviderGetSkillBodyRpc,
+  WsProviderEnsureAgentProjectRpc,
   WsHermesGatewayCreateEnrollmentRpc,
   WsHermesGatewayGetInstanceStatusRpc,
   WsHermesGatewayListInstancesRpc,

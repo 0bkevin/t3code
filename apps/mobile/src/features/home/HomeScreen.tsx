@@ -24,6 +24,7 @@ import { AppText as Text } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
+import { selectWorkspaceProjects } from "../../lib/repositoryGroups";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -724,7 +725,9 @@ export function HomeScreen(props: HomeScreenProps) {
   const shouldShowConnectionStatus = shouldShowWorkspaceConnectionStatus(props.catalogState);
   const emptyState = deriveEmptyState({
     catalogState: props.catalogState,
-    projectCount: props.projects.length,
+    // "No projects found" counts real workspaces: a synthetic agent project
+    // is not something the user added, so it must not suppress the hint.
+    projectCount: selectWorkspaceProjects(props.projects).length,
   });
   const connectionStatus =
     shouldShowConnectionStatus && Platform.OS !== "ios" ? (

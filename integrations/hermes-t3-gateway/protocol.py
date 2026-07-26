@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -31,8 +32,15 @@ SERVER_COMMANDS = frozenset(
         "user-input.respond",
         "session.stop",
         "ping",
+        "describe.request",
+        "skill.body.request",
     }
 )
+
+# Ceiling on a single skill body crossing the wire. Skill markdown is
+# human-authored documentation, not data: 512 KiB is far past any real
+# SKILL.md while still bounding a pathological file from stalling the socket.
+MAX_SKILL_BODY_CHARS = 512_000
 
 
 def request_id() -> str:
@@ -78,6 +86,173 @@ def configured_model() -> str | None:
         return None
     trimmed = model.strip()
     return trimmed or None
+
+
+def configured_reasoning_effort() -> str | None:
+    """Return Hermes' configured reasoning effort, or None when unavailable.
+
+    Same discipline as `configured_model()`: `load_config_readonly()` hands
+    back the *shared, process-wide cached* config dict, so this reads
+    `agent.reasoning_effort` and copies out a trimmed string — nothing here
+    mutates the cache or lets a nested structure escape to a caller that
+    might.
+
+    Every failure mode — no Hermes on the path, an older Hermes without the
+    accessor, a config with no `agent` section, a non-string value — degrades
+    to None so the field is omitted from `describe.response` rather than sent
+    as null or empty.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        effort = load_config_readonly().get("agent", {}).get("reasoning_effort")
+    except Exception:  # noqa: BLE001 - describe must never break the connection
+        return None
+    if not isinstance(effort, str):
+        return None
+    trimmed = effort.strip()
+    return trimmed or None
+
+
+def installed_skills() -> list[dict[str, Any]]:
+    """Return metadata for the skills Hermes currently exposes.
+
+    Reads the documented `tools.skills_tool.skills_list()` tool surface — the
+    same JSON the agent itself sees — rather than the private `_find_all_skills`
+    scanner behind it. `skills_list()` already applies Hermes' platform,
+    environment, and disabled-skill filters, so every entry it returns is a
+    skill this Hermes would actually load; `enabled` is therefore always True
+    here and disabled skills are simply absent (see COMPATIBILITY.md).
+
+    Only trimmed string copies of `name`, `description`, and `category` leave
+    this function: the payload is rebuilt entry by entry so nothing Hermes owns
+    — cached or otherwise — is handed to a caller that might mutate it.
+
+    Every failure mode — no Hermes on the path, an older Hermes without the
+    tool, a non-JSON or unsuccessful response, a malformed entry — degrades to
+    an empty list. Describing an agent must never break the connection.
+    """
+    try:
+        from tools.skills_tool import skills_list
+
+        payload = json.loads(skills_list())
+    except Exception:  # noqa: BLE001 - describe must never break the connection
+        return []
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return []
+    entries = payload.get("skills")
+    if not isinstance(entries, list):
+        return []
+    skills: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        skill: dict[str, Any] = {"name": name.strip(), "enabled": True}
+        description = entry.get("description")
+        if isinstance(description, str) and description.strip():
+            skill["description"] = description.strip()
+        # Hermes' category is the closest thing it publishes to an install
+        # source. There is no on-disk path in this surface; see COMPATIBILITY.md.
+        source = entry.get("category")
+        if isinstance(source, str) and source.strip():
+            skill["source"] = source.strip()
+        skills.append(skill)
+    return skills
+
+
+def skill_body(name: str) -> str | None:
+    """Return a skill's SKILL.md markdown, or None when unavailable.
+
+    Reads the documented `tools.skills_tool.skill_view()` tool surface with
+    `preprocess=False`: T3 renders the skill for a human to read, so the
+    literal authored markdown is wanted, not Hermes' template/inline-shell
+    rendering of it.
+
+    Unlike the omit-on-failure optional fields, `markdown` is explicitly null
+    on failure: the request named a specific skill, so the caller needs to
+    distinguish "asked and there is nothing to show" from a dropped reply.
+    A missing skill, an unreadable file, an ambiguous name, an older Hermes,
+    or no Hermes at all all land on None.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    try:
+        from tools.skills_tool import skill_view
+
+        payload = json.loads(skill_view(name.strip(), preprocess=False))
+    except Exception:  # noqa: BLE001 - describe must never break the connection
+        return None
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return content[:MAX_SKILL_BODY_CHARS]
+
+
+def describe_response(
+    *,
+    request_id_value: str,
+    hermes_version: str,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    skills: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the reply to a `describe.request`.
+
+    Mirrors `connection_hello`: the version/capability block is always present
+    because the plugin owns it outright, while every Hermes-sourced optional
+    field is *omitted* when it cannot be read rather than sent as null or
+    empty, so a server that has the field still falls back to its own generic
+    label. `skills` is always present — an empty list is the truthful answer
+    when Hermes reports none, and it keeps the client's rendering shape stable.
+    """
+    resolved_model = model if model is not None else configured_model()
+    resolved_effort = (
+        reasoning_effort
+        if reasoning_effort is not None
+        else configured_reasoning_effort()
+    )
+    resolved_skills = installed_skills() if skills is None else skills
+    payload: dict[str, Any] = {
+        "type": "describe.response",
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id_value,
+        "pluginVersion": PLUGIN_VERSION,
+        "hermesVersion": hermes_version,
+        "capabilities": dict(CAPABILITIES),
+        "skills": [dict(skill) for skill in resolved_skills],
+        "describedAt": iso_now(),
+    }
+    if resolved_model:
+        payload["model"] = resolved_model
+    if resolved_effort:
+        payload["reasoningEffort"] = resolved_effort
+    return payload
+
+
+def skill_body_response(
+    *,
+    request_id_value: str,
+    skill_name: str,
+    markdown: str | None,
+) -> dict[str, Any]:
+    """Build the reply to a `skill.body.request`.
+
+    `markdown` is explicitly nullable here — the request named a skill, so the
+    caller must be able to tell "Hermes has no body to show for this" apart
+    from a reply that never arrived. Empty strings normalize to null.
+    """
+    return {
+        "type": "skill.body.response",
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id_value,
+        "skillName": skill_name,
+        "markdown": markdown if markdown else None,
+    }
 
 
 def connection_hello(

@@ -32,6 +32,7 @@ import * as Cause from "effect/Cause";
 import * as Order from "effect/Order";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { cn } from "../../lib/cn";
+import { selectWorkspaceProjects } from "../../lib/repositoryGroups";
 
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { filesystemEnvironment } from "../../state/filesystem";
@@ -441,7 +442,9 @@ export function AddProjectSourceScreen() {
 function useCreateProject(environment: EnvironmentOption | null) {
   const navigation = useNavigation();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
-  const projects = useProjects();
+  // Dedupe against real projects only: an agent's synthetic directory should
+  // never make "add project" bounce the user into an agent thread.
+  const projects = selectWorkspaceProjects(useProjects());
 
   return useCallback(
     async (workspaceRoot: string) => {

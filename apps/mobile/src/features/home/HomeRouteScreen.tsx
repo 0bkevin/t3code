@@ -3,6 +3,7 @@ import * as Order from "effect/Order";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useState } from "react";
 
+import { selectWorkspaceProjects } from "../../lib/repositoryGroups";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
@@ -59,10 +60,12 @@ export function HomeRouteScreen() {
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
+  // Filter menu = picker: agent projects are excluded here, while the thread
+  // list below still receives the full list so agent threads stay visible.
   const projectFilterOptions = useMemo(
     () =>
       buildHomeProjectScopes({
-        projects,
+        projects: selectWorkspaceProjects(projects),
         environmentId: selectedEnvironmentId,
         projectGroupingMode: listOptions.projectGroupingMode,
       }).map((scope) => ({
