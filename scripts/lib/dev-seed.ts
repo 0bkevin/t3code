@@ -553,7 +553,20 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
         table: "projection_thread_activities",
         keyColumn: "thread_id",
         keys: threadIds,
-        perKeyLimit: { orderBy: "created_at", limit: options.activityLimit },
+        // Ordered the way the app reads these back — `sequence` first, then
+        // `created_at` (ProjectionSnapshotQuery). Capping on `created_at`
+        // alone cuts arbitrarily among rows sharing a timestamp, which is the
+        // common case for a burst of tool activity: the "newest N" kept can be
+        // the oldest N in the order the timeline actually displays.
+        //
+        // `sequence` arrived in migration 008, so a source without it falls
+        // back to the timestamp — same drift tolerance as the rest of the copy.
+        perKeyLimit: {
+          orderBy: hasColumn(source, "projection_thread_activities", "sequence")
+            ? `"created_at" DESC, "sequence"`
+            : `"created_at"`,
+          limit: options.activityLimit,
+        },
       }),
     );
     const sessions = record(

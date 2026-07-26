@@ -39,10 +39,12 @@ function createSchema(
     message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL,
     text TEXT NOT NULL, is_streaming INTEGER NOT NULL, attachments_json TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+  // `sequence` (migration 008) is what the app orders activities by, ahead of
+  // created_at, so the copy's per-thread cap has to see it.
   database.exec(`CREATE TABLE projection_thread_activities (
     activity_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, tone TEXT NOT NULL,
     kind TEXT NOT NULL, summary TEXT NOT NULL, payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL)`);
+    sequence INTEGER, created_at TEXT NOT NULL)`);
   database.exec(`CREATE TABLE projection_thread_sessions (
     thread_id TEXT PRIMARY KEY, status TEXT NOT NULL, provider_name TEXT,
     active_turn_id TEXT, last_error TEXT, updated_at TEXT NOT NULL)`);
@@ -155,8 +157,16 @@ function makeSource(
       );
     for (let a = 0; a < activitiesPerThread; a += 1) {
       database
-        .prepare(`INSERT INTO projection_thread_activities VALUES (?,?,'neutral','tool','ran',?,?)`)
-        .run(`a-${threadId}-${String(a)}`, threadId, "{}", `2026-07-10T00:00:0${String(a)}.000Z`);
+        .prepare(
+          `INSERT INTO projection_thread_activities VALUES (?,?,'neutral','tool','ran',?,?,?)`,
+        )
+        .run(
+          `a-${threadId}-${String(a)}`,
+          threadId,
+          "{}",
+          a,
+          `2026-07-10T00:00:0${String(a)}.000Z`,
+        );
     }
   }
   database.exec("COMMIT");
@@ -372,6 +382,41 @@ describe("seedDevDatabase", () => {
         "SELECT COUNT(*) count FROM projection_turns WHERE state = 'pending' OR turn_id IS NULL",
       );
       assert.equal(pending?.count, 0);
+    });
+  });
+
+  // A burst of tool activity lands many rows on the same timestamp. Capping on
+  // created_at alone then cuts arbitrarily among them, and can keep exactly the
+  // rows the timeline treats as oldest.
+  it("caps activities by the order the app displays them", () => {
+    withDatabases(({ source, target }) => {
+      const sourceDatabase = new NodeSqlite.DatabaseSync(source);
+      sourceDatabase.exec("DELETE FROM projection_thread_activities");
+      const tied = "2026-07-10T00:00:00.000Z";
+      for (const sequence of [1, 2, 3, 4]) {
+        sourceDatabase
+          .prepare(
+            `INSERT INTO projection_thread_activities
+             VALUES (?, 't4', 'neutral', 'tool', 'ran', '{}', ?, ?)`,
+          )
+          .run(`tie-${String(sequence)}`, sequence, tied);
+      }
+      sourceDatabase.close();
+
+      seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 1,
+        activityLimit: 2,
+        seededAt: SEEDED_AT,
+      });
+
+      const kept = query<{ activity_id: string }>(
+        target,
+        "SELECT activity_id FROM projection_thread_activities ORDER BY sequence DESC",
+      ).map((row) => row.activity_id);
+      // The two highest sequences, not whichever two the storage order yielded.
+      assert.deepStrictEqual(kept, ["tie-4", "tie-3"]);
     });
   });
 
