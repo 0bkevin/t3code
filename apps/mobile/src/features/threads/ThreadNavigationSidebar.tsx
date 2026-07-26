@@ -66,6 +66,7 @@ import {
 import { ThreadListV2Row, ThreadListV2SnoozedShelfHeader } from "./thread-list-v2-items";
 import {
   buildThreadListV2Items,
+  snoozeWakeLabel,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2Item,
@@ -82,11 +83,19 @@ type SidebarListItem =
       readonly pendingTask: PendingNewTask;
       readonly isLast: boolean;
     }
-  | { readonly type: "v2-thread"; readonly key: string; readonly item: ThreadListV2Item }
+  | {
+      readonly type: "v2-thread";
+      readonly key: string;
+      readonly item: ThreadListV2Item;
+      /** Precomputed against the minute tick so the row comparator can see
+          the countdown change; undefined for non-snoozed rows. */
+      readonly snoozeWakeLabelText: string | undefined;
+    }
   | {
       readonly type: "v2-snoozed-shelf-header";
       readonly key: string;
       readonly count: number;
+      readonly expanded: boolean;
     }
   | { readonly type: "v2-show-more"; readonly key: string; readonly hiddenCount: number };
 
@@ -526,10 +535,15 @@ function ThreadNavigationSidebarPane(
       pendingTask,
       isLast: index === v2PendingTasks.length - 1,
     }));
+    const snoozeLabelNow = new Date(`${nowMinute}:00.000Z`);
     const threadRows: SidebarListItem[] = threadListV2Layout.items.map((item) => ({
       type: "v2-thread" as const,
       key: scopedThreadKey(item.thread.environmentId, item.thread.id),
       item,
+      snoozeWakeLabelText:
+        item.snoozed && item.thread.snoozedUntil != null
+          ? snoozeWakeLabel(item.thread.snoozedUntil, snoozeLabelNow)
+          : undefined,
     }));
     // The shelf header is a row of its own: collapsed, it IS the shelf, so
     // it has no thread row to hang off. splice() handles the all-snoozed
@@ -539,6 +553,7 @@ function ThreadNavigationSidebarPane(
         type: "v2-snoozed-shelf-header",
         key: "v2-snoozed-shelf-header",
         count: threadListV2Layout.snoozedCount,
+        expanded: snoozedShelfExpanded,
       });
     }
     items.push(...threadRows);
@@ -552,10 +567,12 @@ function ThreadNavigationSidebarPane(
     return items;
   }, [
     listLayout.items,
+    nowMinute,
     options.selectedEnvironmentId,
     pendingTasks,
     props.searchQuery,
     selectedProjectRefs,
+    snoozedShelfExpanded,
     threadListV2Enabled,
     threadListV2Layout,
   ]);
@@ -744,14 +761,22 @@ function ThreadNavigationSidebarPane(
           previous.key === item.key &&
           previous.item.thread === item.item.thread &&
           previous.item.variant === item.item.variant &&
-          previous.item.showSettledDivider === item.item.showSettledDivider
+          previous.item.showSettledDivider === item.item.showSettledDivider &&
+          // A timer wake is derived from the clock, not from new data: the
+          // shell reference and variant can both be unchanged while the row
+          // stops being snoozed. Without this the woken row keeps its blue
+          // countdown and Wake action.
+          previous.item.snoozed === item.item.snoozed &&
+          // Same reason for the countdown text: it changes on the minute
+          // tick while every other field holds still.
+          previous.snoozeWakeLabelText === item.snoozeWakeLabelText
         );
       }
       if (previous.type === "v2-show-more" && item.type === "v2-show-more") {
         return previous.hiddenCount === item.hiddenCount;
       }
       if (previous.type === "v2-snoozed-shelf-header" && item.type === "v2-snoozed-shelf-header") {
-        return previous.count === item.count;
+        return previous.count === item.count && previous.expanded === item.expanded;
       }
       if (previous.type === "v2-pending-task" && item.type === "v2-pending-task") {
         return previous.pendingTask === item.pendingTask && previous.isLast === item.isLast;
@@ -815,6 +840,7 @@ function ThreadNavigationSidebarPane(
               variant={item.item.variant}
               showSettledDivider={item.item.showSettledDivider}
               snoozed={item.item.snoozed}
+              snoozeWakeLabelText={item.snoozeWakeLabelText}
               project={projectByKey.get(scopeKey) ?? null}
               projectTitle={projectTitleByProjectKey.get(scopeKey)}
               providerDriver={
@@ -857,7 +883,7 @@ function ThreadNavigationSidebarPane(
           return (
             <ThreadListV2SnoozedShelfHeader
               count={item.count}
-              expanded={snoozedShelfExpanded}
+              expanded={item.expanded}
               onToggle={toggleSnoozedShelf}
               pane="sidebar"
             />
@@ -970,7 +996,9 @@ function ThreadNavigationSidebarPane(
       sidebarScrollGesture,
       snoozeEnvironmentIds,
       snoozeThread,
+      toggleSnoozedShelf,
       unsettleThread,
+      unsnoozeThread,
       updateGroupDisplay,
     ],
   );

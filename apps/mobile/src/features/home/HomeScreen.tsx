@@ -38,6 +38,7 @@ import {
 import { ThreadListV2Row, ThreadListV2SnoozedShelfHeader } from "../threads/thread-list-v2-items";
 import {
   buildThreadListV2Items,
+  snoozeWakeLabel,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2Item,
@@ -625,6 +626,11 @@ export function HomeScreen(props: HomeScreenProps) {
           variant={item.variant}
           showSettledDivider={item.showSettledDivider}
           snoozed={item.snoozed}
+          snoozeWakeLabelText={
+            item.snoozed && item.thread.snoozedUntil != null
+              ? snoozeWakeLabel(item.thread.snoozedUntil, new Date(`${nowMinute}:00.000Z`))
+              : undefined
+          }
           project={
             projectByKey.get(scopedProjectKey(item.thread.environmentId, item.thread.projectId)) ??
             null
@@ -683,6 +689,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.savedConnectionsById,
       serverConfigs,
       settlementEnvironmentIds,
+      nowMinute,
       snoozeEnvironmentIds,
       snoozedShelfExpanded,
       toggleSnoozedShelf,

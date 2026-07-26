@@ -22,7 +22,6 @@ import {
   resolveThreadListV2SnoozeGateExpiryMs,
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
-  snoozeWakeLabel,
   type ThreadListV2Status,
 } from "./threadListV2";
 
@@ -151,6 +150,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly showSettledDivider: boolean;
   /** Snoozed-shelf row: shows its wake time and offers Wake, not Settle. */
   readonly snoozed?: boolean;
+  /** Pre-formatted "wakes in" text for snoozed rows. Computed by the parent
+      against its minute tick rather than here: this row is memoized, so a
+      clock read inside it would freeze at first render and the countdown
+      would never move. Mirrors web's snoozeWakeLabelText prop. */
+  readonly snoozeWakeLabelText?: string;
   readonly project: EnvironmentProject | null;
   readonly projectTitle?: string;
   readonly providerDriver: string | null;
@@ -540,8 +544,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             )}
             style={{ fontFamily: MONO_FONT }}
           >
-            {snoozedRow && thread.snoozedUntil != null
-              ? snoozeWakeLabel(thread.snoozedUntil, new Date())
+            {snoozedRow && props.snoozeWakeLabelText !== undefined
+              ? props.snoozeWakeLabelText
               : relativeTime(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt)}
           </Text>
         </View>
