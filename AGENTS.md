@@ -21,6 +21,7 @@
 - Dev is single-origin: Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` to the backend. Do not set `VITE_HTTP_URL`/`VITE_WS_URL` for `dev`/`dev:web` — they compile absolute localhost URLs into the bundle and break every non-localhost origin.
 - Need a pairing URL for a server that is already running? `bun run dev:pair`. It finds the server itself; no ports or flags to get wrong.
 - In a worktree, dev state goes to that worktree's own gitignored `.t3` — never the shared `~/.t3` the user's installed app runs against. Do not point a dev server at `~/.t3`, and do not "fix" an ambient `T3CODE_HOME` by passing it through.
+- That database starts empty. `bun run dev:seed` copies recent projects and threads from the shared home into it, so list and thread UI has something real to render. Stop the dev server first, then restart it.
 
 ## Package Roles
 

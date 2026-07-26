@@ -3,6 +3,7 @@
 - `vp run dev` — Starts contracts, server, and web in watch mode.
 - `vp run dev --share` (or `vp run dev:share`) — Same, plus publishes the web port on this machine's tailnet over HTTPS via `tailscale serve`. Prints the shareable URL, and the pairing URL is built against it so it can be opened from a phone or another laptop as-is. The mapping is removed on exit; if the tailnet is unavailable, the dev server still starts locally and logs a warning.
 - `vp run dev:pair` — Prints a fresh pairing URL for the dev server already running against this data directory, resolving its port and web origin from `server-runtime.json`. Searches both the `dev` and `userdata` state directories and requires the recorded process to still be alive, so a crashed server's leftover state file is not mistaken for a running one. Add `--base-dir <path>` only when the server was started with `--home-dir`.
+- `vp run dev:seed` — Copies recent projects and threads from the shared `~/.t3` into this worktree's isolated dev database, so the UI opens on realistic data instead of an empty sidebar. Defaults to the 25 newest threads with 200 activities each; tune with `--threads` / `--activities`, override either side with `--from` / `--to`. It refuses to write to the shared home. Stop the dev server first, and restart it afterwards. See [Seeding dev data](#seeding-dev-data).
 - `vp run dev:server` — Starts just the WebSocket server. The server process runs on Bun (`@effect/platform-bun` + `BunPtyAdapter`), but task running uses `vp run`.
 - `vp run dev:web` — Starts just the Vite dev server for the web app.
 - Dev commands run from a **git worktree** default to that worktree's own gitignored `.t3`, so feature work never writes to the data directory the installed app uses. This deliberately outranks an ambient `T3CODE_HOME`; pass `--home-dir <path>` to choose somewhere else.
@@ -51,6 +52,44 @@ Ports resolve in this order, first match winning:
 Whatever the source, this only picks a _preferred_ offset. Both ports are then checked on loopback and shifted together if either is taken, so two worktrees whose hashes collide — or one whose ports something else already holds — still start, just not on the offset they asked for. Ports are stable across restarts in practice, not guaranteed.
 
 Which means: read the resolved values from the `[dev-runner] …` line rather than assuming them, and re-read them after a restart. `--dry-run` prints them without starting anything (it resolves only — it will not touch a `--share` mapping).
+
+## Seeding dev data
+
+An isolated dev database starts empty, which makes anything list- or
+thread-shaped awkward to look at. `vp run dev:seed` copies the newest threads
+and their projects out of the shared home:
+
+```bash
+vp run dev              # once, so migrations create the database
+# stop it, then:
+vp run dev:seed --threads 40
+vp run dev --share
+```
+
+What it does, and why:
+
+- **Projections only.** `orchestration_events` is never copied. The projector
+  cursor is exclusive (`WHERE sequence > cursor`), so an empty event log means
+  bootstrap streams nothing and leaves the copied rows alone. Copying a partial
+  event range is the actual hazard — the projector would replay a tail whose
+  creating events are missing.
+- **Writes all nine `projection_state` rows.** Without them
+  `computeSnapshotSequence` returns 0 and every shell snapshot advertises
+  sequence 0.
+- **Neutralizes live state.** Sessions are forced to `stopped` with no active
+  turn (a copied `running` session has no agent behind it and would spin
+  forever, and the session reaper skips anything with an active turn), and
+  pending approval/input counts are zeroed since approvals are not copied.
+- **Copies the intersection of columns.** The two databases are often on
+  different migrations; a column only one side has is skipped and reported
+  rather than failing the copy.
+- **Refuses to write to `~/.t3`.** It replaces projection tables wholesale, so
+  the shared home is rejected outright.
+
+The copy contains real message bodies, tool payloads, and absolute host paths
+from the source machine. That is the point — it is a local-to-local convenience
+— but it is why the target must stay gitignored, and why there is no flag to
+aim it at anything but a dev directory.
 
 ## Browser dev is single-origin
 

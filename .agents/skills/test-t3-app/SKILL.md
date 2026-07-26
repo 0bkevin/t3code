@@ -27,6 +27,8 @@ them without starting anything.
 
 Inside a worktree, the dev runner defaults to that worktree's own gitignored `.t3` rather than the shared `~/.t3` — including when `T3CODE_HOME` is exported in the environment, which would otherwise resolve to `~/.t3/userdata`: the live database the user's installed T3 Code is running against. Do not override that default to the shared home.
 
+A fresh isolated database is empty, which is fine for flows you drive yourself but useless for anything that renders a list of existing work. To populate it, stop the dev server and run `bun run dev:seed` (`--threads N` to change the count), then restart. It copies recent projects and threads from the shared home read-only and refuses to write to it. Prefer this over hand-writing fixtures when you just need the UI to look real; use `references/sqlite-fixtures.md` when a test needs specific, controlled rows.
+
 Treat a base directory as disposable only when it was created or deliberately selected for the current test. Never delete or directly seed the shared `~/.t3` directory. Prefer starting with a new temporary base directory over clearing state of uncertain ownership.
 
 The dev runner disables browser auto-open by default. Do not pass `--browser` during automated testing: an automatically opened page can consume the one-time bootstrap token before the controlled browser uses it.
