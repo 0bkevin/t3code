@@ -227,6 +227,14 @@ function copyRows(input: {
 const UNSETTLED_TURN_STATES = ["running", "pending"] as const;
 
 /**
+ * Inlined rather than bound, so the statement below costs exactly one variable
+ * per thread. `--threads` is capped at SQLite's variable ceiling, so two extra
+ * bindings put the maximum documented value two over the limit. Safe to
+ * interpolate: these are internal literals, never input.
+ */
+const UNSETTLED_TURN_STATES_SQL = UNSETTLED_TURN_STATES.map((state) => `'${state}'`).join(", ");
+
+/**
  * Settles turns copied mid-flight, matching what the server does to a turn
  * whose session leaves "running": `settledTurnStateForSessionStatus` in
  * apps/server/src/orchestration/Layers/ProjectionPipeline.ts maps the "stopped"
@@ -251,10 +259,10 @@ function settleUnfinishedTurns(
   target
     .prepare(
       `UPDATE projection_turns SET state = 'interrupted'${setCompletedAt}
-       WHERE state IN (${placeholders(UNSETTLED_TURN_STATES.length)})
+       WHERE state IN (${UNSETTLED_TURN_STATES_SQL})
          AND thread_id IN (${placeholders(threadIds.length)})`,
     )
-    .run(...UNSETTLED_TURN_STATES, ...threadIds);
+    .run(...threadIds);
 }
 
 export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {

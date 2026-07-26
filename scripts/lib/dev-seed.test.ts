@@ -66,9 +66,13 @@ function makeSource(
   path: string,
   threadCount: number,
   activitiesPerThread = 3,
-  options?: { readonly legacyThreads?: boolean },
+  options?: { readonly legacyThreads?: boolean; readonly minimalRows?: boolean },
 ) {
   const legacyThreads = options?.legacyThreads ?? false;
+  // Thread rows only, for the scale test: building sessions and messages for
+  // 32k threads costs half a minute and proves nothing the thread-keyed
+  // statements don't already exercise.
+  const minimalRows = options?.minimalRows ?? false;
   const database = new NodeSqlite.DatabaseSync(path);
   createSchema(database, { withMonitor: true, legacyThreads });
   database
@@ -77,6 +81,9 @@ function makeSource(
     )
     .run();
 
+  // One transaction rather than one per insert: at 32k threads the implicit
+  // per-statement commits dominate the fixture's runtime.
+  database.exec("BEGIN");
   for (let index = 0; index < threadCount; index += 1) {
     const threadId = `t${String(index)}`;
     // Later index → later timestamp → more recent.
@@ -117,6 +124,9 @@ function makeSource(
         at,
         midFlight || queued ? null : at,
       );
+    if (minimalRows) {
+      continue;
+    }
     database
       .prepare(`INSERT INTO projection_thread_sessions VALUES (?,'running','claude',?,'boom',?)`)
       .run(threadId, `turn-${threadId}`, at);
@@ -136,6 +146,7 @@ function makeSource(
         .run(`a-${threadId}-${String(a)}`, threadId, "{}", `2026-07-10T00:00:0${String(a)}.000Z`);
     }
   }
+  database.exec("COMMIT");
   database.close();
 }
 
@@ -172,6 +183,7 @@ const withDatabases = <A>(
     readonly activities?: number;
     readonly dropProposedPlans?: boolean;
     readonly legacySource?: boolean;
+    readonly minimalRows?: boolean;
   },
 ): A => {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-dev-seed-"));
@@ -179,6 +191,7 @@ const withDatabases = <A>(
   const target = NodePath.join(directory, "target.sqlite");
   makeSource(source, options?.threads ?? 5, options?.activities ?? 3, {
     legacyThreads: options?.legacySource ?? false,
+    minimalRows: options?.minimalRows ?? false,
   });
   makeTarget(target, { dropProposedPlans: options?.dropProposedPlans ?? false });
   try {
@@ -494,6 +507,36 @@ describe("seedDevDatabase", () => {
         assert.deepStrictEqual(titles, ["Thread 4", "Thread 3"]);
       },
       { legacySource: true },
+    );
+  });
+
+  // Every statement keyed on thread ids must cost exactly one bound variable
+  // per thread: `--threads` is capped at SQLite's ceiling (32766), so a single
+  // extra binding makes the documented maximum fail — after the target has
+  // already been emptied. Runs the real seed, since the point is that no code
+  // path adds a binding, not that one hand-written statement doesn't.
+  it("seeds at the maximum thread limit without exhausting SQL variables", () => {
+    const MAX_THREADS = 32_766;
+    withDatabases(
+      ({ source, target }) => {
+        const summary = seedDevDatabase({
+          sourceDbPath: source,
+          targetDbPath: target,
+          threadLimit: MAX_THREADS,
+          activityLimit: 1,
+          seededAt: SEEDED_AT,
+        });
+
+        assert.equal(summary.threads, MAX_THREADS);
+        const [unsettled] = query<{ count: number }>(
+          target,
+          "SELECT COUNT(*) count FROM projection_turns WHERE state IN ('running','pending')",
+        );
+        assert.equal(unsettled?.count, 0);
+      },
+      // Threads only: the per-thread tables are what drive the binding count,
+      // and skipping their rows keeps the fixture cheap to build.
+      { threads: MAX_THREADS, activities: 0, minimalRows: true },
     );
   });
 
