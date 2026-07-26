@@ -3,11 +3,14 @@
  * an isolated dev server opens on something recognisable instead of an empty
  * sidebar.
  *
- * Projections only — never `orchestration_events`. The projector cursor is
- * exclusive (`WHERE sequence > cursor`), so an empty event log means bootstrap
- * streams nothing and leaves the copied rows alone. Copying a *partial* event
- * range is the actual hazard: the projector would replay a tail whose creating
- * events are missing. See .agents/skills/test-t3-app/references/sqlite-fixtures.md.
+ * Projections only — no event history is copied, and the target's own log is
+ * emptied. The copied projections describe a different world than whatever the
+ * target recorded, so replaying its retained events over them would resurrect
+ * threads and projects it had deleted; copying a *partial* source range is
+ * worse still, since the projector would replay a tail whose creating events
+ * are missing. With the log empty and every projector cursor at 0 (the cursor
+ * is exclusive), bootstrap streams nothing and leaves the copied rows alone.
+ * See .agents/skills/test-t3-app/references/sqlite-fixtures.md.
  */
 
 import * as NodeSqlite from "node:sqlite";
