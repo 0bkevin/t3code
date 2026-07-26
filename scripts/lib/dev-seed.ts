@@ -230,49 +230,75 @@ function copyRows(input: {
 }
 
 /**
- * Turn states that describe work an agent still owes: "running" for a turn in
- * flight, "pending" for one whose user message was accepted but whose provider
- * turn had not started yet (`insertPendingProjectionTurn` in
- * apps/server/src/persistence/Layers/ProjectionTurns.ts). Neither can make
- * progress in a copy, and only the thread's own next message would clear a
- * pending one.
- */
-const UNSETTLED_TURN_STATES = ["running", "pending"] as const;
-
-/**
- * Inlined rather than bound, so the statement below costs exactly one variable
- * per thread. `--threads` is capped at SQLite's variable ceiling, so two extra
- * bindings put the maximum documented value two over the limit. Safe to
- * interpolate: these are internal literals, never input.
- */
-const UNSETTLED_TURN_STATES_SQL = UNSETTLED_TURN_STATES.map((state) => `'${state}'`).join(", ");
-
-/**
- * Settles turns copied mid-flight, matching what the server does to a turn
- * whose session leaves "running": `settledTurnStateForSessionStatus` in
+ * Settles turns copied while still running, matching what the server does to a
+ * turn whose session leaves "running": `settledTurnStateForSessionStatus` in
  * apps/server/src/orchestration/Layers/ProjectionPipeline.ts maps the "stopped"
  * status the sessions are copied with to "interrupted".
  *
+ * "pending" rows are deleted rather than settled — see `dropPendingTurnStarts`.
+ *
  * An UPDATE rather than a copy override, because only the rows that were
- * actually unsettled should change; the rest keep their real recorded state.
+ * actually running should change; the rest keep their real recorded state.
  */
-function settleUnfinishedTurns(
+function settleRunningTurns(
   target: NodeSqlite.DatabaseSync,
   threadIds: ReadonlyArray<string>,
 ): void {
   if (threadIds.length === 0 || !hasColumn(target, "projection_turns", "state")) {
     return;
   }
-  // completed_at is what marks a turn settled alongside its state; an
-  // unfinished turn has none, and leaving it null keeps the thread unsettled
-  // regardless of the state written here.
+  // A settled turn needs a completion time, and `requested_at` is the only
+  // timestamp guaranteed present. Overwritten unconditionally rather than
+  // COALESCEd: a running turn can carry a stale `completed_at` from an earlier
+  // settle that a later checkpoint reverted to "running" (the `...existingTurn`
+  // spread in ProjectionPipeline preserves it), and keeping that value would
+  // date the interruption to whenever that checkpoint landed.
   const setCompletedAt = hasColumn(target, "projection_turns", "completed_at")
-    ? `, completed_at = COALESCE(completed_at, requested_at)`
+    ? `, completed_at = requested_at`
     : "";
+  // 'running' is inlined, not bound: `--threads` is capped at SQLite's variable
+  // ceiling, so every binding beyond one per thread puts the maximum over the
+  // limit. Safe to interpolate — an internal literal, never input.
   target
     .prepare(
       `UPDATE projection_turns SET state = 'interrupted'${setCompletedAt}
-       WHERE state IN (${UNSETTLED_TURN_STATES_SQL})
+       WHERE state = 'running'
+         AND thread_id IN (${placeholders(threadIds.length)})`,
+    )
+    .run(...threadIds);
+}
+
+/**
+ * Drops turn rows copied in the "pending" state — a user message accepted
+ * before its provider turn started.
+ *
+ * Deleted rather than settled, because that is what the server does with them:
+ * `clearPendingProjectionTurnsByThread` removes them once the turn starts or
+ * the thread is stopped, and nothing settles them in place. They also cannot be
+ * settled coherently — `turn_id` is NULL, so an "interrupted" pending row is a
+ * terminal turn with no id, a shape no real turn ever has.
+ *
+ * Matches the server's own predicate exactly, so a checkpoint row is never
+ * caught by it.
+ */
+function dropPendingTurnStarts(
+  target: NodeSqlite.DatabaseSync,
+  threadIds: ReadonlyArray<string>,
+): void {
+  if (threadIds.length === 0 || !hasColumn(target, "projection_turns", "state")) {
+    return;
+  }
+  // The checkpoint guard is only meaningful where the column exists; an older
+  // target without it has no checkpoint rows to protect.
+  const excludeCheckpoints = hasColumn(target, "projection_turns", "checkpoint_turn_count")
+    ? "AND checkpoint_turn_count IS NULL"
+    : "";
+  target
+    .prepare(
+      `DELETE FROM projection_turns
+       WHERE state = 'pending'
+         AND turn_id IS NULL
+         ${excludeCheckpoints}
          AND thread_id IN (${placeholders(threadIds.length)})`,
     )
     .run(...threadIds);
@@ -438,8 +464,10 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
     // forced to "stopped" below, but the turn is read independently: an
     // unfinished turn keeps the thread unsettled and unfoldable forever
     // (deriveUnsettledTurnId in MessagesTimeline.logic.ts). Interrupted is what
-    // the server itself settles an abandoned turn to.
-    settleUnfinishedTurns(target, threadIds);
+    // the server itself settles an abandoned turn to; a pending start is
+    // something it deletes outright.
+    settleRunningTurns(target, threadIds);
+    dropPendingTurnStarts(target, threadIds);
     const messages = record(
       copyRows({
         source,

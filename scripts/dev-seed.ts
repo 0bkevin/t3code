@@ -71,8 +71,32 @@ class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
   }
 }
 
-const stateDbPath = (path: Path.Path, baseDir: string) =>
-  path.join(baseDir, "userdata", "state.sqlite");
+/**
+ * The state directory holding a base directory's database.
+ *
+ * `deriveServerPaths` picks `dev` for an implicit dev home and `userdata`
+ * otherwise — a split that depends on how the server was started, which the
+ * person seeding has no reason to know. Hard-coding `userdata` made a
+ * main-checkout `bun run dev` (whose state lives in `<base>/dev`) unreachable:
+ * the seed reported "no database, start the dev server so migrations run" about
+ * a server that was already running.
+ *
+ * Whichever one exists wins; `userdata` breaks the tie, since that is what an
+ * explicit `--home-dir` produces.
+ */
+const resolveStateDir = Effect.fn("devSeed.resolveStateDir")(function* (baseDir: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const stateDir of ["userdata", "dev"] as const) {
+    if (yield* fileSystem.exists(path.join(baseDir, stateDir, "state.sqlite"))) {
+      return stateDir;
+    }
+  }
+  return "userdata";
+});
+
+const stateDbPath = (path: Path.Path, baseDir: string, stateDir: string) =>
+  path.join(baseDir, stateDir, "state.sqlite");
 
 /**
  * Copies the files behind the copied messages' attachment references.
@@ -193,7 +217,12 @@ const devSeedCli = Command.make("dev-seed", {
         return yield* new DevSeedTargetError({ reason: "same-source", detail: targetBaseDir });
       }
 
-      const targetDbPath = stateDbPath(path, targetBaseDir);
+      const [sourceStateDir, targetStateDir] = yield* Effect.all([
+        resolveStateDir(sourceBaseDir),
+        resolveStateDir(targetBaseDir),
+      ]);
+      const sourceDbPath = stateDbPath(path, sourceBaseDir, sourceStateDir);
+      const targetDbPath = stateDbPath(path, targetBaseDir, targetStateDir);
       if (!(yield* fileSystem.exists(targetDbPath))) {
         return yield* new DevSeedTargetError({ reason: "missing-target", detail: targetDbPath });
       }
@@ -215,7 +244,7 @@ const devSeedCli = Command.make("dev-seed", {
       const summary = yield* Effect.try({
         try: () =>
           seedDevDatabase({
-            sourceDbPath: stateDbPath(path, sourceBaseDir),
+            sourceDbPath,
             targetDbPath,
             threadLimit: input.threads,
             activityLimit: input.activities,
@@ -224,16 +253,17 @@ const devSeedCli = Command.make("dev-seed", {
         catch: (cause) => cause as DevSeedError,
       });
 
+      // Attachments sit beside the database, so they follow the same state dir.
       const copiedAttachments = yield* copyAttachments({
-        sourceDir: path.join(sourceBaseDir, "userdata", "attachments"),
-        targetDir: path.join(targetBaseDir, "userdata", "attachments"),
+        sourceDir: path.join(sourceBaseDir, sourceStateDir, "attachments"),
+        targetDir: path.join(targetBaseDir, targetStateDir, "attachments"),
         attachmentIds: summary.attachmentIds,
       });
 
       yield* Console.log(
         [
           `Seeded ${targetDbPath}`,
-          `  from     ${stateDbPath(path, sourceBaseDir)}`,
+          `  from     ${sourceDbPath}`,
           `  projects ${String(summary.projects)}`,
           `  threads  ${String(summary.threads)}`,
           `  messages ${String(summary.messages)}`,

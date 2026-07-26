@@ -8,6 +8,12 @@ import * as NodeSqlite from "node:sqlite";
 import { DevSeedError, MAX_SEED_THREAD_LIMIT, seedDevDatabase } from "./dev-seed.ts";
 
 const SEEDED_AT = "2026-07-26T00:00:00.000Z";
+/**
+ * A completion timestamp left on a still-running turn by a settle that a later
+ * checkpoint reverted. Far enough in the future to be unmistakable if it leaks
+ * into a seeded row.
+ */
+const STALE_COMPLETED_AT = "2099-01-01T00:00:00.000Z";
 
 /**
  * The subset of the real schema the seeder touches. `monitor_json` is included
@@ -119,10 +125,14 @@ function makeSource(
       )
       .run(
         threadId,
-        `turn-${threadId}`,
+        // A pending start has no turn id — that is what identifies it.
+        queued ? null : `turn-${threadId}`,
         midFlight ? "running" : queued ? "pending" : "completed",
         at,
-        midFlight || queued ? null : at,
+        // The running turn carries a stale completion from an earlier settle
+        // that a later checkpoint reverted, which must not survive as the
+        // interruption time.
+        midFlight ? STALE_COMPLETED_AT : queued ? null : at,
       );
     if (minimalRows) {
       continue;
@@ -312,11 +322,10 @@ describe("seedDevDatabase", () => {
     });
   });
 
-  // A copied turn has no agent left to finish it, whether it was already
-  // running or still queued behind a "pending" row. The session override alone
-  // does not cover either: the turn is read independently, and an unsettled one
-  // keeps the thread spinning and its timeline unfoldable forever.
-  it("settles turns copied before they finished", () => {
+  // A copied running turn has no agent left to finish it. The session override
+  // alone does not cover it: the turn is read independently, and an unsettled
+  // one keeps the thread spinning and its timeline unfoldable forever.
+  it("settles turns copied while still running", () => {
     withDatabases(({ source, target }) => {
       seedDevDatabase({
         sourceDbPath: source,
@@ -330,13 +339,36 @@ describe("seedDevDatabase", () => {
         target,
         "SELECT state, completed_at FROM projection_turns",
       );
-      // The fixture puts one running turn and one pending turn in this range.
       assert.isAbove(turns.length, 0);
       for (const turn of turns) {
         assert.notEqual(turn.state, "running");
-        assert.notEqual(turn.state, "pending");
         assert.isNotNull(turn.completed_at);
+        // A settle that a later checkpoint reverted can leave a completion on a
+        // running turn; carrying it over would date the interruption to then.
+        assert.notEqual(turn.completed_at, STALE_COMPLETED_AT);
       }
+    });
+  });
+
+  // The server deletes pending starts rather than settling them
+  // (clearPendingProjectionTurnsByThread). They also cannot be settled
+  // coherently: turn_id is NULL, so an "interrupted" one is a terminal turn
+  // with no id — a shape no real turn has.
+  it("drops pending turn starts instead of settling them", () => {
+    withDatabases(({ source, target }) => {
+      seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 3,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+      });
+
+      const [pending] = query<{ count: number }>(
+        target,
+        "SELECT COUNT(*) count FROM projection_turns WHERE state = 'pending' OR turn_id IS NULL",
+      );
+      assert.equal(pending?.count, 0);
     });
   });
 

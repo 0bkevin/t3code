@@ -51,6 +51,8 @@ An isolated dev database starts empty. `bun run dev:seed` copies projection data
 
 `dev:seed` refuses to run while a server is using the target directory: it replaces the projections and event log that server is holding open, and it has no way to tell the running process its read model was swapped underneath it. Stop the server, seed, then start it again.
 
+Both source and target follow whichever state directory actually holds a database — `userdata` when present, otherwise `dev` — so a main-checkout `bun run dev`, whose state lives in `~/.t3/dev`, is seedable without naming the directory.
+
 ## Running multiple dev instances
 
 Set `T3CODE_DEV_INSTANCE` to any value to deterministically shift all dev ports together.
