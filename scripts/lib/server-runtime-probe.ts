@@ -11,22 +11,10 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
 
 /** The two state directories `deriveServerPaths` can select. */
 const STATE_DIRS = ["dev", "userdata"] as const;
-
-const RuntimeStateProbe = Schema.Struct({
-  /** Positive, for the reason `isPidLive` explains. */
-  pid: Schema.Int.check(Schema.isGreaterThan(0)),
-});
-
-const decodeRuntimeStateProbe = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(RuntimeStateProbe),
-);
 
 /**
  * The runtime-state file is removed by a release finalizer, so a server killed
@@ -60,59 +48,51 @@ const isPidLive = (pid: number): boolean => {
 };
 
 /**
- * The pid of a live server under `baseDir`, if any.
+ * The pid of a live server whose state file sits in one directory.
  *
- * Both state directories are checked because which one a given server chose
- * depends on flags the caller of this should not have to reason about — the
- * same reason `auth pairing url` checks both.
+ * Synchronous because its main caller runs inside `seedDevDatabase`'s open
+ * SQLite transaction, where nothing can await. Applies one rule everywhere: a
+ * positive live pid counts, anything unparseable does not — a malformed or
+ * half-written file says nothing about liveness, and treating it as "a server
+ * is up" would block seeding with no way to clear it.
  */
-export const findRunningServerPid = Effect.fn("findRunningServerPid")(function* (baseDir: string) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-
-  for (const stateDir of STATE_DIRS) {
-    const statePath = path.join(baseDir, stateDir, "server-runtime.json");
-    const raw = yield* fileSystem.readFileString(statePath).pipe(Effect.option);
-    if (Option.isNone(raw)) {
-      continue;
-    }
-    // A malformed or half-written file says nothing about liveness; treating it
-    // as "a server is up" would block seeding with no way to clear it.
-    const state = yield* decodeRuntimeStateProbe(raw.value).pipe(Effect.option);
-    if (Option.isSome(state) && isPidLive(state.value.pid)) {
-      return Option.some(state.value.pid);
-    }
+function findPidInStateDir(baseDir: string, stateDir: string): number | undefined {
+  let raw: string;
+  try {
+    raw = NodeFS.readFileSync(NodePath.join(baseDir, stateDir, "server-runtime.json"), "utf8");
+  } catch {
+    return undefined;
   }
-
-  return Option.none<number>();
-});
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const pid: unknown = (parsed as { pid?: unknown } | null)?.pid;
+    return typeof pid === "number" && isPidLive(pid) ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
- * The same probe, synchronously.
+ * The pid of a live server under `baseDir`, if any.
  *
- * `seedDevDatabase` is synchronous — it holds an open SQLite transaction — so
- * its last-moment re-check cannot await an Effect. Reads the file directly
- * rather than through the platform layer for that reason, and applies the same
- * rules: a positive live pid counts, anything unparseable does not.
+ * `stateDir` scopes the probe to one state directory when the caller has
+ * already resolved which database it is about to touch — a server using only
+ * the *other* directory's database is not a conflict and must not block it.
+ * Omitted, both directories count, for callers guarding the base as a whole.
  */
-export function findRunningServerPidSync(baseDir: string): number | undefined {
-  for (const stateDir of STATE_DIRS) {
-    const statePath = NodePath.join(baseDir, stateDir, "server-runtime.json");
-    let raw: string;
-    try {
-      raw = NodeFS.readFileSync(statePath, "utf8");
-    } catch {
-      continue;
-    }
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      const pid: unknown = (parsed as { pid?: unknown } | null)?.pid;
-      if (typeof pid === "number" && isPidLive(pid)) {
-        return pid;
-      }
-    } catch {
-      // Half-written or malformed: says nothing about liveness either way.
+export function findRunningServerPidSync(baseDir: string, stateDir?: string): number | undefined {
+  for (const candidate of stateDir === undefined ? STATE_DIRS : [stateDir]) {
+    const pid = findPidInStateDir(baseDir, candidate);
+    if (pid !== undefined) {
+      return pid;
     }
   }
   return undefined;
 }
+
+/** {@link findRunningServerPidSync} for Effect callers. */
+export const findRunningServerPid = (
+  baseDir: string,
+  stateDir?: string,
+): Effect.Effect<Option.Option<number>> =>
+  Effect.sync(() => Option.fromNullishOr(findRunningServerPidSync(baseDir, stateDir)));

@@ -554,16 +554,17 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
         keyColumn: "thread_id",
         keys: threadIds,
         // Ordered the way the app reads these back — `sequence` first, then
-        // `created_at` (ProjectionSnapshotQuery). Capping on `created_at`
-        // alone cuts arbitrarily among rows sharing a timestamp, which is the
-        // common case for a burst of tool activity: the "newest N" kept can be
-        // the oldest N in the order the timeline actually displays.
+        // `created_at` (ProjectionSnapshotQuery). Any other key order can keep
+        // rows the timeline treats as oldest: timestamps tie within a burst of
+        // tool activity, and can even disagree with `sequence` outright when
+        // events arrive with skewed clocks. Descending, a NULL `sequence`
+        // sorts last, mirroring where the app's ascending reads place it.
         //
         // `sequence` arrived in migration 008, so a source without it falls
         // back to the timestamp — same drift tolerance as the rest of the copy.
         perKeyLimit: {
           orderBy: hasColumn(source, "projection_thread_activities", "sequence")
-            ? `"created_at" DESC, "sequence"`
+            ? `"sequence" DESC, "created_at"`
             : `"created_at"`,
           limit: options.activityLimit,
         },

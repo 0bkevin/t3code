@@ -153,3 +153,34 @@ describe("findRunningServerPidSync agrees with the Effect probe", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+// A caller that has resolved which database it is about to touch must not be
+// blocked by a server using only the other one.
+describe("scoping to one state directory", () => {
+  it.effect("ignores a live server in the other directory", () =>
+    Effect.gen(function* () {
+      const baseDir = yield* makeBaseDir();
+      yield* writeRuntimeState({
+        baseDir,
+        stateDir: "dev",
+        contents: runtimeStateJson(process.pid),
+      });
+
+      assert.isUndefined(findRunningServerPidSync(baseDir, "userdata"));
+      assert.isTrue(Option.isNone(yield* findRunningServerPid(baseDir, "userdata")));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("still reports a live server in the named directory", () =>
+    Effect.gen(function* () {
+      const baseDir = yield* makeBaseDir();
+      yield* writeRuntimeState({
+        baseDir,
+        stateDir: "dev",
+        contents: runtimeStateJson(process.pid),
+      });
+
+      assert.equal(findRunningServerPidSync(baseDir, "dev"), process.pid);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});

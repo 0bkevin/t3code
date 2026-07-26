@@ -264,7 +264,11 @@ const devSeedCli = Command.make("dev-seed", {
       // What it cannot do is tell that server the projections it is holding in
       // memory, and the event log it is appending to, were both replaced under
       // it. Its next write then lands on top of a read model it never built.
-      const runningPid = yield* findRunningServerPid(targetBaseDir);
+      //
+      // Scoped to the state directory being seeded: a server using only the
+      // other directory's database is not touching this one, and blocking on it
+      // would refuse seeds that are perfectly safe.
+      const runningPid = yield* findRunningServerPid(targetBaseDir, targetStateDir);
       if (Option.isSome(runningPid)) {
         return yield* new DevSeedTargetError({
           reason: "server-running",
@@ -284,7 +288,7 @@ const devSeedCli = Command.make("dev-seed", {
             // The check above happens before the copy, which can take seconds.
             // Re-checked just before the commit so a server that started in
             // between aborts the seed instead of having its database swapped.
-            findRunningServerPid: () => findRunningServerPidSync(targetBaseDir),
+            findRunningServerPid: () => findRunningServerPidSync(targetBaseDir, targetStateDir),
           }),
         catch: (cause) => cause as DevSeedError,
       });

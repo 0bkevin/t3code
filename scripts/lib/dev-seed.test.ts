@@ -404,15 +404,19 @@ describe("seedDevDatabase", () => {
     withDatabases(({ source, target }) => {
       const sourceDatabase = new NodeSqlite.DatabaseSync(source);
       sourceDatabase.exec("DELETE FROM projection_thread_activities");
+      const insert = sourceDatabase.prepare(
+        `INSERT INTO projection_thread_activities
+         VALUES (?, 't4', 'neutral', 'tool', 'ran', '{}', ?, ?)`,
+      );
       const tied = "2026-07-10T00:00:00.000Z";
-      for (const sequence of [1, 2, 3, 4]) {
-        sourceDatabase
-          .prepare(
-            `INSERT INTO projection_thread_activities
-             VALUES (?, 't4', 'neutral', 'tool', 'ran', '{}', ?, ?)`,
-          )
-          .run(`tie-${String(sequence)}`, sequence, tied);
+      // Timestamps tie within a burst...
+      for (const sequence of [1, 2, 3]) {
+        insert.run(`tie-${String(sequence)}`, sequence, tied);
       }
+      // ...and can disagree with sequence outright under clock skew. The app
+      // ranks by sequence first, so this row outranks every tied one despite
+      // its older timestamp.
+      insert.run("skewed-4", 4, "2026-07-09T00:00:00.000Z");
       sourceDatabase.close();
 
       seedDevDatabase({
@@ -427,8 +431,9 @@ describe("seedDevDatabase", () => {
         target,
         "SELECT activity_id FROM projection_thread_activities ORDER BY sequence DESC",
       ).map((row) => row.activity_id);
-      // The two highest sequences, not whichever two the storage order yielded.
-      assert.deepStrictEqual(kept, ["tie-4", "tie-3"]);
+      // The two highest sequences — not the two newest timestamps, and not
+      // whichever two the storage order yielded.
+      assert.deepStrictEqual(kept, ["skewed-4", "tie-3"]);
     });
   });
 
