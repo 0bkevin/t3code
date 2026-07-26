@@ -101,8 +101,10 @@ function makeSource(
     }
     // The newest thread is left mid-turn, as a copy taken while an agent is
     // working would be: a running turn with no completion, and a message still
-    // streaming into it.
+    // streaming into it. The one before it is left "pending" — a user message
+    // accepted but whose provider turn never started.
     const midFlight = index === threadCount - 1;
+    const queued = index === threadCount - 2;
     database
       .prepare(
         `INSERT INTO projection_turns (thread_id, turn_id, state, requested_at, completed_at, checkpoint_files_json)
@@ -111,9 +113,9 @@ function makeSource(
       .run(
         threadId,
         `turn-${threadId}`,
-        midFlight ? "running" : "completed",
+        midFlight ? "running" : queued ? "pending" : "completed",
         at,
-        midFlight ? null : at,
+        midFlight || queued ? null : at,
       );
     database
       .prepare(`INSERT INTO projection_thread_sessions VALUES (?,'running','claude',?,'boom',?)`)
@@ -297,10 +299,11 @@ describe("seedDevDatabase", () => {
     });
   });
 
-  // A copied running turn has no agent left to finish it. The session override
-  // alone does not cover this: the turn is read independently, and an unsettled
-  // one keeps the thread spinning and its timeline unfoldable forever.
-  it("settles turns copied mid-flight", () => {
+  // A copied turn has no agent left to finish it, whether it was already
+  // running or still queued behind a "pending" row. The session override alone
+  // does not cover either: the turn is read independently, and an unsettled one
+  // keeps the thread spinning and its timeline unfoldable forever.
+  it("settles turns copied before they finished", () => {
     withDatabases(({ source, target }) => {
       seedDevDatabase({
         sourceDbPath: source,
@@ -314,9 +317,11 @@ describe("seedDevDatabase", () => {
         target,
         "SELECT state, completed_at FROM projection_turns",
       );
+      // The fixture puts one running turn and one pending turn in this range.
       assert.isAbove(turns.length, 0);
       for (const turn of turns) {
         assert.notEqual(turn.state, "running");
+        assert.notEqual(turn.state, "pending");
         assert.isNotNull(turn.completed_at);
       }
     });

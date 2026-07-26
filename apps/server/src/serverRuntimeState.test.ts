@@ -70,6 +70,30 @@ describe("serverRuntimeState", () => {
         );
       }),
     );
+
+    // `process.kill` reads non-positive pids as signal-group targets rather
+    // than process lookups — 0 is the caller's own group, -1 every permitted
+    // process — so neither throws, and a probe that only catches would call
+    // both "live" no matter what wrote the file.
+    for (const pid of [0, -1]) {
+      it.effect(`reports pid ${String(pid)} as dead rather than signalling a group`, () =>
+        Effect.gen(function* () {
+          assert.isFalse(
+            yield* ServerRuntimeState.isPersistedServerRuntimeStateLive(stateForPid(pid)),
+          );
+        }),
+      );
+    }
+
+    // Out of range for a pid: process.kill throws a TypeError with no errno,
+    // which the EPERM check must not assume the shape of.
+    it.effect("reports an out-of-range pid as dead", () =>
+      Effect.gen(function* () {
+        assert.isFalse(
+          yield* ServerRuntimeState.isPersistedServerRuntimeStateLive(stateForPid(2 ** 40)),
+        );
+      }),
+    );
   });
 
   it.effect("treats a missing runtime state file as absent", () =>

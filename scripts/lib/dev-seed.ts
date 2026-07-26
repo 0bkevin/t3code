@@ -217,32 +217,44 @@ function copyRows(input: {
 }
 
 /**
+ * Turn states that describe work an agent still owes: "running" for a turn in
+ * flight, "pending" for one whose user message was accepted but whose provider
+ * turn had not started yet (`insertPendingProjectionTurn` in
+ * apps/server/src/persistence/Layers/ProjectionTurns.ts). Neither can make
+ * progress in a copy, and only the thread's own next message would clear a
+ * pending one.
+ */
+const UNSETTLED_TURN_STATES = ["running", "pending"] as const;
+
+/**
  * Settles turns copied mid-flight, matching what the server does to a turn
  * whose session leaves "running": `settledTurnStateForSessionStatus` in
  * apps/server/src/orchestration/Layers/ProjectionPipeline.ts maps the "stopped"
  * status the sessions are copied with to "interrupted".
  *
  * An UPDATE rather than a copy override, because only the rows that were
- * actually running should change; the rest keep their real recorded state.
+ * actually unsettled should change; the rest keep their real recorded state.
  */
-function settleRunningTurns(
+function settleUnfinishedTurns(
   target: NodeSqlite.DatabaseSync,
   threadIds: ReadonlyArray<string>,
 ): void {
   if (threadIds.length === 0 || !hasColumn(target, "projection_turns", "state")) {
     return;
   }
-  // completed_at is what marks a turn settled alongside its state; a running
-  // turn has none, and leaving it null keeps the thread unsettled regardless.
+  // completed_at is what marks a turn settled alongside its state; an
+  // unfinished turn has none, and leaving it null keeps the thread unsettled
+  // regardless of the state written here.
   const setCompletedAt = hasColumn(target, "projection_turns", "completed_at")
     ? `, completed_at = COALESCE(completed_at, requested_at)`
     : "";
   target
     .prepare(
       `UPDATE projection_turns SET state = 'interrupted'${setCompletedAt}
-       WHERE state = 'running' AND thread_id IN (${placeholders(threadIds.length)})`,
+       WHERE state IN (${placeholders(UNSETTLED_TURN_STATES.length)})
+         AND thread_id IN (${placeholders(threadIds.length)})`,
     )
-    .run(...threadIds);
+    .run(...UNSETTLED_TURN_STATES, ...threadIds);
 }
 
 export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
@@ -265,6 +277,22 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
       `could not open the target database at ${options.targetDbPath}`,
       `${String(cause)}. Start the dev server once so migrations run, then retry.`,
     );
+  }
+
+  // The source is normally the *live* installed app's database — only the
+  // target is guarded against a running server, because reading is harmless.
+  // Reading it across a dozen separate implicit transactions is not: the app
+  // can delete a project between the query that picks it up and the copy that
+  // reads its row, leaving a copied thread whose project no longer exists (no
+  // foreign keys are declared, so nothing catches it). One deferred read
+  // transaction pins every query below to a single snapshot.
+  let sourceTransactionOpen = false;
+  try {
+    source.exec("BEGIN");
+    sourceTransactionOpen = true;
+  } catch {
+    // A concurrent writer can leave the connection unable to start one. The
+    // copy is still worth doing — it just loses snapshot isolation.
   }
 
   try {
@@ -376,11 +404,11 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
       }),
     );
     // A thread copied mid-turn has no agent to finish it. The session status is
-    // forced to "stopped" below, but the turn is read independently: a
-    // `state = 'running'` turn keeps the thread unsettled and unfoldable
-    // forever (deriveUnsettledTurnId in MessagesTimeline.logic.ts). Interrupted
-    // is what the server itself settles an abandoned turn to.
-    settleRunningTurns(target, threadIds);
+    // forced to "stopped" below, but the turn is read independently: an
+    // unfinished turn keeps the thread unsettled and unfoldable forever
+    // (deriveUnsettledTurnId in MessagesTimeline.logic.ts). Interrupted is what
+    // the server itself settles an abandoned turn to.
+    settleUnfinishedTurns(target, threadIds);
     const messages = record(
       copyRows({
         source,
@@ -475,6 +503,15 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
       ? cause
       : new DevSeedError(`could not seed the dev database: ${String(cause)}`);
   } finally {
+    if (sourceTransactionOpen) {
+      try {
+        // Read-only, so there is nothing to commit; end it before closing so
+        // the snapshot is released explicitly rather than by teardown.
+        source.exec("ROLLBACK");
+      } catch {
+        // Already ended, which is equally fine for a read-only transaction.
+      }
+    }
     source.close();
     target.close();
   }

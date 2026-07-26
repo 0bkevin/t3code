@@ -210,7 +210,16 @@ const pairingUrlCommand = Command.make("url", {
           ? flags
           : { ...flags, baseDir: Option.some(worktreeBaseDir) };
       const config = yield* resolveCliAuthConfig(resolvedFlags, logLevel);
-      const live = yield* findLiveServerRuntimeState(config);
+      // Quieted here rather than only around the issuing layer below: probing
+      // reads both state directories, and a corrupt file in the one *not* in
+      // use logs a Warn to stdout — ahead of the payload, breaking `--json`
+      // for any consumer piping it. The warning is about a file the command
+      // then ignores, so under --json it is noise either way.
+      const live = yield* findLiveServerRuntimeState(config).pipe(
+        Effect.provide(
+          Layer.succeed(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
+        ),
+      );
 
       if (Option.isNone(live)) {
         return yield* new NoRunningServerError({ baseDir: config.baseDir });

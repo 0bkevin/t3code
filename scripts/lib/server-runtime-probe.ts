@@ -16,7 +16,8 @@ import * as Schema from "effect/Schema";
 const STATE_DIRS = ["dev", "userdata"] as const;
 
 const RuntimeStateProbe = Schema.Struct({
-  pid: Schema.Int,
+  /** Positive, for the reason `isPidLive` explains. */
+  pid: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 
 const decodeRuntimeStateProbe = Schema.decodeUnknownEffect(
@@ -34,12 +35,23 @@ const decodeRuntimeStateProbe = Schema.decodeUnknownEffect(
  * case is being told to stop a server that is already stopped.
  */
 const isPidLive = (pid: number): boolean => {
+  // `process.kill` reads non-positive pids as signal-group targets rather than
+  // process lookups — 0 signals the caller's own group, -1 every permitted
+  // process — so neither throws and both would report "live" unconditionally.
+  // The schema rejects those, and this repeats the check so the invariant
+  // travels with the code that depends on it.
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    return false;
+  }
   try {
     process.kill(pid, 0);
     return true;
   } catch (cause) {
-    // EPERM means the process exists but belongs to another user.
-    return (cause as NodeJS.ErrnoException).code === "EPERM";
+    // EPERM means the process exists but belongs to another user. An
+    // out-of-range pid throws a TypeError instead, which has no errno.
+    return typeof cause === "object" && cause !== null && "code" in cause
+      ? cause.code === "EPERM"
+      : false;
   }
 };
 

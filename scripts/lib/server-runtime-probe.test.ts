@@ -86,6 +86,20 @@ describe("findRunningServerPid", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  // `process.kill` reads these as signal-group targets, not process lookups, so
+  // neither throws — a naive probe calls both "live" and blocks seeding forever
+  // on a file no server ever wrote.
+  for (const pid of [0, -1]) {
+    it.effect(`ignores a state file recording pid ${String(pid)}`, () =>
+      Effect.gen(function* () {
+        const baseDir = yield* makeBaseDir();
+        yield* writeRuntimeState({ baseDir, stateDir: "dev", contents: runtimeStateJson(pid) });
+
+        assert.isTrue(Option.isNone(yield* findRunningServerPid(baseDir)));
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
+
   it.effect("reports nothing when no state files exist", () =>
     Effect.gen(function* () {
       const baseDir = yield* makeBaseDir();

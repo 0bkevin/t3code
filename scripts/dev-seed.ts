@@ -28,7 +28,13 @@ const MAX_THREAD_LIMIT = 32_766;
 class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
   "DevSeedTargetError",
   {
-    reason: Schema.Literals(["shared-home", "missing-target", "not-a-worktree", "server-running"]),
+    reason: Schema.Literals([
+      "shared-home",
+      "missing-target",
+      "not-a-worktree",
+      "server-running",
+      "same-source",
+    ]),
     detail: Schema.String,
   },
 ) {
@@ -55,6 +61,13 @@ class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
           "Seeding replaces its projections and empties its event log while it holds them open,",
           "which leaves the running server's in-memory read model describing rows that no longer exist.",
           "Stop it, run the seed, then start it again.",
+        ].join("\n");
+      case "same-source":
+        return [
+          `Refusing to seed ${this.detail} from itself.`,
+          "The copy would restore what the delete removed, but the event log and the",
+          "projector cursors are cleared either way — so the directory loses its history",
+          "and keeps only whatever the thread and activity caps selected.",
         ].join("\n");
     }
   }
@@ -167,12 +180,20 @@ const devSeedCli = Command.make("dev-seed", {
 
       // The whole point is to keep dev data off the real home; overwriting it
       // here would be the exact accident this command exists to avoid.
-      const [canonicalTarget, canonicalShared] = yield* Effect.all([
+      const [canonicalTarget, canonicalSource, canonicalShared] = yield* Effect.all([
         fileSystem.realPath(targetBaseDir).pipe(Effect.orElseSucceed(() => targetBaseDir)),
+        fileSystem.realPath(sourceBaseDir).pipe(Effect.orElseSucceed(() => sourceBaseDir)),
         fileSystem.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
       ]);
       if (canonicalTarget === canonicalShared) {
         return yield* new DevSeedTargetError({ reason: "shared-home", detail: targetBaseDir });
+      }
+      // Seeding a directory from itself is not the data loss it looks like —
+      // the source reads a pre-transaction snapshot, so the copy puts the rows
+      // back. What does not come back is the event log and the cursors, and
+      // anything outside the caps. Nobody means to ask for that.
+      if (canonicalTarget === canonicalSource) {
+        return yield* new DevSeedTargetError({ reason: "same-source", detail: targetBaseDir });
       }
 
       const targetDbPath = stateDbPath(path, targetBaseDir);

@@ -10,7 +10,11 @@ import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
 
 export const PersistedServerRuntimeState = Schema.Struct({
   version: Schema.Literal(1),
-  pid: Schema.Int,
+  /**
+   * Positive: `process.kill` reads 0 and negatives as signal-group targets, so
+   * a liveness probe on one reports "live" for a process that never existed.
+   */
+  pid: Schema.Int.check(Schema.isGreaterThan(0)),
   host: Schema.optional(Schema.String),
   port: Schema.Int,
   origin: Schema.String,
@@ -108,6 +112,13 @@ export const clearPersistedServerRuntimeState = (path: string) =>
   });
 
 /**
+ * `process.kill` rejects an out-of-range pid with a TypeError rather than an
+ * errno, so the catch below cannot assume either shape.
+ */
+const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
+  typeof cause === "object" && cause !== null && "code" in cause;
+
+/**
  * Whether the process that wrote a runtime-state file is still alive.
  *
  * The file is removed by a release finalizer, so a server killed with SIGKILL —
@@ -123,12 +134,20 @@ export const isPersistedServerRuntimeStateLive = (
   state: PersistedServerRuntimeState,
 ): Effect.Effect<boolean> =>
   Effect.sync(() => {
+    // `process.kill` reads non-positive pids as signal-group targets rather
+    // than process lookups: 0 signals the caller's own group and -1 every
+    // permitted process, so neither throws and both would report "live"
+    // unconditionally. A server never records one; a corrupt or truncated file
+    // can, and that file would then be believed forever.
+    if (!Number.isSafeInteger(state.pid) || state.pid <= 0) {
+      return false;
+    }
     try {
       process.kill(state.pid, 0);
       return true;
     } catch (cause) {
       // EPERM means the process exists but belongs to another user.
-      return (cause as NodeJS.ErrnoException).code === "EPERM";
+      return isErrnoException(cause) && cause.code === "EPERM";
     }
   });
 
