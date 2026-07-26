@@ -34,8 +34,10 @@ import { PROJECTION_TABLES_IN_DEPENDENCY_ORDER, PROJECTOR_NAMES } from "./projec
  */
 export const MAX_SEED_THREAD_LIMIT = 32_766;
 
+/** Inputs to {@link seedDevDatabase}. Both limits must be positive. */
 export interface DevSeedOptions {
   readonly sourceDbPath: string;
+  /** Emptied and rewritten. Must not be a database a server has open. */
   readonly targetDbPath: string;
   /** How many recent threads to copy. Capped at {@link MAX_SEED_THREAD_LIMIT}. */
   readonly threadLimit: number;
@@ -49,6 +51,7 @@ export interface DevSeedOptions {
   readonly seededAt: string;
 }
 
+/** What {@link seedDevDatabase} copied, for the CLI's summary output. */
 export interface DevSeedSummary {
   readonly projects: number;
   readonly threads: number;
@@ -65,6 +68,11 @@ export interface DevSeedSummary {
   readonly attachmentIds: ReadonlyArray<string>;
 }
 
+/**
+ * A seed that could not proceed. `hint` carries the actionable half — the
+ * underlying cause, or what to do about it — which the CLI prints on its own
+ * line beneath the message.
+ */
 export class DevSeedError extends Error {
   override readonly name = "DevSeedError";
   readonly hint: string | undefined;
@@ -311,6 +319,21 @@ function dropPendingTurnStarts(
     .run(...threadIds);
 }
 
+/**
+ * Replaces the target's projections with a recent slice of the source's.
+ *
+ * Destructive and not incremental: every projection table, the event log, and
+ * the command receipts are emptied first, inside one transaction that rolls
+ * back on any failure. Validation that can reject the whole run happens before
+ * that transaction opens, so a rejected seed leaves the target as it was.
+ *
+ * The caller must ensure no server is using the target — see the guard in
+ * scripts/dev-seed.ts. Returns counts plus the attachment ids whose files the
+ * caller still has to copy.
+ *
+ * @throws {DevSeedError} on bad limits, an unopenable database, or a source
+ * with no active threads.
+ */
 export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
   // Checked before anything is opened, and certainly before the target is
   // emptied: overrunning the ceiling mid-copy destroys the target's data and
