@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
-import { DevSeedError, seedDevDatabase } from "./dev-seed.ts";
+import { DevSeedError, MAX_SEED_THREAD_LIMIT, seedDevDatabase } from "./dev-seed.ts";
 
 const SEEDED_AT = "2026-07-26T00:00:00.000Z";
 
@@ -511,23 +511,22 @@ describe("seedDevDatabase", () => {
   });
 
   // Every statement keyed on thread ids must cost exactly one bound variable
-  // per thread: `--threads` is capped at SQLite's ceiling (32766), so a single
-  // extra binding makes the documented maximum fail — after the target has
-  // already been emptied. Runs the real seed, since the point is that no code
-  // path adds a binding, not that one hand-written statement doesn't.
+  // per thread: the limit *is* SQLite's ceiling, so a single extra binding
+  // makes the maximum fail — after the target has already been emptied. Runs
+  // the real seed, since the point is that no code path adds a binding, not
+  // that one hand-written statement doesn't.
   it("seeds at the maximum thread limit without exhausting SQL variables", () => {
-    const MAX_THREADS = 32_766;
     withDatabases(
       ({ source, target }) => {
         const summary = seedDevDatabase({
           sourceDbPath: source,
           targetDbPath: target,
-          threadLimit: MAX_THREADS,
+          threadLimit: MAX_SEED_THREAD_LIMIT,
           activityLimit: 1,
           seededAt: SEEDED_AT,
         });
 
-        assert.equal(summary.threads, MAX_THREADS);
+        assert.equal(summary.threads, MAX_SEED_THREAD_LIMIT);
         const [unsettled] = query<{ count: number }>(
           target,
           "SELECT COUNT(*) count FROM projection_turns WHERE state IN ('running','pending')",
@@ -536,8 +535,36 @@ describe("seedDevDatabase", () => {
       },
       // Threads only: the per-thread tables are what drive the binding count,
       // and skipping their rows keeps the fixture cheap to build.
-      { threads: MAX_THREADS, activities: 0, minimalRows: true },
+      { threads: MAX_SEED_THREAD_LIMIT, activities: 0, minimalRows: true },
     );
+  });
+
+  // A caller that bypasses the CLI flag would otherwise discover the ceiling
+  // only after the target had been emptied and the copy rolled back.
+  it("refuses a thread limit above the ceiling before touching the target", () => {
+    withDatabases(({ source, target }) => {
+      assert.throws(
+        () =>
+          seedDevDatabase({
+            sourceDbPath: source,
+            targetDbPath: target,
+            threadLimit: MAX_SEED_THREAD_LIMIT + 1,
+            activityLimit: 10,
+            seededAt: SEEDED_AT,
+          }),
+        DevSeedError,
+      );
+
+      // The target's own row is still there: nothing was deleted.
+      const projects = query<{ project_id: string }>(
+        target,
+        "SELECT project_id FROM projection_projects",
+      );
+      assert.deepStrictEqual(
+        projects.map((row) => row.project_id),
+        ["stale"],
+      );
+    });
   });
 
   it("reports a source with nothing to copy", () => {

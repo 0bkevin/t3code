@@ -17,13 +17,11 @@ import { Command, Flag } from "effect/unstable/cli";
 
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 
-import { DevSeedError, seedDevDatabase } from "./lib/dev-seed.ts";
+import { DevSeedError, MAX_SEED_THREAD_LIMIT, seedDevDatabase } from "./lib/dev-seed.ts";
 import { findRunningServerPid } from "./lib/server-runtime-probe.ts";
 
 const DEFAULT_THREAD_LIMIT = 25;
 const DEFAULT_ACTIVITY_LIMIT = 200;
-/** SQLite's default SQLITE_MAX_VARIABLE_NUMBER; one bound parameter per thread. */
-const MAX_THREAD_LIMIT = 32_766;
 
 class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
   "DevSeedTargetError",
@@ -140,16 +138,15 @@ const devSeedCli = Command.make("dev-seed", {
     Flag.map(Option.getOrUndefined),
   ),
   // Bounded below: SQLite reads a negative LIMIT as "no limit", which would
-  // quietly turn a capped copy into a full-table one. Bounded above because
-  // every selected thread becomes one bound parameter in the copy's `IN (...)`,
-  // and SQLite's compiled-in ceiling is 32766 — past it the seed dies with
-  // "too many SQL variables" after the target has already been emptied.
+  // quietly turn a capped copy into a full-table one. The upper bound comes
+  // from the seeder itself, which binds one variable per selected thread —
+  // stating it separately here is what previously let the two drift apart.
   threads: Flag.integer("threads").pipe(
     Flag.withSchema(
-      Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(MAX_THREAD_LIMIT)),
+      Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(MAX_SEED_THREAD_LIMIT)),
     ),
     Flag.withDescription(
-      `How many recent threads to copy (default ${String(DEFAULT_THREAD_LIMIT)}, max ${String(MAX_THREAD_LIMIT)}).`,
+      `How many recent threads to copy (default ${String(DEFAULT_THREAD_LIMIT)}, max ${String(MAX_SEED_THREAD_LIMIT)}).`,
     ),
     Flag.withDefault(DEFAULT_THREAD_LIMIT),
   ),

@@ -21,10 +21,23 @@ import * as NodeSqlite from "node:sqlite";
 
 import { PROJECTION_TABLES_IN_DEPENDENCY_ORDER, PROJECTOR_NAMES } from "./projection-tables.ts";
 
+/**
+ * The most threads one call can copy: SQLite's default
+ * SQLITE_MAX_VARIABLE_NUMBER, because the statements below bind one variable
+ * per selected thread.
+ *
+ * Exported so the CLI's `--threads` bound comes from the code that actually has
+ * to satisfy it. When the two were stated separately, a statement that bound
+ * two extra literals put the CLI's own documented maximum over the ceiling —
+ * and it failed after the target had been emptied. Anything added to those
+ * statements has to stay free of per-call bindings, or this has to come down.
+ */
+export const MAX_SEED_THREAD_LIMIT = 32_766;
+
 export interface DevSeedOptions {
   readonly sourceDbPath: string;
   readonly targetDbPath: string;
-  /** How many recent threads to copy. */
+  /** How many recent threads to copy. Capped at {@link MAX_SEED_THREAD_LIMIT}. */
   readonly threadLimit: number;
   /**
    * Newest activities kept per thread. The real table runs to six figures, and
@@ -266,6 +279,16 @@ function settleUnfinishedTurns(
 }
 
 export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
+  // Checked before anything is opened, and certainly before the target is
+  // emptied: overrunning the ceiling mid-copy destroys the target's data and
+  // rolls back without replacing it.
+  if (options.threadLimit > MAX_SEED_THREAD_LIMIT) {
+    throw new DevSeedError(
+      `cannot copy more than ${String(MAX_SEED_THREAD_LIMIT)} threads in one pass`,
+      "Each thread costs one SQLite bound variable, and that is the engine's limit.",
+    );
+  }
+
   let source: NodeSqlite.DatabaseSync;
   try {
     source = new NodeSqlite.DatabaseSync(options.sourceDbPath, { readOnly: true });
