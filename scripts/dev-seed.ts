@@ -40,7 +40,7 @@ class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
     switch (this.reason) {
       case "shared-home":
         return [
-          `Refusing to seed ${this.detail}: that is the shared T3 Code home.`,
+          `Refusing to seed ${this.detail}: that database lives in the shared T3 Code home.`,
           "This command overwrites projection tables. Run it from a worktree, or pass --to <base-dir>.",
         ].join("\n");
       case "missing-target":
@@ -231,24 +231,6 @@ const devSeedCli = Command.make("dev-seed", {
         return yield* new DevSeedTargetError({ reason: "not-a-worktree", detail: process.cwd() });
       }
 
-      // The whole point is to keep dev data off the real home; overwriting it
-      // here would be the exact accident this command exists to avoid.
-      const [canonicalTarget, canonicalSource, canonicalShared] = yield* Effect.all([
-        fileSystem.realPath(targetBaseDir).pipe(Effect.orElseSucceed(() => targetBaseDir)),
-        fileSystem.realPath(sourceBaseDir).pipe(Effect.orElseSucceed(() => sourceBaseDir)),
-        fileSystem.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
-      ]);
-      if (canonicalTarget === canonicalShared) {
-        return yield* new DevSeedTargetError({ reason: "shared-home", detail: targetBaseDir });
-      }
-      // Seeding a directory from itself is not the data loss it looks like —
-      // the source reads a pre-transaction snapshot, so the copy puts the rows
-      // back. What does not come back is the event log and the cursors, and
-      // anything outside the caps. Nobody means to ask for that.
-      if (canonicalTarget === canonicalSource) {
-        return yield* new DevSeedTargetError({ reason: "same-source", detail: targetBaseDir });
-      }
-
       const [sourceStateDir, targetStateDir] = yield* Effect.all([
         resolveStateDir(sourceBaseDir),
         resolveStateDir(targetBaseDir),
@@ -257,6 +239,30 @@ const devSeedCli = Command.make("dev-seed", {
       const targetDbPath = stateDbPath(path, targetBaseDir, targetStateDir);
       if (!(yield* fileSystem.exists(targetDbPath))) {
         return yield* new DevSeedTargetError({ reason: "missing-target", detail: targetDbPath });
+      }
+
+      // The whole point is to keep dev data off the real home; overwriting it
+      // here would be the exact accident this command exists to avoid.
+      //
+      // Guarded on the canonical *database* paths, not the base directories: a
+      // base can canonicalize to itself while its `userdata` or `dev`
+      // subdirectory is a symlink into the shared home, and comparing bases
+      // then waves through a seed whose actual write target is the real
+      // database. The db path is what gets opened, so it is what gets checked.
+      const [canonicalTargetDb, canonicalSourceDb, canonicalShared] = yield* Effect.all([
+        fileSystem.realPath(targetDbPath).pipe(Effect.orElseSucceed(() => targetDbPath)),
+        fileSystem.realPath(sourceDbPath).pipe(Effect.orElseSucceed(() => sourceDbPath)),
+        fileSystem.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
+      ]);
+      if (canonicalTargetDb.startsWith(`${canonicalShared}${path.sep}`)) {
+        return yield* new DevSeedTargetError({ reason: "shared-home", detail: canonicalTargetDb });
+      }
+      // Seeding a database from itself is not the data loss it looks like —
+      // the source reads a pre-transaction snapshot, so the copy puts the rows
+      // back. What does not come back is the event log and the cursors, and
+      // anything outside the caps. Nobody means to ask for that.
+      if (canonicalTargetDb === canonicalSourceDb) {
+        return yield* new DevSeedTargetError({ reason: "same-source", detail: canonicalTargetDb });
       }
 
       // SQLite locking is not enough on its own: the seed's transaction can take
