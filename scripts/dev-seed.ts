@@ -237,9 +237,6 @@ const devSeedCli = Command.make("dev-seed", {
       ]);
       const sourceDbPath = stateDbPath(path, sourceBaseDir, sourceStateDir);
       const targetDbPath = stateDbPath(path, targetBaseDir, targetStateDir);
-      if (!(yield* fileSystem.exists(targetDbPath))) {
-        return yield* new DevSeedTargetError({ reason: "missing-target", detail: targetDbPath });
-      }
 
       // The whole point is to keep dev data off the real home; overwriting it
       // here would be the exact accident this command exists to avoid.
@@ -248,10 +245,19 @@ const devSeedCli = Command.make("dev-seed", {
       // base can canonicalize to itself while its `userdata` or `dev`
       // subdirectory is a symlink into the shared home, and comparing bases
       // then waves through a seed whose actual write target is the real
-      // database. The db path is what gets opened, so it is what gets checked.
+      // database. The directory is canonicalized and the filename re-joined
+      // because the database may not exist yet — realPath fails on a missing
+      // final component, and falling back to the literal path would lose the
+      // symlink resolution in exactly the case where the next error's advice
+      // ("start the dev server") would create the database in the shared home.
+      const canonicalDbPath = (databasePath: string) =>
+        fileSystem.realPath(path.dirname(databasePath)).pipe(
+          Effect.map((directory) => path.join(directory, path.basename(databasePath))),
+          Effect.orElseSucceed(() => databasePath),
+        );
       const [canonicalTargetDb, canonicalSourceDb, canonicalShared] = yield* Effect.all([
-        fileSystem.realPath(targetDbPath).pipe(Effect.orElseSucceed(() => targetDbPath)),
-        fileSystem.realPath(sourceDbPath).pipe(Effect.orElseSucceed(() => sourceDbPath)),
+        canonicalDbPath(targetDbPath),
+        canonicalDbPath(sourceDbPath),
         fileSystem.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
       ]);
       if (canonicalTargetDb.startsWith(`${canonicalShared}${path.sep}`)) {
@@ -263,6 +269,13 @@ const devSeedCli = Command.make("dev-seed", {
       // anything outside the caps. Nobody means to ask for that.
       if (canonicalTargetDb === canonicalSourceDb) {
         return yield* new DevSeedTargetError({ reason: "same-source", detail: canonicalTargetDb });
+      }
+
+      // After the refusals: this error's advice is to start a dev server, which
+      // creates the database — the right next step everywhere the guards above
+      // did not already rule the target out.
+      if (!(yield* fileSystem.exists(targetDbPath))) {
+        return yield* new DevSeedTargetError({ reason: "missing-target", detail: targetDbPath });
       }
 
       // SQLite locking is not enough on its own: the seed's transaction can take
