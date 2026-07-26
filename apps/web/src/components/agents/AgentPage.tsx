@@ -135,7 +135,15 @@ function AgentSkillRow(props: {
               </Badge>
             )}
           </span>
-          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+          {/* Hard one-line clamp with an ellipsis. Descriptions are
+              agent-authored and unbounded — this one must never set the row's
+              width, so `w-full` pins it to the (already shrinkable) parent
+              rather than letting it size to its content. Full text is on the
+              title attribute and in the expanded body. */}
+          <span
+            className="mt-0.5 block w-full truncate text-xs text-muted-foreground"
+            title={description ?? skill.name}
+          >
             {description ?? skill.name}
           </span>
         </span>
@@ -534,7 +542,11 @@ export function AgentPage({ instanceId }: { readonly instanceId: ProviderInstanc
                   This agent did not report any skills.
                 </p>
               ) : (
-                <div className="grid gap-2">
+                // `min-w-0` on the grid AND its items: a grid item's default
+                // `min-width` is `auto`, so the list below sizes to its widest
+                // skill description and the `truncate` inside never engages —
+                // the row is already wider than the page by the time it applies.
+                <div className="grid min-w-0 gap-2 [&>*]:min-w-0">
                   <div className="relative">
                     <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
                     <Input
