@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -133,6 +134,28 @@ const pairingCreateCommand = Command.make("create", {
 );
 
 /**
+ * A git worktree's own `.t3`, or undefined outside one. Git marks a linked
+ * worktree by making `.git` a file (`gitdir: …`) rather than a directory —
+ * mirrors `resolveWorktreePath` in scripts/dev-runner.ts, which is what puts
+ * dev state there in the first place.
+ */
+export const resolveWorktreeBaseDir = Effect.fn("auth.resolveWorktreeBaseDir")(function* (
+  cwd: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const info = yield* fileSystem.stat(path.join(cwd, ".git")).pipe(Effect.option);
+  if (Option.isNone(info) || info.value.type !== "File") {
+    return undefined;
+  }
+  const baseDir = path.join(cwd, ".t3");
+  // Only claim it when the dev runner has actually created it; otherwise let
+  // the normal resolution report "no running server" against the real home.
+  const exists = yield* fileSystem.exists(baseDir).pipe(Effect.orElseSucceed(() => false));
+  return exists ? baseDir : undefined;
+});
+
+/**
  * The state directory is `<base>/dev` for an implicit dev home and
  * `<base>/userdata` otherwise — a split that depends on flags the caller of
  * this command should not have to reason about, and which silently mints
@@ -199,7 +222,16 @@ const pairingUrlCommand = Command.make("url", {
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const logLevel = yield* GlobalFlag.LogLevel;
-      const config = yield* resolveCliAuthConfig(flags, logLevel);
+      // Run from a worktree, this command means "the dev server I just started
+      // here" — which the dev runner puts in the worktree's own `.t3`. Falling
+      // through to the shared home would mint a credential into the database
+      // the user's installed T3 Code is running against.
+      const worktreeBaseDir = yield* resolveWorktreeBaseDir(process.cwd());
+      const resolvedFlags =
+        Option.isSome(flags.baseDir) || worktreeBaseDir === undefined
+          ? flags
+          : { ...flags, baseDir: Option.some(worktreeBaseDir) };
+      const config = yield* resolveCliAuthConfig(resolvedFlags, logLevel);
       const live = yield* findLiveServerRuntimeState(config);
 
       if (Option.isNone(live)) {

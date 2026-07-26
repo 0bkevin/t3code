@@ -25,6 +25,8 @@ actual values from the dev-runner line rather than assuming `5733`/`13773`, and
 re-read them after a restart; `node scripts/dev-runner.ts dev --dry-run` prints
 them without starting anything.
 
+Inside a worktree, the dev runner defaults to that worktree's own gitignored `.t3` rather than the shared `~/.t3` — including when `T3CODE_HOME` is exported in the environment, which would otherwise resolve to `~/.t3/userdata`: the live database the user's installed T3 Code is running against. Do not override that default to the shared home.
+
 Treat a base directory as disposable only when it was created or deliberately selected for the current test. Never delete or directly seed the shared `~/.t3` directory. Prefer starting with a new temporary base directory over clearing state of uncertain ownership.
 
 The dev runner disables browser auto-open by default. Do not pass `--browser` during automated testing: an automatically opened page can consume the one-time bootstrap token before the controlled browser uses it.

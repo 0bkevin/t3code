@@ -20,6 +20,7 @@
 - To let the user try a change on their own device, use `bun run dev:share`. It publishes the web port on the tailnet and logs a pairing URL already built against that origin — hand them that URL as-is. Details and troubleshooting live in the `test-t3-app` skill.
 - Dev is single-origin: Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` to the backend. Do not set `VITE_HTTP_URL`/`VITE_WS_URL` for `dev`/`dev:web` — they compile absolute localhost URLs into the bundle and break every non-localhost origin.
 - Need a pairing URL for a server that is already running? `bun run dev:pair`. It finds the server itself; no ports or flags to get wrong.
+- In a worktree, dev state goes to that worktree's own gitignored `.t3` — never the shared `~/.t3` the user's installed app runs against. Do not point a dev server at `~/.t3`, and do not "fix" an ambient `T3CODE_HOME` by passing it through.
 
 ## Package Roles
 

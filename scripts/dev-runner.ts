@@ -237,6 +237,24 @@ export function resolveWorktreePath(
   });
 }
 
+/**
+ * The data directory a worktree's dev server should use: its own gitignored
+ * `.t3`, keeping feature work off the shared `~/.t3` that the installed app
+ * runs against. `undefined` for the main checkout, which keeps the documented
+ * `~/.t3/dev` behaviour.
+ */
+export function resolveWorktreeHome(
+  worktreePath: string | undefined,
+): Effect.Effect<string | undefined, never, Path.Path> {
+  return Effect.gen(function* () {
+    if (worktreePath === undefined) {
+      return undefined;
+    }
+    const path = yield* Path.Path;
+    return path.join(worktreePath, ".t3");
+  });
+}
+
 function resolveBaseDir(baseDir: string | undefined): Effect.Effect<string, never, Path.Path> {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -543,10 +561,12 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       ),
     );
 
+    const worktreePath = yield* resolveWorktreePath(process.cwd());
+
     const { offset, source } = yield* resolveOffset({
       portOffset,
       devInstance,
-      worktreePath: yield* resolveWorktreePath(process.cwd()),
+      worktreePath,
     });
 
     const { serverOffset, webOffset } = yield* resolveModePortOffsets({
@@ -557,12 +577,22 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
     });
 
     const hostEnvironment = yield* HostProcessEnvironment;
+    // A dev server started inside a worktree defaults to that worktree's own
+    // (gitignored) `.t3`. Otherwise it lands on the shared `~/.t3`, and because
+    // an ambient `T3CODE_HOME` counts as an *explicit* base dir, the state
+    // directory flips from `<base>/dev` to `<base>/userdata` — the real
+    // database the user's installed T3 Code is running against. Feature work in
+    // a throwaway branch has no business writing there, so the worktree default
+    // deliberately outranks the ambient env var. `--home-dir` still wins.
+    const worktreeHome = yield* resolveWorktreeHome(worktreePath);
+    const resolvedT3Home =
+      input.t3Home ?? worktreeHome ?? hostEnvironment.T3CODE_HOME?.trim() ?? undefined;
     const env = yield* createDevRunnerEnv({
       mode: input.mode,
       baseEnv: hostEnvironment,
       serverOffset,
       webOffset,
-      t3Home: input.t3Home,
+      t3Home: resolvedT3Home,
       browser: input.browser,
       autoBootstrapProjectFromCwd: input.autoBootstrapProjectFromCwd,
       logWebSocketEvents: input.logWebSocketEvents,
@@ -709,9 +739,10 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   t3Home: Flag.string("home-dir").pipe(
     Flag.withDescription(
-      "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME).",
+      "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME). Inside a git worktree this defaults to that worktree's own .t3 so dev state stays off the shared home.",
     ),
-    Flag.withFallbackConfig(optionalStringConfig("T3CODE_HOME")),
+    Flag.optional,
+    Flag.map(Option.getOrUndefined),
   ),
   browser: Flag.boolean("browser").pipe(
     Flag.withDescription("Open a browser automatically (disabled by default for web dev)."),
