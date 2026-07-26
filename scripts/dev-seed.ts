@@ -81,18 +81,40 @@ class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
  * the seed reported "no database, start the dev server so migrations run" about
  * a server that was already running.
  *
- * Whichever one exists wins; `userdata` breaks the tie, since that is what an
- * explicit `--home-dir` produces.
+ * When both exist, neither is categorically right — a worktree run gets
+ * `userdata` (the dev runner passes an explicit home), a main-checkout run gets
+ * `dev` — so the tie goes to whichever was written most recently, i.e. the one
+ * the last server to run actually opened. The chosen path is printed, so a
+ * wrong guess is visible rather than silent.
  */
 const resolveStateDir = Effect.fn("devSeed.resolveStateDir")(function* (baseDir: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+
+  const candidates: Array<{ readonly stateDir: string; readonly modifiedAtMs: number }> = [];
   for (const stateDir of ["userdata", "dev"] as const) {
-    if (yield* fileSystem.exists(path.join(baseDir, stateDir, "state.sqlite"))) {
-      return stateDir;
+    const info = yield* fileSystem
+      .stat(path.join(baseDir, stateDir, "state.sqlite"))
+      .pipe(Effect.option);
+    if (Option.isSome(info)) {
+      candidates.push({
+        stateDir,
+        modifiedAtMs: Option.match(info.value.mtime, {
+          onSome: (mtime) => mtime.getTime(),
+          onNone: () => 0,
+        }),
+      });
     }
   }
-  return "userdata";
+
+  // `userdata` first above, so an equal or missing mtime keeps the old default.
+  return (
+    candidates.reduce<{ readonly stateDir: string; readonly modifiedAtMs: number } | undefined>(
+      (best, candidate) =>
+        best === undefined || candidate.modifiedAtMs > best.modifiedAtMs ? candidate : best,
+      undefined,
+    )?.stateDir ?? "userdata"
+  );
 });
 
 const stateDbPath = (path: Path.Path, baseDir: string, stateDir: string) =>
