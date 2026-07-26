@@ -263,9 +263,15 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.adapter.messages[-1].text, "Hello Hermes")
         await self.adapter.send("thread-1", "Hello", metadata={"expect_edits": True})
+        # `finalize` must NOT complete the turn — the gateway's progress loop
+        # sets it on every progress edit. Only a `notify=True` send does.
         await self.adapter.edit_message(
             "thread-1", "message", "Hello world", finalize=True
         )
+        self.assertNotIn(
+            "turn.completed", [m["type"] for m in self.connection.messages]
+        )
+        await self.adapter.send("thread-1", "Hello world", metadata={"notify": True})
         types_seen = [message["type"] for message in self.connection.messages]
         self.assertIn("content.delta", types_seen)
         self.assertIn("turn.completed", types_seen)
@@ -275,6 +281,136 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             if message["type"] == "content.delta"
         ]
         self.assertEqual(deltas, ["Hello", " world"])
+
+    async def test_tool_progress_bubble_edits_never_complete_the_turn(self):
+        """Regression: the gateway's progress loop must not end a T3 turn.
+
+        This is the defect this plugin shipped with. Declaring
+        ``REQUIRES_EDIT_FINALIZE = True`` makes the gateway's tool-progress
+        loop pass ``finalize=True`` on EVERY progress-bubble edit
+        (``gateway/run.py:20777-20780`` at upstream 62e07223) — it is a
+        presentation hint for rich-card surfaces, not a turn boundary.
+        Treating it as "turn finished" closed the T3 turn on the first tool
+        call; every later send then failed with "no active T3 turn" and the
+        real answer never reached the transcript. The turn ends on exactly one
+        signal: ``notify=True`` metadata on ``send``, which the gateway applies
+        via ``_mark_notify_metadata`` (``gateway/platforms/base.py:89``) only
+        for genuine user-visible replies.
+        """
+        # Declaring the flag is what arms the gateway's finalize-on-every-edit
+        # branch, so the declaration itself is part of the contract under test.
+        # It is NOT sufficient on its own: the stream consumer also passes
+        # finalize=True on every mid-turn segment break regardless of the flag
+        # (`gateway/stream_consumer.py:938-940`), which is why `edit_message`
+        # must ignore `finalize` outright — see the segment-break leg below.
+        self.assertFalse(self.adapter.REQUIRES_EDIT_FINALIZE)
+
+        await self._start_turn("thread-progress", "turn-progress")
+        turn = self.adapter._active_turns["thread-progress"]
+        progress_start = len(self.connection.messages)
+
+        # Progress metadata is thread/routing metadata only; the progress loop
+        # never marks it notify-worthy (verified: zero _mark_notify_metadata
+        # calls in gateway/run.py:20700-20960).
+        progress_metadata = {"thread_id": "thread-progress"}
+
+        async def edit_progress_message(message_id: str, content: str):
+            """Mirror of the gateway's `_edit_progress_message` closure."""
+            kwargs = {
+                "chat_id": "thread-progress",
+                "message_id": message_id,
+                "content": content,
+            }
+            if getattr(self.adapter, "REQUIRES_EDIT_FINALIZE", False):
+                kwargs["finalize"] = True
+            kwargs["metadata"] = progress_metadata
+            return await self.adapter.edit_message(**kwargs)
+
+        # First progress bubble is a plain send, never notify-marked.
+        first = await self.adapter.send(
+            "thread-progress",
+            "📚 Reading skill hermes-agent",
+            reply_to=None,
+            metadata=progress_metadata,
+        )
+        self.assertTrue(first.success)
+        self.assertIn("thread-progress", self.adapter._active_turns)
+
+        # Then the loop edits that one bubble once per tool event.
+        progress_lines = ["📚 Reading skill hermes-agent"]
+        for line in (
+            "🔍 Searching the web for hermes gateway",
+            "📖 Reading file gateway/run.py",
+            "🛠️ Running tests",
+        ):
+            progress_lines.append(line)
+            result = await edit_progress_message(
+                first.message_id, "\n".join(progress_lines)
+            )
+            self.assertTrue(result.success)
+            # Every single edit must leave the turn running.
+            self.assertIn("thread-progress", self.adapter._active_turns)
+            self.assertIs(self.adapter._active_turns["thread-progress"], turn)
+
+        self.assertNotIn(
+            "turn.completed",
+            [message["type"] for message in self.connection.messages],
+        )
+
+        # Second, flag-independent leg: the stream consumer finalizes the
+        # current content message at every tool/segment boundary
+        # (`gateway/stream_consumer.py:938-940` passes
+        # `finalize=(got_done or got_segment_break)`), and it does so whether
+        # or not the adapter declares REQUIRES_EDIT_FINALIZE. A mid-turn
+        # segment break is not a turn boundary either.
+        for partial in ("Let me check the docs.", "Let me check the docs. Found it."):
+            segment = await self.adapter.edit_message(
+                "thread-progress",
+                first.message_id,
+                partial,
+                finalize=True,
+                metadata=progress_metadata,
+            )
+            self.assertTrue(segment.success)
+            self.assertIn("thread-progress", self.adapter._active_turns)
+        self.assertNotIn(
+            "turn.completed",
+            [message["type"] for message in self.connection.messages],
+        )
+
+        # Now the real answer arrives as the gateway's notify-marked final
+        # send. That — and only that — closes the turn, exactly once.
+        answer = await self.adapter.send(
+            "thread-progress",
+            "\n".join(progress_lines) + "\nHere is the real answer.",
+            metadata={"notify": True},
+        )
+        self.assertTrue(answer.success)
+        self.assertNotIn("thread-progress", self.adapter._active_turns)
+        self.assertEqual(
+            [
+                message["type"]
+                for message in self.connection.messages[progress_start:]
+                if message["type"] == "turn.completed"
+            ],
+            ["turn.completed"],
+        )
+
+        # A late finalize edit after completion cannot resurrect or re-close
+        # the turn; it fails closed with the "no active turn" result.
+        late = await edit_progress_message(first.message_id, "late progress")
+        self.assertFalse(late.success)
+        self.assertEqual(late.error, "no active T3 turn")
+        self.assertEqual(
+            len(
+                [
+                    message
+                    for message in self.connection.messages
+                    if message["type"] == "turn.completed"
+                ]
+            ),
+            1,
+        )
 
     async def test_cumulative_edits_emit_delta_snapshot_delta_then_finalize(self):
         await self._start_turn("thread-snapshot", "turn-snapshot")
@@ -296,6 +432,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "Helpful",
             finalize=True,
         )
+        # `finalize` is inert; the notify send is what closes the turn.
+        await self.adapter.send("thread-snapshot", "Helpful", metadata={"notify": True})
 
         content_frames = self.connection.messages[content_start:]
         self.assertEqual(
@@ -334,6 +472,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "",
             finalize=True,
         )
+        await self.adapter.send("thread-empty", "", metadata={"notify": True})
 
         content_frames = self.connection.messages[content_start:]
         self.assertEqual(
@@ -587,6 +726,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "The actual Hermes response",
             finalize=True,
         )
+        await self.adapter.send(
+            "thread-notice",
+            "The actual Hermes response",
+            metadata={"notify": True},
+        )
         content_frames = self.connection.messages[content_start:]
         self.assertEqual(
             [message["type"] for message in content_frames],
@@ -626,7 +770,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             ["turn.completed", "connection.status"],
         )
 
-    async def test_terminal_edit_suppresses_exact_home_notice_and_completes_turn(self):
+    async def test_edit_of_exact_home_notice_is_suppressed_without_completing(self):
         await self._start_turn("thread-terminal-notice-edit", "turn-terminal-notice-edit")
         content_start = len(self.connection.messages)
         notice = (
@@ -644,14 +788,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(suppressed.success)
-        self.assertNotIn("thread-terminal-notice-edit", self.adapter._active_turns)
-        self.assertEqual(
-            [
-                message["type"]
-                for message in self.connection.messages[content_start:]
-            ],
-            ["turn.completed", "connection.status"],
-        )
+        # The notice is still swallowed, but an edit — even a `finalize` one —
+        # no longer ends the turn: the progress loop sets `finalize` on every
+        # progress bubble, so acting on it truncated real turns.
+        self.assertIn("thread-terminal-notice-edit", self.adapter._active_turns)
+        self.assertEqual(self.connection.messages[content_start:], [])
 
     async def test_near_match_home_channel_text_is_not_suppressed(self):
         await self._start_turn("thread-notice-near-match", "turn-notice-near-match")
@@ -668,6 +809,9 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             ),
             finalize=True,
         )
+        await self.adapter.send(
+            "thread-notice-near-match", "done", metadata={"notify": True}
+        )
         self.assertEqual(
             [
                 message["type"]
@@ -676,6 +820,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             [
                 "item.started",
                 "content.delta",
+                "content.snapshot",
                 "item.completed",
                 "turn.completed",
                 "connection.status",
@@ -749,6 +894,9 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steer_messages[0]["requestId"], "steer-2")
         self.assertIn("thread-2", self.adapter._active_turns)
 
+        # A post-steer edit streams the real answer. `finalize` is inert — the
+        # gateway sets it on every tool-progress edit — so the turn must stay
+        # open until the notify-marked final send arrives.
         await self.adapter.edit_message(
             "thread-2",
             "message",
@@ -761,7 +909,25 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             if message["type"] == "content.delta"
         ]
         self.assertEqual(deltas, ["Actual response after steering"])
+        self.assertIn("thread-2", self.adapter._active_turns)
+        self.assertNotIn(
+            "turn.completed", [m["type"] for m in self.connection.messages]
+        )
+
+        await self.adapter.send(
+            "thread-2",
+            "Actual response after steering",
+            metadata={"notify": True},
+        )
         self.assertNotIn("thread-2", self.adapter._active_turns)
+        self.assertEqual(
+            [
+                message["type"]
+                for message in self.connection.messages
+                if message["type"] == "turn.completed"
+            ],
+            ["turn.completed"],
+        )
 
     async def test_assistant_output_during_a_steer_is_not_captured_as_control(self):
         session_id = await self._start_turn("thread-steer-race", "turn-steer-race")
@@ -886,6 +1052,9 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
+        # The core invariant: rejecting a steer reports an error and leaves the
+        # running turn untouched. The rejection must emit exactly the error —
+        # no turn lifecycle frame of any kind.
         steer_messages = self.connection.messages[messages_before_steer:]
         self.assertEqual(
             [message["type"] for message in steer_messages], ["protocol.error"]
@@ -894,11 +1063,25 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steer_messages[0]["code"], "invalid-message")
         self.assertIn("thread-rejected-steer", self.adapter._active_turns)
 
+        # The still-active turn keeps streaming. `finalize` on an edit is inert
+        # (the gateway sets it on every progress bubble), so the turn survives.
         await self.adapter.edit_message(
             "thread-rejected-steer",
             "message",
             "Actual response after rejected steering",
             finalize=True,
+        )
+        self.assertEqual(self.connection.messages[-1]["type"], "content.delta")
+        self.assertIn("thread-rejected-steer", self.adapter._active_turns)
+        self.assertNotIn(
+            "turn.completed", [m["type"] for m in self.connection.messages]
+        )
+
+        # Only the notify-marked final send ends it.
+        await self.adapter.send(
+            "thread-rejected-steer",
+            "Actual response after rejected steering",
+            metadata={"notify": True},
         )
         self.assertEqual(self.connection.messages[-1]["type"], "connection.status")
         self.assertNotIn("thread-rejected-steer", self.adapter._active_turns)
@@ -1179,13 +1362,18 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_tool_progress_chrome_is_dropped(self):
-        """Tool chrome must never reach T3 as a user-visible reply.
+        """Tool chrome is redundant with T3's typed activity items.
 
-        The gateway marks user-visible replies `notify=True`, and `send()`
-        treats `notify` as "turn finished". Rendering tool chrome therefore
-        ended the T3 turn on the first tool call, and everything Hermes did
-        afterwards failed with "no active T3 turn". T3 already renders tool
-        calls as typed activity items, so the text is redundant regardless.
+        T3 already renders tool calls as typed `item.started` /
+        `item.completed` activity from the `pre_tool_call` / `post_tool_call`
+        hooks, so a text line duplicating them is strictly worse.
+
+        NOTE: this override is NOT what protects the turn. At Hermes 62e07223
+        it is not even on the live path — its only caller,
+        `GatewayEventDispatcher` (`gateway/stream_dispatch.py:108`), is
+        referenced solely by upstream tests. The turn is protected by ignoring
+        `finalize` in `edit_message`; see
+        `test_tool_progress_bubble_edits_never_complete_the_turn`.
         """
 
         class _ToolCallChunk:
@@ -1198,6 +1386,125 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(
                     self.adapter.format_tool_event(_ToolCallChunk(), mode=mode)
                 )
+
+    async def test_tool_hooks_resolve_the_turn_from_the_gateway_session_key(self):
+        """Tool hooks carry Hermes' run id, not this plugin's session id.
+
+        `agent.session_id` (`agent/tool_executor.py:188`) is a timestamped run
+        id like `20260725_143012_ab12cd34` (`gateway/session.py:2388`), while
+        this plugin's session ids come from `build_session_key`
+        (`agent:main:t3:dm:<thread>`). Keying `_thread_by_session` on the hook's
+        value alone therefore never matches and silently drops every tool
+        activity item. The gateway's stable routing key is available from
+        `HERMES_SESSION_KEY` (`gateway/run.py:17367`), which IS the
+        build_session_key value.
+        """
+        self.adapter._event_loop = asyncio.get_running_loop()
+        session_id = await self._start_turn("thread-tools", "turn-tools")
+        frames_before = len(self.connection.messages)
+
+        # What Hermes actually passes: an unrelated run id.
+        hermes_run_id = "20260725_143012_ab12cd34"
+        self.assertNotIn(hermes_run_id, self.adapter._thread_by_session)
+
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: session_id),
+        ):
+            self.adapter.emit_tool_started(
+                hermes_run_id, "web_search", {"query": "hermes"}, "call-1"
+            )
+            self.adapter.emit_tool_completed(
+                hermes_run_id, "web_search", "result", 42, "call-1"
+            )
+        await asyncio.sleep(0)
+
+        tool_frames = self.connection.messages[frames_before:]
+        self.assertEqual(
+            [message["type"] for message in tool_frames],
+            ["item.started", "item.completed"],
+        )
+        # Both halves must correlate onto ONE activity item, or T3 renders a
+        # started row that never resolves plus an orphan completion.
+        self.assertEqual(tool_frames[0]["itemId"], tool_frames[1]["itemId"])
+        self.assertEqual(tool_frames[0]["title"], "web_search")
+        self.assertEqual(tool_frames[1]["status"], "completed")
+        self.assertEqual(tool_frames[0]["threadId"], "thread-tools")
+        self.assertEqual(tool_frames[0]["sessionId"], session_id)
+
+    async def test_tool_hooks_fall_back_to_the_sole_active_turn(self):
+        """With exactly one active turn there is no ambiguity to resolve."""
+        self.adapter._event_loop = asyncio.get_running_loop()
+        await self._start_turn("thread-only", "turn-only")
+        frames_before = len(self.connection.messages)
+
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: ""),
+        ):
+            self.adapter.emit_tool_started(
+                "20260725_143012_ab12cd34", "read_file", {"path": "a.py"}, "call-2"
+            )
+        await asyncio.sleep(0)
+
+        tool_frames = self.connection.messages[frames_before:]
+        self.assertEqual([m["type"] for m in tool_frames], ["item.started"])
+        self.assertEqual(tool_frames[0]["threadId"], "thread-only")
+
+    async def test_tool_hooks_drop_when_the_turn_is_ambiguous(self):
+        """Two concurrent turns and no routing key: emit nothing.
+
+        Guessing would attach one thread's tool activity to another's
+        transcript. Tool activity is decorative, so dropping is correct.
+        """
+        self.adapter._event_loop = asyncio.get_running_loop()
+        await self._start_turn("thread-a", "turn-a")
+        await self._start_turn("thread-b", "turn-b")
+        frames_before = len(self.connection.messages)
+
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: ""),
+        ):
+            self.adapter.emit_tool_started(
+                "20260725_143012_ab12cd34", "read_file", {"path": "a.py"}, "call-3"
+            )
+            self.adapter.emit_tool_completed(
+                "20260725_143012_ab12cd34", "read_file", "ok", 5, "call-3"
+            )
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.connection.messages[frames_before:], [])
+
+    async def test_tool_hook_session_key_lookup_never_raises(self):
+        """An unavailable Hermes session context must degrade, not raise."""
+        self.adapter._event_loop = asyncio.get_running_loop()
+        await self._start_turn("thread-ctx-a", "turn-ctx-a")
+        await self._start_turn("thread-ctx-b", "turn-ctx-b")
+        frames_before = len(self.connection.messages)
+
+        def _boom():
+            raise RuntimeError("no session context bound")
+
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(_boom),
+        ):
+            with self.assertRaises(RuntimeError):
+                adapter_module.T3PlatformAdapter._gateway_session_key()
+
+        # The real accessor swallows its own failures rather than propagating.
+        with unittest.mock.patch.dict(sys.modules, {"gateway.session_context": None}):
+            self.assertEqual(self.adapter._gateway_session_key(), "")
+            self.adapter.emit_tool_started(
+                "20260725_143012_ab12cd34", "read_file", {"path": "a.py"}, "call-4"
+            )
+        await asyncio.sleep(0)
+        self.assertEqual(self.connection.messages[frames_before:], [])
 
 
 if __name__ == "__main__":

@@ -174,8 +174,8 @@ import {
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderDisplayName,
+  getProviderInstanceInteractionModeToggle,
   getProviderInstanceRequiresWorkspace,
-  getProviderInteractionModeToggle,
 } from "../../providerModels";
 import {
   applyProviderInstanceSettings,
@@ -945,22 +945,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
+  // Both flags resolve per instance, not per driver kind: the composer already
+  // knows the exact instance the next turn routes to, and providers whose
+  // instances are always user-authored (Hermes) have no default instance for a
+  // kind-keyed lookup to find.
   const composerProviderControls = useMemo(
     () => ({
-      showInteractionModeToggle: getProviderInteractionModeToggle(
+      showInteractionModeToggle: getProviderInstanceInteractionModeToggle(
         providerStatuses,
-        selectedProvider,
+        selectedInstanceId,
       ),
-      // Resolved per instance, not per driver kind: the composer already
-      // knows the exact instance the next turn routes to, and providers
-      // whose instances are always user-authored (Hermes) have no default
-      // instance for a kind-keyed lookup to find.
       showRuntimeModeSelector: getProviderInstanceRequiresWorkspace(
         providerStatuses,
         selectedInstanceId,
       ),
     }),
-    [providerStatuses, selectedInstanceId, selectedProvider],
+    [providerStatuses, selectedInstanceId],
   );
   // Only providers with no workspace get an agent button; for everyone else
   // this stays null and the Build toggle keeps the slot.
@@ -1107,14 +1107,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }));
     }
     if (composerTrigger.kind === "slash-command") {
-      const builtInSlashCommandItems = [
-        {
-          id: "slash:model",
-          type: "slash-command",
-          command: "model",
-          label: "/model",
-          description: "Switch response model for this thread",
-        },
+      const interactionModeSlashCommandItems = [
         {
           id: "slash:plan",
           type: "slash-command",
@@ -1129,6 +1122,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: "/default",
           description: "Switch this thread back to normal build mode",
         },
+      ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
+      const builtInSlashCommandItems = [
+        {
+          id: "slash:model",
+          type: "slash-command",
+          command: "model",
+          label: "/model",
+          description: "Switch response model for this thread",
+        },
+        // Hidden for providers that opt out of the Build/Plan toggle — the
+        // standalone `/plan` message form is skipped for them too, so the
+        // command cannot silently swallow a message with no visible effect.
+        ...(composerProviderControls.showInteractionModeToggle
+          ? interactionModeSlashCommandItems
+          : []),
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
       const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
         (command) => ({
@@ -1163,7 +1171,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
     }
     return [];
-  }, [composerTrigger, selectedProvider, selectedProviderStatus, workspaceEntries.entries]);
+  }, [
+    composerProviderControls.showInteractionModeToggle,
+    composerTrigger,
+    selectedProvider,
+    selectedProviderStatus,
+    workspaceEntries.entries,
+  ]);
 
   const composerMenuOpen = Boolean(composerTrigger);
   const composerMenuSearchKey = composerTrigger
@@ -1907,7 +1921,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
     event: KeyboardEvent,
   ) => {
-    if (key === "Tab" && event.shiftKey) {
+    // Providers that opt out of the Build/Plan toggle must not be reachable
+    // through the shortcut either; fall through to normal Tab handling.
+    if (key === "Tab" && event.shiftKey && composerProviderControls.showInteractionModeToggle) {
       toggleInteractionMode();
       return true;
     }

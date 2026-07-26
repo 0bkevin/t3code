@@ -15,6 +15,19 @@ Audited surfaces, all present at that commit:
 | `resolve_gateway_approval`               | `tools/approval.py:2073`             |
 | `resolve_gateway_clarify`                | `tools/clarify_gateway.py:160`       |
 | `register_platform` (`**entry_kwargs`)   | `hermes_cli/plugins.py:931`          |
+| `_mark_notify_metadata` (`notify` flag)  | `gateway/platforms/base.py:89`       |
+| Tool-hook `session_id` (= run id)        | `agent/tool_executor.py:188`         |
+| Run-id generation                        | `gateway/session.py:2388`            |
+| `HERMES_SESSION_KEY` binding             | `gateway/run.py:17367`               |
+| `get_session_env` accessor               | `gateway/session_context.py:303`     |
+| Tool-thread context propagation          | `agent/tool_executor.py:715`         |
+| Final-delivery `notify` stamp            | `gateway/platforms/base.py:5220`     |
+| Streaming final `notify` stamp           | `gateway/stream_consumer.py:328`     |
+| `REQUIRES_EDIT_FINALIZE` declaration     | `gateway/platforms/base.py:3128`     |
+| Progress-loop `finalize` injection       | `gateway/run.py:20777`               |
+| Segment-break `finalize` (flag-agnostic) | `gateway/stream_consumer.py:938`     |
+| Live tool-chrome delivery path           | `gateway/run.py:20485`               |
+| `tool_progress` display resolution       | `gateway/display_config.py:187`      |
 | `format_tool_event` (override hook)      | `gateway/platforms/base.py:2740`     |
 | Tool-chrome dispatch (`None` == eat)     | `gateway/stream_dispatch.py:108`     |
 | `/steer` active-run handler              | `gateway/run.py:11280`               |
@@ -73,13 +86,43 @@ older server/plugin pairs are rejected during the handshake.
   and raw results never cross the wire.
 - `post_tool_call` passes `result` as `Any`, not a guaranteed `str` — the
   adapter never forwards it, so the looser type is inert here.
+- **The tool hooks' `session_id` is not this plugin's session id.** Hermes
+  passes `agent.session_id` (`agent/tool_executor.py:188`, `:305`, `:341`),
+  which the gateway sets from `SessionEntry.session_id` — a timestamped run id
+  like `20260725_143012_ab12cd34` (`gateway/session.py:2388`,
+  `agent/agent_init.py:1446-1453`). This plugin's session ids come from
+  `build_session_key` (`gateway/session.py:1029`) and are shaped
+  `agent:main:t3:dm:<thread>`. The two namespaces never intersect, so keying
+  the thread lookup on the hook's value alone matched nothing and silently
+  dropped every tool activity item. This is the same class of defect as the
+  `finalize` bug — keying behaviour off a Hermes-supplied value whose meaning
+  was assumed rather than verified. `_turn_for_tool_hook` now resolves in three
+  steps: the raw `session_id` as a routing key (free, and correct if upstream
+  ever passes the gateway key here), then `HERMES_SESSION_KEY` from Hermes'
+  session context (`gateway/run.py:17367` →
+  `gateway/session_context.py:200`, read via `get_session_env` at `:303`),
+  which IS the `build_session_key` value and is propagated into the tool worker
+  threads by `propagate_context_to_thread` (`agent/tool_executor.py:715`), then
+  the sole active turn when exactly one exists. With two or more concurrent
+  turns and no routing key it emits nothing rather than misattributing activity
+  to the wrong thread. Every step is best-effort and cannot raise: tool
+  activity is decorative and must never break a turn.
+
+  Regression shape if upstream changes: if `HERMES_SESSION_KEY` stops being
+  bound or stops propagating into tool threads, a **multi-thread** Hermes loses
+  tool activity rows (single-thread still works via the sole-turn fallback).
+  Turn lifecycle is unaffected either way — tool items are decorative.
+
 - Approval resolution is session-FIFO in Hermes. T3 request IDs identify the UI
   prompt, then resolve the oldest matching Hermes approval for that session.
 - The public `clarify` hook is a single question. The wire protocol supports an
   array so richer structured input can be added without a protocol break.
 - Hermes session completion has no dedicated platform-adapter callback. The
-  plugin uses the stream consumer's required `finalize=True` edit as the
-  authoritative completion boundary.
+  plugin uses `notify=True` metadata on `send` as the authoritative completion
+  boundary (`_mark_notify_metadata`, `gateway/platforms/base.py:89`). It
+  explicitly does **not** use `finalize=True` on `edit_message`, which upstream
+  sets on every mid-turn tool-progress edit and every stream segment break —
+  see "Turn completion is keyed off `notify`, never `finalize`" below.
 - Active `/steer` dispatch returns a textual Hermes control acknowledgement
   through the normal platform `send(..., notify=True)` path
   (`gateway/platforms/base.py:4926`). The plugin captures that response in the
@@ -154,27 +197,93 @@ older server/plugin pairs are rejected during the handshake.
 - Attachments are not accepted. They are the first planned post-stability
   feature; the capability is reserved and fixed to `false` in protocol v2.
 
-## Tool-progress chrome is dropped, not rendered
+## Turn completion is keyed off `notify`, never `finalize`
 
-`BasePlatformAdapter.format_tool_event` renders each tool call as an emoji
-progress line ("📚 skill_view: …") and the gateway delivers it through the
-ordinary reply path. The plugin overrides it to return `None`, which
-`gateway/stream_dispatch.py:108` documents as "adapter chose to eat this event".
+**A previous revision of this document blamed `format_tool_event` for the
+early-turn-truncation bug. That diagnosis was wrong.** It is corrected here;
+the real cause and the real completion signal are documented below.
 
-Two reasons, the second severe:
+### The signal that ends a turn: `notify=True` on `send`
 
-1. T3 already renders tool calls as typed `item.started` / `item.completed`
-   activity from the `pre_tool_call` / `post_tool_call` hooks. The text line is
-   a strictly poorer duplicate of a surface T3 already has.
-2. The gateway marks user-visible replies `notify=True`
-   (`_mark_notify_metadata`, `gateway/platforms/base.py:89`), and this plugin's
-   `send()` treats `notify` as "this turn is finished" — it calls
-   `_complete_turn`. So the **first tool call ended the T3 turn while Hermes was
-   still working**: the transcript kept the progress chrome as the assistant's
-   entire answer, and every subsequent send failed with "no active T3 turn"
-   (visible in the gateway log as `Send failed: no active T3 turn — trying
-plain-text fallback`). The real answer never arrived.
+`_mark_notify_metadata` (`gateway/platforms/base.py:89`) stamps `notify: True`
+onto the metadata of a send, and the gateway applies it **only** for genuine
+user-visible replies:
 
-If a future Hermes stops routing tool chrome through `format_tool_event`, this
-regresses silently and in exactly that shape: turns that end early, at the first
-tool call, with progress text as the answer.
+- the final response delivery (`gateway/platforms/base.py:5220`, consumed at
+  `:5261`, `:5330`, `:5376`, `:5418`, `:5433`-`:5469`),
+- slash-command acknowledgements (`:4827`, `:4934`, `:4987`),
+- and, in the streaming path, `StreamConsumer._metadata_for_send(final=True)`
+  (`gateway/stream_consumer.py:328-329`).
+
+`send(..., metadata={"notify": True})` is therefore the plugin's completion
+boundary, and `_complete_turn` is reached from nowhere else on the output path.
+
+### The signal that does NOT end a turn: `finalize=True` on `edit_message`
+
+`finalize` reads like "last edit of the response", and the base class documents
+it that way (`gateway/platforms/base.py:3178-3186`). It is **not** a turn
+boundary. Two upstream paths set it mid-turn:
+
+1. **The tool-progress loop.** When an adapter declares
+   `REQUIRES_EDIT_FINALIZE`, `_edit_progress_message` passes `finalize=True` on
+   **every** progress-bubble edit (`gateway/run.py:20777-20780`) — once per tool
+   event, for the whole turn. Nothing about that edit is final.
+2. **The stream consumer's segment breaks.** `_send_or_edit` is called with
+   `finalize=(got_done or got_segment_break)`
+   (`gateway/stream_consumer.py:938-940`), so every mid-turn tool/segment
+   boundary finalizes the current content message. This path is
+   **independent of `REQUIRES_EDIT_FINALIZE`** — setting the flag to `False`
+   does not suppress it.
+
+This plugin previously declared `REQUIRES_EDIT_FINALIZE = True` and treated
+`finalize=True` in `edit_message` as "turn finished", calling `_complete_turn`.
+Consequently the **first tool call ended the T3 turn while Hermes was still
+working**: the transcript kept the progress chrome ("📚 Reading skill
+hermes-agent 🔍 Searching the web for …") as the assistant's entire answer, and
+every subsequent send failed with `Send failed: no active T3 turn — trying
+plain-text fallback` in the gateway log. The real answer never arrived.
+
+The fix is twofold, and both halves are needed because of path (2) above:
+
+- `REQUIRES_EDIT_FINALIZE = False` — declaring it only arms path (1). T3 closes
+  an item on `item.completed`, which this plugin emits itself; it has no
+  rich-card streaming state that needs an explicit close.
+- `edit_message` ignores `finalize` outright (`del metadata, finalize`) and
+  never calls `_complete_turn` — this is what defends against path (2).
+
+`test_tool_progress_bubble_edits_never_complete_the_turn` pins both legs:
+it replays the gateway's `_edit_progress_message` closure verbatim and a
+segment-break finalize, asserts the turn survives every one, then asserts a
+single `notify=True` send completes it exactly once.
+
+**Regression shape if upstream changes.** If a future Hermes makes `finalize`
+genuinely mean "turn over" and removes the mid-turn uses, this plugin will
+simply never see a completion via that route — harmless, since `notify` still
+fires. The dangerous direction is the inverse: if `_mark_notify_metadata` stops
+being applied to the final delivery (or the streaming path stops calling
+`_metadata_for_send(final=True)`), turns would **never complete** — T3 threads
+would hang in the running state with the full answer streamed but no
+`turn.completed`. That is the opposite failure mode from the original bug and
+would show up as spinners that never resolve, not truncated answers.
+
+## Tool-progress chrome: the `format_tool_event` override is not the defence
+
+The plugin overrides `format_tool_event` to return `None`
+(`gateway/platforms/base.py:2740`), which `gateway/stream_dispatch.py:108`
+documents as "adapter chose to eat this event". T3 already renders tool calls as
+typed `item.started` / `item.completed` activity from the `pre_tool_call` /
+`post_tool_call` hooks, so the text line is a strictly poorer duplicate.
+
+**At 62e07223 this hook is dead code on the live path.** Its only caller is
+`GatewayEventDispatcher` (`gateway/stream_dispatch.py:40`, dispatch at `:108`),
+and that class is referenced nowhere in the shipped gateway — only from
+`tests/gateway/test_stream_events.py`. The path that actually runs is
+`gateway/run.py:20485+`, which builds the same emoji lines itself and delivers
+them via `adapter.send` / `adapter.edit_message`, with **no adapter hook to
+suppress them**. Chrome visibility there is governed by the platform's
+`tool_progress` display setting (`gateway/display_config.py:187`), not by this
+override.
+
+The override is kept as documented-contract defence: it costs nothing and
+becomes load-bearing again if upstream routes chrome through the dispatcher. But
+it never protected the turn — ignoring `finalize` does.

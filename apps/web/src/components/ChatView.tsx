@@ -2383,6 +2383,12 @@ function ChatViewContent(props: ChatViewProps) {
   // synthesized, so a kind-keyed lookup would never find one. Absent means
   // true, so every provider that predates the flag keeps its directory UI.
   const providerRequiresWorkspace = activeProviderStatus?.requiresWorkspace !== false;
+  // Same instance-keyed resolution for the Build/Plan capability. When the
+  // toggle is hidden the standalone `/plan` and `/default` messages must not be
+  // intercepted either, otherwise typing one silently swallows the message with
+  // no visible effect. Absent means true, matching the composer's default.
+  const providerShowsInteractionModeToggle =
+    activeProviderStatus?.showInteractionModeToggle !== false;
   const showComposerContextStrip = isGitRepo && activeProject !== null && providerRequiresWorkspace;
   const initialDiffPanelGitScope =
     gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
@@ -4498,6 +4504,7 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     const standaloneSlashCommand =
+      providerShowsInteractionModeToggle &&
       composerImages.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&

@@ -109,7 +109,12 @@ class T3PlatformAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True
     supports_status_text = True
-    REQUIRES_EDIT_FINALIZE = True
+    # Deliberately NOT set. It exists for rich-card surfaces that must be told
+    # when to leave the streaming state; T3 closes an item on `item.completed`,
+    # which this plugin emits itself. Declaring it only makes the gateway's
+    # progress loop pass `finalize=True` on every progress edit
+    # (`gateway/run.py:20777-20780`) — a signal we must ignore anyway.
+    REQUIRES_EDIT_FINALIZE = False
     MAX_MESSAGE_LENGTH = 120_000
     _instances: weakref.WeakSet[T3PlatformAdapter] = weakref.WeakSet()
 
@@ -223,7 +228,22 @@ class T3PlatformAdapter(BasePlatformAdapter):
         finalize: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
-        del metadata
+        # `finalize` is deliberately ignored as a completion signal.
+        #
+        # It reads like "this is the final edit of the response", and that is
+        # what the base class documents it as — but the gateway's tool-progress
+        # loop sets it unconditionally on EVERY progress-bubble edit whenever
+        # the adapter declares `REQUIRES_EDIT_FINALIZE`
+        # (`gateway/run.py:20777-20780`). Treating it as "turn finished" ended
+        # the turn on the first tool call; every later send then failed with
+        # "no active T3 turn" and the real answer was dropped.
+        #
+        # `notify=True` on `send()` is the signal that actually means "the
+        # user-visible reply is delivered": the gateway applies it via
+        # `_mark_notify_metadata` (`gateway/platforms/base.py:89`) only on
+        # final replies, and the progress path never sets it (verified across
+        # every `adapter.send`/`edit_message` call in the progress loop).
+        del metadata, finalize
         # `edit_message` never carries the reply anchor; its correlation
         # identifier is the id of the message being edited. Only an edit of a
         # message this adapter already reported as captured control traffic is
@@ -236,12 +256,8 @@ class T3PlatformAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="no active T3 turn")
         try:
             if content == _T3_HOME_CHANNEL_NOTICE:
-                if finalize:
-                    await self._complete_turn(turn)
                 return SendResult(success=True, message_id=message_id)
             await self._emit_assistant_content(turn, content)
-            if finalize:
-                await self._complete_turn(turn)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:  # noqa: BLE001 - adapter edit must return SendResult
             return SendResult(success=False, error=str(exc))
@@ -252,24 +268,22 @@ class T3PlatformAdapter(BasePlatformAdapter):
     def format_tool_event(
         self, event: Any, *, mode: str = "all", preview_max_len: int = 40
     ) -> str | None:
-        """Drop Hermes' textual tool-progress chrome.
+        """Drop textual tool-progress chrome.
 
-        The base implementation renders each tool call as an emoji progress
-        line ("📚 skill_view: …") and delivers it through the ordinary reply
-        path. Two things go wrong when that reaches T3:
+        T3 already renders tool calls as typed `item.started` / `item.completed`
+        activity from the `pre_tool_call` / `post_tool_call` hooks, so a text
+        line duplicating them is strictly worse than what T3 already shows.
 
-        1. T3 already renders tool calls as typed `item.started` /
-           `item.completed` activity from the `pre_tool_call` / `post_tool_call`
-           hooks, so the text is a duplicate of a richer surface.
-        2. Worse, it is delivered as a *user-visible reply*, and the gateway
-           marks user-visible replies `notify=True`. `send()` treats `notify`
-           as "this turn is finished" and calls `_complete_turn`, so the first
-           tool call ended the T3 turn while Hermes was still working. Every
-           later send failed with "no active T3 turn" and the answer was lost.
-
-        Returning None is the documented way for an adapter that cannot render
-        this chrome to drop the event, and it is what the base class's own
-        docstring prescribes.
+        NOTE: at Hermes 62e07223 this hook is NOT on the live delivery path —
+        `GatewayEventDispatcher` (`gateway/stream_dispatch.py:108`, its only
+        caller) is referenced solely by upstream tests. The path that actually
+        runs is `gateway/run.py:20485+`, which builds the same lines and
+        delivers them through `adapter.send` / `adapter.edit_message` with no
+        adapter hook to suppress them; it is silenced by the platform's
+        `tool_progress` display setting instead. This override is kept because
+        it is the documented contract and costs nothing if upstream routes
+        through the dispatcher again — but it is not what protects the turn.
+        The turn is protected by ignoring `finalize` in `edit_message`.
         """
         del event, mode, preview_max_len
         return None
@@ -913,6 +927,59 @@ class T3PlatformAdapter(BasePlatformAdapter):
             turn.generic_activity_id = activity_id
             turn.generic_activity_detail = normalized_detail
 
+    def _turn_for_tool_hook(self, session_id: str) -> _TurnState | None:
+        """Resolve the active turn a tool hook belongs to.
+
+        The tool hooks' `session_id` is NOT this plugin's session id. Hermes
+        passes `agent.session_id` (`agent/tool_executor.py:188`, `:305`,
+        `:341`), which the gateway sets to `SessionEntry.session_id` — a
+        timestamped run id like `20260725_143012_ab12cd34`
+        (`gateway/session.py:2388`, `agent/agent_init.py:1446-1453`). This
+        plugin's session ids come from `build_session_key`
+        (`gateway/session.py:1029`), shaped `agent:main:t3:dm:<thread>`. The two
+        never match, so `_thread_by_session` alone silently drops every tool
+        activity item.
+
+        The gateway's stable routing key is available separately: it is bound
+        onto `HERMES_SESSION_KEY` for the turn's context
+        (`gateway/run.py:17367` → `gateway/session_context.py:200`) and
+        propagated into the tool worker threads
+        (`agent/tool_executor.py:715`, `propagate_context_to_thread`). That key
+        IS `build_session_key(...)`, so it matches `_thread_by_session`.
+
+        Resolution order, all best-effort:
+          1. `session_id` as a direct routing key (correct if a future Hermes
+             passes the gateway key here, and free to check).
+          2. `HERMES_SESSION_KEY` from the Hermes session context.
+          3. The sole active turn, when exactly one exists — a single-threaded
+             Hermes process has no ambiguity to resolve, and dropping the
+             activity would be strictly worse.
+        Anything unresolved returns `None` and the item is simply not emitted;
+        tool activity is decorative, so this must never raise or misroute.
+        """
+        thread_id = self._thread_by_session.get(str(session_id))
+        if thread_id is None:
+            thread_id = self._thread_by_session.get(self._gateway_session_key())
+        if thread_id is not None:
+            return self._active_turns.get(thread_id)
+        if len(self._active_turns) == 1:
+            return next(iter(self._active_turns.values()))
+        return None
+
+    @staticmethod
+    def _gateway_session_key() -> str:
+        """Read the turn's gateway routing key from Hermes' session context.
+
+        Returns `""` on any failure (older Hermes, no context bound, import
+        error) so callers fall through to their next resolution step.
+        """
+        try:
+            from gateway.session_context import get_session_env
+
+            return str(get_session_env("HERMES_SESSION_KEY", "") or "")
+        except Exception:  # noqa: BLE001 - decorative activity must not raise
+            return ""
+
     def emit_tool_started(
         self,
         session_id: str,
@@ -920,8 +987,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
         args: dict[str, Any],
         tool_call_id: str = "",
     ) -> None:
-        thread_id = self._thread_by_session.get(str(session_id))
-        turn = self._active_turns.get(thread_id or "")
+        turn = self._turn_for_tool_hook(session_id)
         if turn is None:
             return
         tool_item_id = item_id()
@@ -957,8 +1023,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
         tool_call_id: str = "",
         status: str = "",
     ) -> None:
-        thread_id = self._thread_by_session.get(str(session_id))
-        turn = self._active_turns.get(thread_id or "")
+        turn = self._turn_for_tool_hook(session_id)
         if turn is None:
             return
         correlation_key = tool_call_id or tool_name

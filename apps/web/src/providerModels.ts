@@ -46,11 +46,42 @@ export function getProviderDisplayName(
   return snapshot?.displayName?.trim() || formatProviderDriverKindLabel(provider);
 }
 
+/**
+ * Whether this driver's default instance offers the Build/Plan interaction-mode
+ * toggle.
+ *
+ * Absent means `true`: every provider that predates the flag is a coding
+ * provider with a real plan mode.
+ *
+ * Driver-kind keyed, so it only ever resolves the *default* instance for the
+ * kind (`defaultInstanceIdForDriver`). Drivers whose instances are always
+ * user-authored — Hermes ids look like `hermes-<label>-<suffix>` and the
+ * registry never synthesizes a `hermes` default — will not be found here and
+ * fall through to `true`, showing a toggle the driver explicitly opted out of.
+ * Prefer {@link getProviderInstanceInteractionModeToggle} whenever the caller
+ * knows the instance a thread is actually bound to.
+ */
 export function getProviderInteractionModeToggle(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind,
 ): boolean {
   return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
+}
+
+/**
+ * Per-instance counterpart of {@link getProviderInteractionModeToggle},
+ * resolved by exact `instanceId` rather than by driver kind. Same
+ * absent-means-`true` default for unknown instances.
+ */
+export function getProviderInstanceInteractionModeToggle(
+  providers: ReadonlyArray<ServerProvider>,
+  instanceId: ProviderInstanceId | null | undefined,
+): boolean {
+  if (!instanceId) return true;
+  return (
+    providers.find((candidate) => candidate.instanceId === instanceId)?.showInteractionModeToggle ??
+    true
+  );
 }
 
 /**

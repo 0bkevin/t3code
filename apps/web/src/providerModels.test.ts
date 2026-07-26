@@ -2,7 +2,9 @@ import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  getProviderInstanceInteractionModeToggle,
   getProviderInstanceRequiresWorkspace,
+  getProviderInteractionModeToggle,
   getProviderRequiresWorkspace,
 } from "./providerModels";
 
@@ -10,6 +12,7 @@ function provider(input: {
   driver: string;
   instanceId: string;
   requiresWorkspace?: boolean;
+  showInteractionModeToggle?: boolean;
 }): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make(input.instanceId),
@@ -26,6 +29,9 @@ function provider(input: {
     ...(input.requiresWorkspace === undefined
       ? {}
       : { requiresWorkspace: input.requiresWorkspace }),
+    ...(input.showInteractionModeToggle === undefined
+      ? {}
+      : { showInteractionModeToggle: input.showInteractionModeToggle }),
   };
 }
 
@@ -127,5 +133,116 @@ describe("getProviderInstanceRequiresWorkspace", () => {
 
   it("returns true for an empty providers array", () => {
     expect(getProviderInstanceRequiresWorkspace([], hermesInstanceId)).toBe(true);
+  });
+});
+
+describe("getProviderInteractionModeToggle", () => {
+  it("treats an absent field as true so existing providers keep the Build/Plan toggle", () => {
+    expect(
+      getProviderInteractionModeToggle(
+        [provider({ driver: "codex", instanceId: "codex" })],
+        codexKind,
+      ),
+    ).toBe(true);
+  });
+
+  it("honors an explicit false on the default instance", () => {
+    expect(
+      getProviderInteractionModeToggle(
+        [provider({ driver: "codex", instanceId: "codex", showInteractionModeToggle: false })],
+        codexKind,
+      ),
+    ).toBe(false);
+  });
+
+  it("returns true for an unknown driver rather than crashing", () => {
+    expect(
+      getProviderInteractionModeToggle(
+        [provider({ driver: "codex", instanceId: "codex", showInteractionModeToggle: false })],
+        ProviderDriverKind.make("someForkDriver"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for an empty providers array", () => {
+    expect(getProviderInteractionModeToggle([], codexKind)).toBe(true);
+  });
+
+  it("ignores non-default instances of the same driver kind", () => {
+    expect(
+      getProviderInteractionModeToggle(
+        [
+          provider({
+            driver: "codex",
+            instanceId: "codex_personal",
+            showInteractionModeToggle: false,
+          }),
+        ],
+        codexKind,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("getProviderInstanceInteractionModeToggle", () => {
+  const hermesInstanceId = ProviderInstanceId.make("hermes-work-abc123");
+
+  it("resolves a user-authored Hermes instance that the driver-kind lookup cannot reach", () => {
+    const providers = [
+      provider({
+        driver: "hermes",
+        instanceId: "hermes-work-abc123",
+        showInteractionModeToggle: false,
+      }),
+    ];
+
+    // The kind-keyed lookup resolves `defaultInstanceIdForDriver("hermes")`,
+    // which never exists — the absent-means-true fallback wins and the Build
+    // toggle renders even though the driver opted out. That is the bug.
+    expect(getProviderInteractionModeToggle(providers, ProviderDriverKind.make("hermes"))).toBe(
+      true,
+    );
+    // Keyed on the instance the thread is actually bound to, the driver's
+    // opt-out is honored.
+    expect(getProviderInstanceInteractionModeToggle(providers, hermesInstanceId)).toBe(false);
+  });
+
+  it("treats an absent field as true", () => {
+    expect(
+      getProviderInstanceInteractionModeToggle(
+        [provider({ driver: "codex", instanceId: "codex" })],
+        ProviderInstanceId.make("codex"),
+      ),
+    ).toBe(true);
+  });
+
+  it("honors an explicit true", () => {
+    expect(
+      getProviderInstanceInteractionModeToggle(
+        [provider({ driver: "codex", instanceId: "codex", showInteractionModeToggle: true })],
+        ProviderInstanceId.make("codex"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for an unknown instance", () => {
+    expect(
+      getProviderInstanceInteractionModeToggle(
+        [provider({ driver: "codex", instanceId: "codex", showInteractionModeToggle: false })],
+        ProviderInstanceId.make("codex_missing"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for a null or undefined instance id", () => {
+    const providers = [
+      provider({ driver: "codex", instanceId: "codex", showInteractionModeToggle: false }),
+    ];
+    expect(getProviderInstanceInteractionModeToggle(providers, null)).toBe(true);
+    expect(getProviderInstanceInteractionModeToggle(providers, undefined)).toBe(true);
+  });
+
+  it("returns true for an empty providers array", () => {
+    expect(getProviderInstanceInteractionModeToggle([], hermesInstanceId)).toBe(true);
   });
 });
