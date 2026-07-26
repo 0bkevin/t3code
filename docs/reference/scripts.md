@@ -2,6 +2,8 @@
 
 - `vp run dev` — Starts contracts, server, and web in watch mode.
 - `vp run dev --share` — Also publishes the web port over HTTPS on this machine's tailnet. The startup pairing URL is built against the shared origin, and the mapping is removed on exit.
+- `vp run dev:pair` — Prints a fresh pairing URL for the running dev server, using its recorded state directory, port, and web origin. Add `--base-dir <path>` only when the server was started with `--home-dir`.
+- `vp run dev:seed` — Copies recent projects and threads from the shared home into the isolated dev database. Stop the server before running it, then restart. Tune the copy with `--threads` and `--activities`; it refuses to write to the shared home.
 - `vp run dev:server` — Starts just the WebSocket server. The server process runs on Bun (`@effect/platform-bun` + `BunPtyAdapter`), but task running uses `vp run`.
 - `vp run dev:web` — Starts just the Vite dev server for the web app.
 - Dev commands run from a linked **git worktree** default to that worktree's gitignored `.t3`, even when `T3CODE_HOME` is set, storing state in `<worktree>/.t3/userdata`. Pass `--home-dir <path>` to choose another isolated directory explicitly. Submodules are not worktrees and keep the normal precedence.
@@ -44,6 +46,8 @@
 `dev` and `dev:web` leave `VITE_HTTP_URL` and `VITE_WS_URL` unset so the browser resolves the backend from `window.location.origin`. Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` to the server, allowing the same bundle to work from localhost or a tailnet hostname.
 
 Worktrees derive a preferred port offset from their path. The runner shifts both ports together when either is occupied or the web port is blocked by browsers, so treat the `[dev-runner]` output as authoritative.
+
+An isolated dev database starts empty. `bun run dev:seed` copies projection data only, clears the target event log, and resets every projector cursor to zero so later events are not skipped or replayed over unrelated projections. Copied sessions are stopped and pending interaction counts are cleared because no live agent accompanies the copy. The copy tolerates source/target migration drift and remains local because it includes real message bodies and host paths.
 
 ## Running multiple dev instances
 

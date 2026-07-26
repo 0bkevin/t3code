@@ -54,26 +54,23 @@ Treat pairing URLs as secrets. Do not copy them into final responses, screenshot
 
 ## Recover a consumed or expired pairing token
 
-Create another token against the same database and web URL as the running dev server:
+Ask the running server for a fresh pairing URL:
 
 ```bash
-T3CODE_PORT=<server-port> node apps/server/src/bin.ts auth pairing create \
-  --base-dir <base-dir> \
-  --dev-url <web-url> \
-  --base-url <web-url> \
-  --ttl 15m \
-  --label agent-ui-test
+bun run dev:pair
+bun run dev:pair -- --base-dir <base-dir>
 ```
 
-Use the `Pair URL` from this command once. Derive `<server-port>` and `<web-url>` from the current dev-runner output, including any automatically selected port offset. Setting `T3CODE_PORT` keeps the administrative CLI from probing for an unrelated free port.
+It finds the live server state under either the `dev` or `userdata` state directory and reuses the recorded web origin, including a tailnet URL. Pass `--base-dir` only when the server was started with `--home-dir`. Use the printed URL once.
 
-Always pass `--dev-url` for a dev-runner environment so the generated pairing URL uses the current web origin. An explicit base directory stores runtime state in `<base-dir>/userdata`; the `<base-dir>/dev` fallback is only used by an implicit dev home. A worktree-local `.t3` counts as explicit, so its state lives in `<worktree>/.t3/userdata`. Use `auth pairing list` to inspect active token metadata; it intentionally cannot reveal token secrets.
+An explicit base directory stores runtime state in `<base-dir>/userdata`; the `<base-dir>/dev` fallback is only used by an implicit dev home. A worktree-local `.t3` counts as explicit, so its state lives in `<worktree>/.t3/userdata`. Use `auth pairing list` to inspect active token metadata; it intentionally cannot reveal token secrets.
 
 ## Inspect or seed SQLite state
 
 Read [references/sqlite-fixtures.md](references/sqlite-fixtures.md) before changing the database.
 
 - Use `node apps/server/scripts/t3-sqlite-state.ts query` for schema discovery and read-only checks.
+- To populate realistic list and thread data, stop the server and run `bun run dev:seed`, then restart it. This copies recent projections from the shared home while refusing to write to it.
 - Stop the dev server before using `node apps/server/scripts/t3-sqlite-state.ts exec`, then restart it with the same base directory.
 - Seed projection tables only for disposable UI fixtures. Use application commands and APIs when testing business behavior or projection correctness.
 - Use the auth CLI, not direct `auth_*` table edits, for pairing and sessions.
