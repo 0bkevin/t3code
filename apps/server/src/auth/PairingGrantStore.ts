@@ -202,6 +202,11 @@ export class PairingGrantStore extends Context.Service<
       readonly subject?: string;
       readonly label?: string;
       readonly proofKeyThumbprint?: string;
+      /**
+       * "startup" marks the credential the server mints for itself at boot,
+       * which gets the long dev TTL when a dev URL is configured.
+       */
+      readonly purpose?: "startup";
     }) => Effect.Effect<IssuedBootstrapCredential, BootstrapCredentialInternalError>;
     readonly listActive: () => Effect.Effect<
       ReadonlyArray<AuthPairingLink>,
@@ -252,7 +257,6 @@ const DESKTOP_BOOTSTRAP_TTL_HOURS = Duration.hours(24);
 // bootstrap grant above. Only applies when a dev URL is configured; user-issued
 // pairing links and real servers keep the 5-minute default.
 const DEV_STARTUP_TTL_HOURS = Duration.hours(24);
-export const INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT = "administrative-bootstrap";
 const PAIRING_TOKEN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const PAIRING_TOKEN_LENGTH = 12;
 const PAIRING_TOKEN_REJECTION_LIMIT =
@@ -381,8 +385,7 @@ export const make = Effect.gen(function* () {
       ),
     );
     const credential = yield* generatePairingToken;
-    const isDevStartupToken =
-      config.devUrl !== undefined && input?.subject === INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT;
+    const isDevStartupToken = config.devUrl !== undefined && input?.purpose === "startup";
     const ttl =
       input?.ttl ??
       (isDevStartupToken ? DEV_STARTUP_TTL_HOURS : DEFAULT_ONE_TIME_TOKEN_TTL_MINUTES);

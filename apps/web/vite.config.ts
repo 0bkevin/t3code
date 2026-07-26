@@ -7,13 +7,16 @@ import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
 import pkg from "./package.json" with { type: "json" };
 
+import { DEV_PROXIED_PATH_PREFIXES } from "@t3tools/shared/devProxy";
+
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
 const port = Number(process.env.PORT ?? 5733);
-const host = process.env.HOST?.trim() || "localhost";
+const explicitHost = process.env.HOST?.trim();
+const host = explicitHost || "localhost";
 const configuredWsUrl = process.env.VITE_WS_URL?.trim();
 const configuredRelayUrl = repoEnv.VITE_T3CODE_RELAY_URL?.trim() || "";
 const configuredClerkPublishableKey = repoEnv.VITE_CLERK_PUBLISHABLE_KEY?.trim() || "";
@@ -171,28 +174,21 @@ export default defineConfig(() => {
       allowedHosts,
       ...(devProxyTarget
         ? {
-            proxy: {
-              "/.well-known": {
-                target: devProxyTarget,
-                changeOrigin: true,
-              },
-              "/api": {
-                target: devProxyTarget,
-                changeOrigin: true,
-              },
-              "/oauth": {
-                target: devProxyTarget,
-                changeOrigin: true,
-              },
-              // The app's own socket. Vite's HMR socket is matched separately
-              // and exactly (path "/" plus a vite-hmr subprotocol), so the two
-              // upgrade handlers don't collide.
-              "/ws": {
-                target: devProxyTarget,
-                changeOrigin: true,
-                ws: true,
-              },
-            },
+            // One entry per shared prefix; the server's dev catch-all 404s the
+            // same list, so the two sides cannot drift. `/ws` is the app's own
+            // socket — Vite's HMR socket is matched separately and exactly
+            // (path "/" plus a vite-hmr subprotocol), so the two upgrade
+            // handlers don't collide.
+            proxy: Object.fromEntries(
+              DEV_PROXIED_PATH_PREFIXES.map((prefix) => [
+                prefix,
+                {
+                  target: devProxyTarget,
+                  changeOrigin: true,
+                  ...(prefix === "/ws" ? { ws: true } : {}),
+                },
+              ]),
+            ),
           }
         : {}),
       // Electron's BrowserWindow needs the HMR socket pinned to an explicit
@@ -201,11 +197,11 @@ export default defineConfig(() => {
       // page origin, which is what makes HMR work over Tailscale/LAN instead of
       // failing an attempt against the wrong machine's localhost first.
       // (Vite 8 logs connection state via console.debug — enable "Verbose".)
-      ...(process.env.HOST?.trim()
+      ...(explicitHost
         ? {
             hmr: {
               protocol: "ws",
-              host,
+              host: explicitHost,
               clientPort: port,
             },
           }

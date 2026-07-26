@@ -18,7 +18,6 @@ import {
   getDevRunnerModeArgs,
   resolveModePortOffsets,
   resolveOffset,
-  resolveWorktreeHome,
   runDevRunnerWithInput,
 } from "./dev-runner.ts";
 
@@ -563,25 +562,6 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
     );
   });
 
-  // A worktree dev server writing to the shared ~/.t3 lands on the *real*
-  // database the installed app uses, because an ambient T3CODE_HOME counts as
-  // an explicit base dir and flips the state dir from `dev` to `userdata`.
-  describe("resolveWorktreeHome", () => {
-    it.effect("keeps a worktree's data directory inside the worktree", () =>
-      Effect.gen(function* () {
-        const path = yield* Path.Path;
-        const home = yield* resolveWorktreeHome("/repos/app-worktree");
-        assert.equal(home, path.join("/repos/app-worktree", ".t3"));
-      }),
-    );
-
-    it.effect("leaves the main checkout on the shared home", () =>
-      Effect.gen(function* () {
-        assert.equal(yield* resolveWorktreeHome(undefined), undefined);
-      }),
-    );
-  });
-
   describe("runDevRunnerWithInput", () => {
     it.effect("preserves invalid configuration as the exact cause", () =>
       Effect.gen(function* () {
@@ -642,20 +622,18 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
 
     // `tailscale serve` config outlives the process, so a dry run that shared
     // would replace and then tear down whatever mapping the port already had.
-    // An ambient T3CODE_HOME must not drag a worktree's dev state onto the
-    // shared home: that resolves to <home>/userdata, the database the user's
-    // installed T3 Code is actively running against.
-    it.effect("keeps an ambient T3CODE_HOME from overriding the worktree home", () =>
+    // Base-dir precedence (--home-dir > worktree .t3 > ambient T3CODE_HOME)
+    // lives in runDevRunnerWithInput; the env builder must not consult the
+    // ambient variable on its own, or it would silently outrank the worktree
+    // default and land dev state on the user's real database.
+    it.effect("ignores an ambient T3CODE_HOME when no home is resolved", () =>
       Effect.gen(function* () {
-        const path = yield* Path.Path;
-        const worktreeHome = yield* resolveWorktreeHome("/repos/app-worktree");
         const env = yield* createDevRunnerEnv({
           mode: "dev",
           baseEnv: { T3CODE_HOME: "/home/user/.t3" },
           serverOffset: 0,
           webOffset: 0,
-          // Mirrors the precedence runDevRunnerWithInput applies.
-          t3Home: worktreeHome,
+          t3Home: undefined,
           browser: undefined,
           autoBootstrapProjectFromCwd: undefined,
           logWebSocketEvents: undefined,
@@ -664,7 +642,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           devUrl: undefined,
         });
 
-        assert.equal(env.T3CODE_HOME, path.resolve("/repos/app-worktree/.t3"));
+        assert.equal(env.T3CODE_HOME, undefined);
       }),
     );
 

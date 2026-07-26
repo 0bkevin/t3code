@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - This host-side fixture creates an isolated local T3 environment.
+import { PROJECTOR_NAMES } from "./lib/projection-tables.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -13,18 +14,6 @@ export const SHOWCASE_TERMINAL_ID = "term-1";
 
 export const SHOWCASE_SCENES = ["threads", "thread", "terminal", "review", "environments"] as const;
 export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
-
-const PROJECTOR_NAMES = [
-  "projection.projects",
-  "projection.threads",
-  "projection.thread-messages",
-  "projection.thread-proposed-plans",
-  "projection.thread-activities",
-  "projection.thread-sessions",
-  "projection.thread-turns",
-  "projection.checkpoints",
-  "projection.pending-approvals",
-] as const;
 
 const MODEL_SELECTION = JSON.stringify({ instanceId: "codex", model: "gpt-5.4" });
 const PROJECT_SCRIPTS = JSON.stringify([

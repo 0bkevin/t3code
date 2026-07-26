@@ -254,6 +254,7 @@ describe("seedDevDatabase", () => {
         // Of a-*-0/1/2, the newest two are 1 and 2.
         assert.deepStrictEqual(ids, ["a-t3-1", "a-t3-2", "a-t4-1", "a-t4-2"]);
       },
+      // One more per thread than the cap keeps, so the cap is observable.
       { activities: 3 },
     );
   });

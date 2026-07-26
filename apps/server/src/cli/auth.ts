@@ -3,9 +3,9 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
 } from "@t3tools/contracts";
+import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -46,6 +46,12 @@ class NoRunningServerError extends Schema.TaggedErrorClass<NoRunningServerError>
   }
 }
 
+const environmentAuthLayer = (config: ServerConfig.ServerConfig["Service"], quietLogs: boolean) =>
+  EnvironmentAuth.runtimeLayer.pipe(
+    Layer.provide(ServerConfig.layer(config)),
+    Layer.provide(Layer.succeed(References.MinimumLogLevel, quietLogs ? "Error" : config.logLevel)),
+  );
+
 const runWithEnvironmentAuth = <A, E>(
   flags: CliAuthLocationFlags,
   run: (environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E>,
@@ -56,18 +62,10 @@ const runWithEnvironmentAuth = <A, E>(
   Effect.gen(function* () {
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveCliAuthConfig(flags, logLevel);
-    const minimumLogLevel = options?.quietLogs ? "Error" : config.logLevel;
     return yield* Effect.gen(function* () {
       const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
       return yield* run(environmentAuth);
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(EnvironmentAuth.runtimeLayer).pipe(
-          Layer.provide(ServerConfig.layer(config)),
-          Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
-        ),
-      ),
-    );
+    }).pipe(Effect.provide(environmentAuthLayer(config, options?.quietLogs ?? false)));
   });
 
 const ttlFlag = Flag.string("ttl").pipe(
@@ -134,28 +132,6 @@ const pairingCreateCommand = Command.make("create", {
 );
 
 /**
- * A git worktree's own `.t3`, or undefined outside one. Git marks a linked
- * worktree by making `.git` a file (`gitdir: …`) rather than a directory —
- * mirrors `resolveWorktreePath` in scripts/dev-runner.ts, which is what puts
- * dev state there in the first place.
- */
-export const resolveWorktreeBaseDir = Effect.fn("auth.resolveWorktreeBaseDir")(function* (
-  cwd: string,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const info = yield* fileSystem.stat(path.join(cwd, ".git")).pipe(Effect.option);
-  if (Option.isNone(info) || info.value.type !== "File") {
-    return undefined;
-  }
-  const baseDir = path.join(cwd, ".t3");
-  // Only claim it when the dev runner has actually created it; otherwise let
-  // the normal resolution report "no running server" against the real home.
-  const exists = yield* fileSystem.exists(baseDir).pipe(Effect.orElseSucceed(() => false));
-  return exists ? baseDir : undefined;
-});
-
-/**
  * The state directory is `<base>/dev` for an implicit dev home and
  * `<base>/userdata` otherwise — a split that depends on flags the caller of
  * this command should not have to reason about, and which silently mints
@@ -167,11 +143,13 @@ export const findLiveServerRuntimeState = Effect.fn("auth.findLiveServerRuntimeS
 ) {
   const path = yield* Path.Path;
   const candidatePaths = [
-    config.serverRuntimeStatePath,
-    ...(["dev", "userdata"] as const).map((stateDir) =>
-      path.join(config.baseDir, stateDir, "server-runtime.json"),
-    ),
-  ].filter((candidate, index, all) => all.indexOf(candidate) === index);
+    ...new Set([
+      config.serverRuntimeStatePath,
+      ...(["dev", "userdata"] as const).map((stateDir) =>
+        path.join(config.baseDir, stateDir, "server-runtime.json"),
+      ),
+    ]),
+  ];
 
   const live: Array<{
     readonly stateDir: string;
@@ -226,7 +204,11 @@ const pairingUrlCommand = Command.make("url", {
       // here" — which the dev runner puts in the worktree's own `.t3`. Falling
       // through to the shared home would mint a credential into the database
       // the user's installed T3 Code is running against.
-      const worktreeBaseDir = yield* resolveWorktreeBaseDir(process.cwd());
+      // requireExisting: only claim the worktree home once the dev runner has
+      // created it; otherwise report "no running server" against the real home.
+      const worktreeBaseDir = yield* resolveWorktreeT3Home(process.cwd(), {
+        requireExisting: true,
+      });
       const resolvedFlags =
         Option.isSome(flags.baseDir) || worktreeBaseDir === undefined
           ? flags
@@ -257,16 +239,7 @@ const pairingUrlCommand = Command.make("url", {
           label: "cli-issued pairing url",
         });
         yield* Console.log(formatIssuedPairingCredential(issued, { json: flags.json, baseUrl }));
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(EnvironmentAuth.runtimeLayer).pipe(
-            Layer.provide(ServerConfig.layer({ ...config, ...derivedPaths })),
-            Layer.provide(
-              Layer.succeed(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
-            ),
-          ),
-        ),
-      );
+      }).pipe(Effect.provide(environmentAuthLayer({ ...config, ...derivedPaths }, flags.json)));
     }),
   ),
 );

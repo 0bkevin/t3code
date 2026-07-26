@@ -54,12 +54,22 @@ export class TailscaleCommandExitError extends Schema.TaggedErrorClass<Tailscale
     exitCode: Schema.Number,
     stdoutLength: Schema.optional(Schema.Number),
     stderrLength: Schema.Number,
+    // Bounded, so callers can recognize specific CLI errors (e.g. `serve off`
+    // on a port with no mapping) without the error carrying arbitrary output.
+    stderrPreview: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
     return `tailscale ${this.subcommand} exited with code ${this.exitCode}.`;
   }
 }
+
+const STDERR_PREVIEW_LIMIT = 200;
+
+export const stderrPreviewOf = (stderr: string): string | undefined => {
+  const trimmed = stderr.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, STDERR_PREVIEW_LIMIT) : undefined;
+};
 
 export class TailscaleCommandTimeoutError extends Schema.TaggedErrorClass<TailscaleCommandTimeoutError>()(
   "TailscaleCommandTimeoutError",
@@ -212,6 +222,9 @@ export const readTailscaleStatus = Effect.gen(function* () {
         exitCode,
         stdoutLength: stdout.length,
         stderrLength: stderr.length,
+        ...(stderrPreviewOf(stderr) !== undefined
+          ? { stderrPreview: stderrPreviewOf(stderr) }
+          : {}),
       });
     }
     return yield* parseTailscaleStatus(stdout);
@@ -275,6 +288,9 @@ const runTailscaleCommand = (
           ...commandContext,
           exitCode,
           stderrLength: stderr.length,
+          ...(stderrPreviewOf(stderr) !== undefined
+            ? { stderrPreview: stderrPreviewOf(stderr) }
+            : {}),
         });
       }
     }).pipe(

@@ -4,6 +4,7 @@ import {
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
+import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -41,16 +42,6 @@ import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./ht
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"];
-// Paths the web dev server proxies to us. Bouncing an unmatched one back to
-// Vite would loop forever (Vite proxies it straight back), and it would answer
-// an API call with index.html — so these 404 instead.
-const DEV_PROXIED_PATH_PREFIXES = ["/api/", "/oauth/", "/.well-known/", "/ws"] as const;
-
-function isDevProxiedPath(pathname: string): boolean {
-  return DEV_PROXIED_PATH_PREFIXES.some(
-    (prefix) => pathname === prefix.replace(/\/$/, "") || pathname.startsWith(prefix),
-  );
-}
 
 export const browserApiCorsLayer = Layer.unwrap(
   Effect.gen(function* () {

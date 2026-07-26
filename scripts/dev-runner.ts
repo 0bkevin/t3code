@@ -2,6 +2,8 @@
 
 import * as NodeOS from "node:os";
 
+import { resolveGitWorktreePath, resolveWorktreeT3Home } from "@t3tools/shared/devHome";
+
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
@@ -9,7 +11,6 @@ import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Hash from "effect/Hash";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -221,40 +222,6 @@ export function resolveOffset(config: {
   return Effect.succeed({ offset: 0, source: "default ports" });
 }
 
-/**
- * The path of the linked git worktree we're running in, or undefined for the
- * main checkout. Git marks a linked worktree by making `.git` a file
- * (`gitdir: …`) rather than a directory.
- */
-export function resolveWorktreePath(
-  cwd: string,
-): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const info = yield* fs.stat(path.join(cwd, ".git")).pipe(Effect.option);
-    return Option.isSome(info) && info.value.type === "File" ? cwd : undefined;
-  });
-}
-
-/**
- * The data directory a worktree's dev server should use: its own gitignored
- * `.t3`, keeping feature work off the shared `~/.t3` that the installed app
- * runs against. `undefined` for the main checkout, which keeps the documented
- * `~/.t3/dev` behaviour.
- */
-export function resolveWorktreeHome(
-  worktreePath: string | undefined,
-): Effect.Effect<string | undefined, never, Path.Path> {
-  return Effect.gen(function* () {
-    if (worktreePath === undefined) {
-      return undefined;
-    }
-    const path = yield* Path.Path;
-    return path.join(worktreePath, ".t3");
-  });
-}
-
 function resolveBaseDir(baseDir: string | undefined): Effect.Effect<string, never, Path.Path> {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -298,7 +265,9 @@ export function createDevRunnerEnv({
   return Effect.gen(function* () {
     const serverPort = port ?? BASE_SERVER_PORT + serverOffset;
     const webPort = BASE_WEB_PORT + webOffset;
-    const configuredBaseDir = t3Home?.trim() || baseEnv.T3CODE_HOME?.trim() || undefined;
+    // Precedence (--home-dir > worktree .t3 > ambient T3CODE_HOME) is resolved
+    // by the caller; an unset t3Home here genuinely means "use the default".
+    const configuredBaseDir = t3Home?.trim() || undefined;
     const resolvedBaseDir = yield* resolveBaseDir(configuredBaseDir);
     const isDesktopMode = mode === "dev:desktop";
 
@@ -561,7 +530,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       ),
     );
 
-    const worktreePath = yield* resolveWorktreePath(process.cwd());
+    const worktreePath = yield* resolveGitWorktreePath(process.cwd());
 
     const { offset, source } = yield* resolveOffset({
       portOffset,
@@ -578,15 +547,11 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
 
     const hostEnvironment = yield* HostProcessEnvironment;
     // A dev server started inside a worktree defaults to that worktree's own
-    // (gitignored) `.t3`. Otherwise it lands on the shared `~/.t3`, and because
-    // an ambient `T3CODE_HOME` counts as an *explicit* base dir, the state
-    // directory flips from `<base>/dev` to `<base>/userdata` — the real
-    // database the user's installed T3 Code is running against. Feature work in
-    // a throwaway branch has no business writing there, so the worktree default
-    // deliberately outranks the ambient env var. `--home-dir` still wins.
-    const worktreeHome = yield* resolveWorktreeHome(worktreePath);
+    // (gitignored) `.t3` — see @t3tools/shared/devHome for why this must
+    // outrank an ambient T3CODE_HOME. `--home-dir` still wins.
+    const worktreeHome = yield* resolveWorktreeT3Home(process.cwd());
     const resolvedT3Home =
-      input.t3Home ?? worktreeHome ?? hostEnvironment.T3CODE_HOME?.trim() ?? undefined;
+      input.t3Home ?? worktreeHome ?? (hostEnvironment.T3CODE_HOME?.trim() || undefined);
     const env = yield* createDevRunnerEnv({
       mode: input.mode,
       baseEnv: hostEnvironment,
@@ -668,7 +633,6 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
           ]
             .filter((entry) => entry && entry.length > 0)
             .join(",");
-          env.T3CODE_DEV_SHARE_URL = shared.url;
           // The server builds its pairing URL from this, so the URL printed at
           // startup is already the shareable one — no rewriting by hand. An
           // explicit --dev-url still wins.

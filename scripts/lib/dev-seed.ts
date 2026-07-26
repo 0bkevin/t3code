@@ -12,31 +12,7 @@
 
 import * as NodeSqlite from "node:sqlite";
 
-/** Must match ORCHESTRATION_PROJECTOR_NAMES in apps/server/src/orchestration/Layers/ProjectionPipeline.ts. */
-const PROJECTOR_NAMES = [
-  "projection.projects",
-  "projection.threads",
-  "projection.thread-messages",
-  "projection.thread-proposed-plans",
-  "projection.thread-activities",
-  "projection.thread-sessions",
-  "projection.thread-turns",
-  "projection.checkpoints",
-  "projection.pending-approvals",
-] as const;
-
-/** Deleted in this order so a row never outlives what it points at. */
-const TABLES_IN_DEPENDENCY_ORDER = [
-  "projection_pending_approvals",
-  "projection_thread_proposed_plans",
-  "projection_thread_activities",
-  "projection_thread_messages",
-  "projection_thread_sessions",
-  "projection_turns",
-  "projection_threads",
-  "projection_projects",
-  "projection_state",
-] as const;
+import { PROJECTION_TABLES_IN_DEPENDENCY_ORDER, PROJECTOR_NAMES } from "./projection-tables.ts";
 
 export interface DevSeedOptions {
   readonly sourceDbPath: string;
@@ -101,8 +77,6 @@ function sharedColumns(
 
 const placeholders = (count: number) => Array.from({ length: count }, () => "?").join(", ");
 
-const quote = (values: ReadonlyArray<string>) => values.map((value) => `'${value}'`).join(", ");
-
 /**
  * Copies rows for `table` whose `keyColumn` is in `keys`, optionally keeping
  * only the newest `perKeyLimit` rows per key.
@@ -129,49 +103,52 @@ function copyRows(input: {
   }
 
   const selectList = columns.map((column) => `"${column}"`).join(", ");
-  const rows: Array<Record<string, unknown>> = [];
+  // OR REPLACE never fires after the wholesale DELETE, but keeps the copy
+  // robust if the delete list and the copy list ever drift apart.
+  const insert = input.target.prepare(
+    `INSERT OR REPLACE INTO ${input.table} (${selectList}) VALUES (${placeholders(columns.length)})`,
+  );
+  const overrides = input.overrides ?? {};
+  let copied = 0;
+  // Iterate rather than materialize: messages are uncapped, and buffering
+  // every row of a large copy into a JS array costs memory for nothing —
+  // the target transaction is already open.
+  const insertFrom = (rows: Iterable<unknown>) => {
+    for (const row of rows as Iterable<Record<string, unknown>>) {
+      insert.run(
+        ...columns.map((column) => {
+          const value = Object.hasOwn(overrides, column) ? overrides[column] : row[column];
+          // node:sqlite binds only null/number/bigint/string/Uint8Array; every
+          // projection column is one of those, and undefined means "absent".
+          return (value ?? null) as null | number | bigint | string | Uint8Array;
+        }),
+      );
+      copied += 1;
+    }
+  };
 
   if (input.perKeyLimit) {
-    // Per-key cap: one bounded query per key beats a window function, and keeps
-    // this working on any SQLite build.
+    // Per-key cap: one bounded query per key beats a window function — the
+    // (thread_id, created_at) index lets each query walk backwards and stop
+    // at the limit instead of ranking every row.
     const statement = input.source.prepare(
       `SELECT ${selectList} FROM ${input.table} WHERE "${input.keyColumn}" = ?
        ORDER BY ${input.perKeyLimit.orderBy} DESC LIMIT ?`,
     );
     for (const key of input.keys) {
-      rows.push(...(statement.all(key, input.perKeyLimit.limit) as Array<Record<string, unknown>>));
+      insertFrom(statement.iterate(key, input.perKeyLimit.limit));
     }
   } else {
-    rows.push(
-      ...(input.source
+    insertFrom(
+      input.source
         .prepare(
-          `SELECT ${selectList} FROM ${input.table} WHERE "${input.keyColumn}" IN (${quote(input.keys)})`,
+          `SELECT ${selectList} FROM ${input.table} WHERE "${input.keyColumn}" IN (${placeholders(input.keys.length)})`,
         )
-        .all() as Array<Record<string, unknown>>),
+        .iterate(...input.keys),
     );
   }
 
-  if (rows.length === 0) {
-    return { copied: 0, skipped };
-  }
-
-  const insert = input.target.prepare(
-    `INSERT OR REPLACE INTO ${input.table} (${selectList}) VALUES (${placeholders(columns.length)})`,
-  );
-  for (const row of rows) {
-    insert.run(
-      ...columns.map((column) => {
-        const value = Object.hasOwn(input.overrides ?? {}, column)
-          ? (input.overrides ?? {})[column]
-          : row[column];
-        // node:sqlite binds only null/number/bigint/string/Uint8Array; every
-        // projection column is one of those, and undefined means "absent".
-        return (value ?? null) as null | number | bigint | string | Uint8Array;
-      }),
-    );
-  }
-
-  return { copied: rows.length, skipped };
+  return { copied, skipped };
 }
 
 export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
@@ -221,9 +198,9 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
       source
         .prepare(
           `SELECT DISTINCT project_id FROM projection_threads
-           WHERE thread_id IN (${quote(threadIds)})`,
+           WHERE thread_id IN (${placeholders(threadIds.length)})`,
         )
-        .all() as Array<{ project_id: string }>
+        .all(...threadIds) as Array<{ project_id: string }>
     ).map((row) => row.project_id);
 
     const skipped: Array<string> = [];
@@ -237,7 +214,7 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
 
     target.exec("BEGIN IMMEDIATE");
 
-    for (const table of TABLES_IN_DEPENDENCY_ORDER) {
+    for (const table of PROJECTION_TABLES_IN_DEPENDENCY_ORDER) {
       target.exec(`DELETE FROM ${table}`);
     }
 

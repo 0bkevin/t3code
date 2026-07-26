@@ -8,6 +8,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { DevShareError, shareDevServer, unshareDevServer } from "./dev-share.ts";
 
 const TAILNET_STATUS = JSON.stringify({ Self: { DNSName: "host.example.ts.net." } });
+const NO_HANDLER_STDERR = "error: failed to remove web serve: handler does not exist";
 
 interface CallResult {
   readonly exitCode: number;
@@ -65,14 +66,7 @@ describe("unshareDevServer", () => {
   it.effect("treats a missing handler as cleared", () =>
     Effect.gen(function* () {
       const result = yield* unshareDevServer(5788).pipe(
-        Effect.provide(
-          spawnerLayer({
-            off: {
-              exitCode: 1,
-              stderr: "error: failed to remove web serve: handler does not exist",
-            },
-          }),
-        ),
+        Effect.provide(spawnerLayer({ off: { exitCode: 1, stderr: NO_HANDLER_STDERR } })),
       );
       assert.isTrue(result.cleared);
     }),
@@ -84,7 +78,7 @@ describe("unshareDevServer", () => {
         Effect.provide(spawnerLayer({ off: { exitCode: 1, stderr: "permission denied" } })),
       );
       assert.isFalse(result.cleared);
-      assert.equal(result.detail, "permission denied");
+      assert.include(result.detail, "permission denied");
     }),
   );
 });
@@ -93,7 +87,7 @@ describe("shareDevServer", () => {
   it.effect("returns the tailnet URL for the same port", () =>
     Effect.gen(function* () {
       const shared = yield* shareDevServer({ webPort: 5788 }).pipe(
-        Effect.provide(spawnerLayer({})),
+        Effect.provide(spawnerLayer({ off: { exitCode: 1, stderr: NO_HANDLER_STDERR } })),
       );
 
       assert.equal(shared.host, "host.example.ts.net");
@@ -107,7 +101,12 @@ describe("shareDevServer", () => {
   it.effect("reports that the prior mapping was cleared when serve fails", () =>
     Effect.gen(function* () {
       const error: DevShareError = yield* shareDevServer({ webPort: 5788 }).pipe(
-        Effect.provide(spawnerLayer({ serve: { exitCode: 1, stderr: "port already in use" } })),
+        Effect.provide(
+          spawnerLayer({
+            off: { exitCode: 0 },
+            serve: { exitCode: 1, stderr: "port already in use" },
+          }),
+        ),
         Effect.flip,
       );
 

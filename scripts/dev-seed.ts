@@ -15,6 +15,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/unstable/cli";
 
+import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
+
 import { DevSeedError, seedDevDatabase } from "./lib/dev-seed.ts";
 
 const DEFAULT_THREAD_LIMIT = 25;
@@ -50,18 +52,6 @@ class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
 
 const stateDbPath = (path: Path.Path, baseDir: string) =>
   path.join(baseDir, "userdata", "state.sqlite");
-
-/** The worktree's own `.t3`, matching what the dev runner uses. */
-const resolveDefaultTarget = Effect.fn("devSeed.resolveDefaultTarget")(function* () {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const cwd = process.cwd();
-  const gitInfo = yield* fileSystem.stat(path.join(cwd, ".git")).pipe(Effect.option);
-  if (Option.isNone(gitInfo) || gitInfo.value.type !== "File") {
-    return undefined;
-  }
-  return path.join(cwd, ".t3");
-});
 
 const devSeedCli = Command.make("dev-seed", {
   from: Flag.string("from").pipe(
@@ -102,7 +92,7 @@ const devSeedCli = Command.make("dev-seed", {
       const sharedHome = path.join(NodeOS.homedir(), ".t3");
       const sourceBaseDir = input.from ? path.resolve(input.from) : sharedHome;
 
-      const defaultTarget = yield* resolveDefaultTarget();
+      const defaultTarget = yield* resolveWorktreeT3Home(process.cwd());
       const targetBaseDir = input.to ? path.resolve(input.to) : defaultTarget;
       if (targetBaseDir === undefined) {
         return yield* new DevSeedTargetError({ reason: "not-a-worktree", detail: process.cwd() });
