@@ -571,6 +571,40 @@ describe("seedDevDatabase", () => {
     );
   });
 
+  // SQLite reads a negative LIMIT as "no limit", so an unchecked value turns a
+  // capped copy into a full-table one rather than failing.
+  for (const limits of [
+    { threadLimit: 0, activityLimit: 10 },
+    { threadLimit: -1, activityLimit: 10 },
+    { threadLimit: 5, activityLimit: 0 },
+    { threadLimit: 5, activityLimit: -1 },
+  ]) {
+    it(`refuses threadLimit ${String(limits.threadLimit)} / activityLimit ${String(limits.activityLimit)}`, () => {
+      withDatabases(({ source, target }) => {
+        assert.throws(
+          () =>
+            seedDevDatabase({
+              sourceDbPath: source,
+              targetDbPath: target,
+              ...limits,
+              seededAt: SEEDED_AT,
+            }),
+          DevSeedError,
+        );
+
+        // Rejected before the destructive transaction opened.
+        const projects = query<{ project_id: string }>(
+          target,
+          "SELECT project_id FROM projection_projects",
+        );
+        assert.deepStrictEqual(
+          projects.map((row) => row.project_id),
+          ["stale"],
+        );
+      });
+    });
+  }
+
   // A caller that bypasses the CLI flag would otherwise discover the ceiling
   // only after the target had been emptied and the copy rolled back.
   it("refuses a thread limit above the ceiling before touching the target", () => {
@@ -597,6 +631,75 @@ describe("seedDevDatabase", () => {
         ["stale"],
       );
     });
+  });
+
+  // Down to one recency column, the ordering expression cannot be a COALESCE:
+  // SQLite requires at least two arguments and throws otherwise, which would
+  // abort the seed on exactly the old schema the column filter exists to serve.
+  it("reads a source with only one recency column", () => {
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-dev-seed-1col-"));
+    const source = NodePath.join(directory, "source.sqlite");
+    const target = NodePath.join(directory, "target.sqlite");
+    try {
+      const database = new NodeSqlite.DatabaseSync(source);
+      // created_at alone: no updated_at, no archived_at, no latest_user_message_at.
+      database.exec(`CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+        created_at TEXT NOT NULL, deleted_at TEXT)`);
+      // Matches the target's project columns; only the thread recency columns
+      // are being varied here.
+      database.exec(`CREATE TABLE projection_projects (
+        project_id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace_root TEXT NOT NULL,
+        scripts_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        deleted_at TEXT)`);
+      database.exec(`CREATE TABLE projection_state (projector TEXT PRIMARY KEY,
+        last_applied_sequence INTEGER NOT NULL, updated_at TEXT NOT NULL)`);
+      database
+        .prepare(`INSERT INTO projection_projects VALUES ('p1','P','/repo','[]',?,?,NULL)`)
+        .run(SEEDED_AT, SEEDED_AT);
+      for (const thread of [
+        { id: "old", at: "2026-07-10T00:00:00.000Z" },
+        { id: "new", at: "2026-07-20T00:00:00.000Z" },
+      ]) {
+        database
+          .prepare(`INSERT INTO projection_threads VALUES (?,?,?,?,NULL)`)
+          .run(thread.id, "p1", thread.id, thread.at);
+      }
+      database.close();
+
+      // The target mirrors the source's thread columns: this test varies the
+      // recency columns, and a target demanding one the source lacks would fail
+      // on the NOT NULL rather than on the ordering expression under test.
+      const targetDatabase = new NodeSqlite.DatabaseSync(target);
+      targetDatabase.exec(`CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+        created_at TEXT NOT NULL, deleted_at TEXT)`);
+      targetDatabase.exec(`CREATE TABLE projection_projects (
+        project_id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace_root TEXT NOT NULL,
+        scripts_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        deleted_at TEXT)`);
+      targetDatabase.exec(`CREATE TABLE projection_state (projector TEXT PRIMARY KEY,
+        last_applied_sequence INTEGER NOT NULL, updated_at TEXT NOT NULL)`);
+      targetDatabase.close();
+
+      const summary = seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 1,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+      });
+
+      assert.equal(summary.threads, 1);
+      // Ordering still applies: the newer thread is the one kept.
+      const titles = query<{ title: string }>(target, "SELECT title FROM projection_threads");
+      assert.deepStrictEqual(
+        titles.map((row) => row.title),
+        ["new"],
+      );
+    } finally {
+      NodeFS.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("reports a source with nothing to copy", () => {

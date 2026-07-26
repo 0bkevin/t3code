@@ -321,6 +321,21 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
       "Each thread costs one SQLite bound variable, and that is the engine's limit.",
     );
   }
+  // Both limits are bound straight into `LIMIT ?`, where SQLite reads a
+  // negative value as "no limit" — so a caller bypassing the CLI flags turns a
+  // capped copy into a full-table one, silently. The flags already reject this;
+  // enforcing it here keeps the options contract true of the function itself.
+  for (const [name, value] of [
+    ["threadLimit", options.threadLimit],
+    ["activityLimit", options.activityLimit],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new DevSeedError(
+        `${name} must be a positive integer, got ${String(value)}`,
+        "SQLite reads a negative LIMIT as unbounded, which would copy the whole table.",
+      );
+    }
+  }
 
   let source: NodeSqlite.DatabaseSync;
   try {
@@ -368,6 +383,14 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
     const recencyColumns = ["latest_user_message_at", "updated_at", "created_at"].filter((column) =>
       hasColumn(source, "projection_threads", column),
     );
+    // SQLite's COALESCE requires at least two arguments, so a source down to a
+    // single recency column — the pre-migration-017 case this filter exists to
+    // support — would throw rather than degrade. `created_at` is NOT NULL from
+    // migration 005 on, so there is always at least one.
+    const recencyOrder =
+      recencyColumns.length > 1
+        ? `COALESCE(${recencyColumns.join(", ")})`
+        : (recencyColumns[0] ?? "rowid");
     const activeFilters = ["deleted_at", "archived_at"]
       .filter((column) => hasColumn(source, "projection_threads", column))
       .map((column) => `${column} IS NULL`);
@@ -376,7 +399,7 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
         .prepare(
           `SELECT thread_id FROM projection_threads
            ${activeFilters.length > 0 ? `WHERE ${activeFilters.join(" AND ")}` : ""}
-           ORDER BY COALESCE(${recencyColumns.join(", ")}) DESC
+           ORDER BY ${recencyOrder} DESC
            LIMIT ?`,
         )
         .all(options.threadLimit) as Array<{ thread_id: string }>
