@@ -245,14 +245,19 @@ const devSeedCli = Command.make("dev-seed", {
       // base can canonicalize to itself while its `userdata` or `dev`
       // subdirectory is a symlink into the shared home, and comparing bases
       // then waves through a seed whose actual write target is the real
-      // database. The directory is canonicalized and the filename re-joined
-      // because the database may not exist yet — realPath fails on a missing
-      // final component, and falling back to the literal path would lose the
-      // symlink resolution in exactly the case where the next error's advice
-      // ("start the dev server") would create the database in the shared home.
+      // database. Resolve the full path first — the file itself can be the
+      // symlink — and fall back to resolving the directory and re-joining the
+      // filename when the file does not exist yet: a nonexistent file cannot
+      // be a link to anything, but its directory still can be, and this is
+      // exactly the case where the missing-target advice ("start the dev
+      // server") would otherwise create the database in the shared home.
       const canonicalDbPath = (databasePath: string) =>
-        fileSystem.realPath(path.dirname(databasePath)).pipe(
-          Effect.map((directory) => path.join(directory, path.basename(databasePath))),
+        fileSystem.realPath(databasePath).pipe(
+          Effect.catch(() =>
+            fileSystem
+              .realPath(path.dirname(databasePath))
+              .pipe(Effect.map((directory) => path.join(directory, path.basename(databasePath)))),
+          ),
           Effect.orElseSucceed(() => databasePath),
         );
       const [canonicalTargetDb, canonicalSourceDb, canonicalShared] = yield* Effect.all([
@@ -263,19 +268,22 @@ const devSeedCli = Command.make("dev-seed", {
       if (canonicalTargetDb.startsWith(`${canonicalShared}${path.sep}`)) {
         return yield* new DevSeedTargetError({ reason: "shared-home", detail: canonicalTargetDb });
       }
+      // After the shared-home refusal: that one must come first because the
+      // missing-target advice below — start a dev server, which creates the
+      // database — is exactly wrong for the shared home. Everywhere else, a
+      // missing database is the more actionable diagnosis, so it outranks
+      // same-source: aliased paths with nothing behind them are a setup
+      // problem, not a self-seed.
+      if (!(yield* fileSystem.exists(targetDbPath))) {
+        return yield* new DevSeedTargetError({ reason: "missing-target", detail: targetDbPath });
+      }
+
       // Seeding a database from itself is not the data loss it looks like —
       // the source reads a pre-transaction snapshot, so the copy puts the rows
       // back. What does not come back is the event log and the cursors, and
       // anything outside the caps. Nobody means to ask for that.
       if (canonicalTargetDb === canonicalSourceDb) {
         return yield* new DevSeedTargetError({ reason: "same-source", detail: canonicalTargetDb });
-      }
-
-      // After the refusals: this error's advice is to start a dev server, which
-      // creates the database — the right next step everywhere the guards above
-      // did not already rule the target out.
-      if (!(yield* fileSystem.exists(targetDbPath))) {
-        return yield* new DevSeedTargetError({ reason: "missing-target", detail: targetDbPath });
       }
 
       // SQLite locking is not enough on its own: the seed's transaction can take
