@@ -6,6 +6,7 @@ import {
   ContainerIcon,
   FolderPlusIcon,
   Globe2Icon,
+  HouseIcon,
   LoaderIcon,
   SearchIcon,
   SquarePenIcon,
@@ -174,6 +175,7 @@ import { openCommandPalette } from "../commandPaletteBus";
 import {
   archiveSelectedThreadEntries,
   buildAgentSidebarEntries,
+  buildHomeThreadIdByProjectKey,
   buildMultiSelectThreadContextMenuItems,
   type AgentSidebarEntry,
   getSidebarThreadIdsToPrewarm,
@@ -312,6 +314,11 @@ interface SidebarThreadRowProps {
   projectCwd: string | null;
   orderedProjectThreadKeys: readonly string[];
   isActive: boolean;
+  /**
+   * The agent's home thread. Pinned first and marked with a small leading
+   * icon; the title stays the plain thread title ("Home"), no emoji.
+   */
+  isHomeThread: boolean;
   jumpLabel: string | null;
   appSettingsConfirmThreadArchive: boolean;
   renamingThreadKey: string | null;
@@ -349,6 +356,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   const {
     orderedProjectThreadKeys,
     isActive,
+    isHomeThread,
     jumpLabel,
     appSettingsConfirmThreadArchive,
     renamingThreadKey,
@@ -705,6 +713,28 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
             </Tooltip>
           )}
           {threadStatus && <ThreadStatusLabel status={threadStatus} />}
+          {/* Restrained: one muted leading glyph, no emoji and no badge. The
+              row is a normal thread in every other respect — the mark only
+              explains why it never moves out of first position. */}
+          {isHomeThread && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    role="img"
+                    aria-label="Home thread"
+                    data-testid={`thread-home-marker-${thread.id}`}
+                    className="inline-flex shrink-0 items-center justify-center text-sidebar-muted-foreground/70"
+                  />
+                }
+              >
+                <HouseIcon className="size-3" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                Home thread — this agent&rsquo;s proactive messages land here
+              </TooltipPopup>
+            </Tooltip>
+          )}
           {renamingThreadKey === threadKey ? (
             <input
               ref={handleRenameInputRef}
@@ -890,6 +920,8 @@ interface SidebarProjectThreadListProps {
   hiddenThreadStatus: ThreadStatusPill | null;
   orderedProjectThreadKeys: readonly string[];
   renderedThreads: readonly SidebarThreadSummary[];
+  /** Agent's home thread, or `null` for a workspace row. */
+  homeThreadId: ThreadId | null;
   showEmptyThreadState: boolean;
   shouldShowThreadPanel: boolean;
   isThreadListExpanded: boolean;
@@ -941,6 +973,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
     hiddenThreadStatus,
     orderedProjectThreadKeys,
     renderedThreads,
+    homeThreadId,
     showEmptyThreadState,
     shouldShowThreadPanel,
     isThreadListExpanded,
@@ -998,6 +1031,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               projectCwd={projectCwd}
               orderedProjectThreadKeys={orderedProjectThreadKeys}
               isActive={activeRouteThreadKey === threadKey}
+              isHomeThread={homeThreadId !== null && thread.id === homeThreadId}
               jumpLabel={threadJumpLabelByKey.get(threadKey) ?? null}
               appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
               renamingThreadKey={renamingThreadKey}
@@ -1179,6 +1213,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
   });
   const openPrLink = useOpenPrLink();
+  // The agent's designated home thread. Pinned first, and Delete is withheld
+  // from it (the server rejects the delete regardless — the UI just must not
+  // offer an action that always fails). `null` for workspace rows and for an
+  // agent that has not completed a handshake.
+  const homeThreadId = agent?.homeThreadId ?? null;
   const sidebarThreads = useThreadShellsForProjectRefs(project.memberProjectRefs);
   const sidebarThreadByKey = useMemo(
     () =>
@@ -1272,6 +1311,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     const visibleProjectThreads = sortThreads(
       projectThreads.filter((thread) => thread.archivedAt === null),
       threadSortOrder,
+      homeThreadId,
     );
     const projectStatus = resolveProjectStatusIndicator(
       visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
@@ -1283,7 +1323,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       projectStatus,
       visibleProjectThreads,
     };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+  }, [homeThreadId, projectThreads, threadLastVisitedAts, threadSortOrder]);
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey || projectExpanded) {
@@ -2157,6 +2197,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
       const threadWorkspacePath =
         thread.worktreePath ?? threadProject?.workspaceRoot ?? project.workspaceRoot ?? null;
+      // The agent's home thread is undeletable — the server's decider rejects
+      // it, so offering the action would only ever produce an error toast.
+      const isHomeThread = homeThreadId !== null && thread.id === homeThreadId;
       const clicked = await api.contextMenu.show(
         [
           ...(thread.branch
@@ -2166,7 +2209,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           { id: "mark-unread", label: "Mark unread" },
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
-          { id: "delete", label: "Delete", destructive: true, icon: "trash" },
+          ...(isHomeThread
+            ? []
+            : [{ id: "delete", label: "Delete", destructive: true, icon: "trash" } as const]),
         ],
         position,
       );
@@ -2252,6 +2297,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       copyThreadIdToClipboard,
       deleteThread,
       handleNewThread,
+      homeThreadId,
       markThreadUnread,
       memberProjectByScopedKey,
       project.workspaceRoot,
@@ -2438,6 +2484,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         hiddenThreadStatus={hiddenThreadStatus}
         orderedProjectThreadKeys={orderedProjectThreadKeys}
         renderedThreads={renderedThreads}
+        homeThreadId={homeThreadId}
         showEmptyThreadState={showEmptyThreadState}
         shouldShowThreadPanel={shouldShowThreadPanel}
         isThreadListExpanded={isThreadListExpanded}
@@ -3571,6 +3618,13 @@ export default function Sidebar() {
     }
     return sections;
   }, [agentEntries, sortedProjects]);
+  // Same pin the rendered rows use (`SidebarProjectItem`), keyed the same way.
+  // These two orderings are the visual list and the traversal list; if they
+  // disagree, thread-jump numbers land on the wrong row.
+  const homeThreadIdByProjectKey = useMemo(
+    () => buildHomeThreadIdByProjectKey(agentEntries),
+    [agentEntries],
+  );
   const visibleSidebarThreadKeys = useMemo(
     () =>
       visibleSidebarSections.flatMap((project) => {
@@ -3579,6 +3633,7 @@ export default function Sidebar() {
             (thread) => thread.archivedAt === null,
           ),
           sidebarThreadSortOrder,
+          homeThreadIdByProjectKey.get(project.projectKey) ?? null,
         );
         const projectExpanded = resolveProjectExpanded(
           projectExpandedById,
@@ -3609,6 +3664,7 @@ export default function Sidebar() {
         );
       }),
     [
+      homeThreadIdByProjectKey,
       sidebarThreadSortOrder,
       sidebarThreadPreviewCount,
       expandedThreadListsByProject,

@@ -4,13 +4,17 @@ import {
   HermesSettings,
   TextGenerationError,
   type ServerProvider,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { readHomeThreadId } from "../../orchestration/homeThreads.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import type { TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
 import { makeHermesAdapter } from "../Layers/HermesAdapter.ts";
 import {
@@ -23,7 +27,7 @@ import { HermesGatewayBroker } from "../Services/HermesGatewayBroker.ts";
 
 const decodeHermesSettings = Schema.decodeSync(HermesSettings);
 
-export type HermesDriverEnv = Crypto.Crypto;
+export type HermesDriverEnv = Crypto.Crypto | ServerSettingsService;
 
 const unsupportedTextGeneration = (
   operation:
@@ -57,6 +61,9 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, enabled }) =>
     Effect.gen(function* () {
       const broker = yield* HermesGatewayBroker;
+      // Captured once at construction: `getSnapshot` must be context-free
+      // (`R = never`) because the registry calls it outside this scope.
+      const settings = yield* ServerSettingsService;
       const adapter = yield* makeHermesAdapter({ instanceId });
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: HERMES_DRIVER_KIND,
@@ -71,7 +78,19 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
         const status = yield* broker
           .getInstanceStatus(instanceId)
           .pipe(Effect.catchTag("HermesGatewayManagementError", () => Effect.succeed(undefined)));
+        // Read-only: a snapshot must never create the thread as a side effect
+        // (this runs on every status tick). The handshake owns creation.
+        // A settings read that fails degrades to "no designation" rather than
+        // failing the whole snapshot — the pin is cosmetic, the status is not.
+        const currentSettings = yield* settings.getSettings.pipe(
+          Effect.map(Option.some),
+          Effect.orElseSucceed(() => Option.none<ServerSettings>()),
+        );
+        const homeThreadId = Option.isSome(currentSettings)
+          ? readHomeThreadId(currentSettings.value.providerInstances[instanceId])
+          : undefined;
         return {
+          ...(homeThreadId !== undefined ? { homeThreadId } : {}),
           instanceId,
           driver: HERMES_DRIVER_KIND,
           ...(displayName ? { displayName } : {}),

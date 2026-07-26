@@ -238,6 +238,27 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+/**
+ * Provenance for a message an agent delivered on its own initiative rather
+ * than as the answer to a turn.
+ *
+ * Present only on proactive deliveries (a cron result, an agent-initiated
+ * `send_message`, a gateway lifecycle notice). Its absence is what makes a
+ * message an ordinary one, so consumers must treat "no notification" as the
+ * normal case and never synthesize a default.
+ */
+export const OrchestrationMessageNotification = Schema.Struct({
+  kind: Schema.Literals(["cron", "message", "lifecycle", "handoff", "other"]),
+  /** Human source label rendered as the badge — "Cron: daily-digest". */
+  label: TrimmedNonEmptyString,
+  /**
+   * The delivering agent's idempotency key. Retained on the row so a replayed
+   * delivery is recognized as one already written rather than appended twice.
+   */
+  deliveryId: TrimmedNonEmptyString,
+});
+export type OrchestrationMessageNotification = typeof OrchestrationMessageNotification.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
@@ -245,6 +266,11 @@ export const OrchestrationMessage = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  /**
+   * Set only on proactive agent deliveries. Optional so every existing
+   * producer, cached snapshot, and persisted row decodes unchanged.
+   */
+  notification: Schema.optional(OrchestrationMessageNotification),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -417,6 +443,24 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
+/**
+ * The most recent proactive delivery in a thread, flattened onto the shell.
+ *
+ * Shell consumers (sidebar rows, the awareness/push projection) never load a
+ * thread's messages, so the notification provenance that lives on the message
+ * row has to be materialized here or those surfaces cannot see it at all.
+ * `deliveredAt` is the delivering message's `createdAt`, which is what lets a
+ * reader decide whether the notification is still the newest thing that
+ * happened to the thread or has been overtaken by a later turn.
+ */
+export const OrchestrationThreadNotificationSummary = Schema.Struct({
+  kind: OrchestrationMessageNotification.fields.kind,
+  label: TrimmedNonEmptyString,
+  deliveredAt: IsoDateTime,
+});
+export type OrchestrationThreadNotificationSummary =
+  typeof OrchestrationThreadNotificationSummary.Type;
+
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -443,6 +487,12 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
+  /**
+   * Newest proactive delivery, or `null`/absent on every thread that has never
+   * received one. Optional (like `snoozedUntil`) so shells produced by
+   * pre-notification servers and every existing cached snapshot still decode.
+   */
+  latestNotification: Schema.optional(Schema.NullOr(OrchestrationThreadNotificationSummary)),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
@@ -883,6 +933,28 @@ const ThreadActivityAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * A proactive delivery from a connected agent into its home thread.
+ *
+ * Internal-only and deliberately outside the turn machinery: there is no
+ * provider session or turn behind it, and it may arrive while the thread has
+ * a live user turn, which it must not disturb. `deliveryId` is the agent's
+ * idempotency key — the decider drops a repeat rather than appending twice,
+ * which is what lets the plugin retry an unacked delivery safely.
+ */
+const ThreadNotificationDeliverCommand = Schema.Struct({
+  type: Schema.Literal("thread.notification.deliver"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  deliveryId: TrimmedNonEmptyString,
+  kind: Schema.Literals(["cron", "message", "lifecycle", "handoff", "other"]),
+  label: TrimmedNonEmptyString,
+  text: Schema.String,
+  /** When the agent produced the content, which may predate its arrival. */
+  createdAt: IsoDateTime,
+});
+
 const ThreadRevertCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
@@ -899,6 +971,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
+  ThreadNotificationDeliverCommand,
   ThreadRevertCompleteCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
@@ -936,6 +1009,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.notification-delivered",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1179,6 +1253,23 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+/**
+ * A proactive agent delivery, materialized as an assistant message row.
+ *
+ * It is a real transcript message — selectable, copyable, part of history —
+ * distinguished only by carrying `notification` provenance. It has no
+ * `turnId`: nothing about it belongs to a turn, and attributing it to the
+ * thread's live turn would fold it away behind that turn's "Worked for …".
+ */
+export const ThreadNotificationDeliveredPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String,
+  notification: OrchestrationMessageNotification,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
@@ -1330,6 +1421,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.notification-delivered"),
+    payload: ThreadNotificationDeliveredPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

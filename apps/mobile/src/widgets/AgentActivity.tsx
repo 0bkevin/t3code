@@ -23,6 +23,7 @@ export type AgentActivityPhase =
   | "running"
   | "waiting_for_approval"
   | "waiting_for_input"
+  | "notification"
   | "completed"
   | "failed"
   | "stale";
@@ -81,6 +82,8 @@ export function AgentActivity(
         return isLightScheme ? "#d97706" : "#fcd34d"; // amber-600 / amber-300
       case "waiting_for_input":
         return isLightScheme ? "#4f46e5" : "#a5b4fc"; // indigo-600 / indigo-300
+      case "notification":
+        return isLightScheme ? "#7c3aed" : "#c4b5fd"; // violet-600 / violet-300
       case "failed":
         return isLightScheme ? "#dc2626" : "#fca5a5"; // red-600 / red-300
       case "completed":
@@ -97,7 +100,9 @@ export function AgentActivity(
   const phasePriority = (phase: AgentActivityPhase): number => {
     if (phase === "waiting_for_approval" || phase === "waiting_for_input") return 0;
     if (phase === "failed") return 1;
-    if (phase === "running" || phase === "starting") return 2;
+    // A proactive delivery is unread news, so it outranks finished/stale rows
+    // but never a human who is actually blocked.
+    if (phase === "running" || phase === "starting" || phase === "notification") return 2;
     return 3;
   };
   const ordered = [...props.activities].sort(
@@ -163,6 +168,8 @@ export function AgentActivity(
         return "exclamationmark.circle.fill";
       case "waiting_for_input":
         return "questionmark.circle.fill";
+      case "notification":
+        return "bell.badge.fill";
       case "failed":
         return "xmark.octagon.fill";
       case "completed":

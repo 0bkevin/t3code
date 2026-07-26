@@ -4,7 +4,7 @@ Experimental Hermes platform plugin for connecting one already-running Hermes
 process to T3 Code. The plugin makes an outbound WebSocket connection; Hermes
 does not need to listen on a public port.
 
-The gateway wire protocol is v2. The T3 server and Hermes plugin must be updated
+The gateway wire protocol is v3. The T3 server and Hermes plugin must be updated
 together; mismatched versions fail the connection handshake closed.
 
 Each T3 thread maps deterministically to one Hermes gateway session. A new T3
@@ -54,6 +54,36 @@ The handshake also reports Hermes' configured default model so T3 can show a
 truthful label in its picker. It is read-only — Hermes owns model selection —
 and is omitted entirely if it cannot be read.
 
+## The Home thread
+
+Every enrolled instance gets one **Home** thread in T3, created automatically —
+there is nothing to set up and nothing to choose. It receives all of Hermes'
+proactive output: cron results (`deliver=t3`), the agent's `send_message` tool
+with a bare `t3` target, gateway online/shutdown notices, and `/handoff t3`.
+Replying in it runs an ordinary Hermes turn in the same thread.
+
+**T3 owns the designation, and `T3_HOME_CHANNEL` is a synced cache of it.** The
+plugin writes that variable itself: T3 republishes the home thread id on every
+successful handshake, and the plugin compares and persists it with Hermes'
+profile-aware `save_env_value` helper. A hand-edited `T3_HOME_CHANNEL` will
+therefore be **overwritten on the next reconnect** — to move the Home thread,
+change it in T3, not in `.env`. (`/sethome` is likewise inert for this platform:
+the designation is fixed, so Hermes' "set a home channel" nudge is suppressed.)
+
+Deliveries are durable in both directions. Each one is written to a small JSONL
+queue at `<hermes home>/gateway/t3_home_delivery_queue.jsonl` before it is sent
+and removed only once T3 acknowledges it, so nothing is lost if either side
+restarts mid-flight; queued deliveries flush on the next connect, and T3
+deduplicates so a replay is harmless. The queue is capped and drops oldest-first
+with a logged warning rather than growing without bound.
+
+Cron works whether or not the gateway is co-resident. When `hermes cron` runs in
+its own process there is no live adapter, so the plugin dials T3 over a
+short-lived delivery connection — authenticated the same way, but never
+registered as the instance's primary connection, so it cannot disturb a running
+`hermes gateway`. If T3 is unreachable the delivery is queued and the cron job
+still reports success.
+
 ## Initial scope
 
 - Text input and live assistant streaming
@@ -66,9 +96,11 @@ and is omitted entirely if it cannot be read.
 - Reconnect with bounded backoff
 - Version-incompatible and revoked credentials fail closed
 
-T3 threads are session-only in the initial scope. The adapter suppresses Hermes' exact
-first-chat `/sethome` notice without assigning a home channel or redirecting
-cron and cross-platform delivery.
+- Proactive delivery into the Home thread: cron, `send_message`, lifecycle
+  notices, `/handoff` — with a durable queue and out-of-process cron support
+
+Non-home T3 threads remain session-only: Hermes cannot message them unprompted,
+and an unsolicited send to one still fails with `no active T3 turn`.
 
 Attachments intentionally advertise `false`. Adding bounded image/file input is
 the first post-stability feature and should not reuse arbitrary raw payloads.

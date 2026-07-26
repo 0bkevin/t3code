@@ -2368,6 +2368,139 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("projects notification deliveries into the message row and shell summary", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const createdAt = "2026-07-01T09:00:00.000Z";
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-notify-project"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-notify"),
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-notify-project"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-notify-project"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-notify"),
+          title: "Hermes",
+          workspaceRoot: "/tmp/project-notify",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-notify-thread"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-notify"),
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-notify-thread"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-notify-thread"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-notify"),
+          projectId: ProjectId.make("project-notify"),
+          title: "Home",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("hermes"),
+            model: "hermes",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+
+      const deliveredAt = "2026-07-01T09:05:00.000Z";
+      yield* appendAndProject({
+        type: "thread.notification-delivered",
+        eventId: EventId.make("evt-notify-delivery"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-notify"),
+        occurredAt: deliveredAt,
+        commandId: CommandId.make("cmd-notify-delivery"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-notify-delivery"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-notify"),
+          messageId: MessageId.make("message-notify"),
+          text: "Digest ready.",
+          notification: {
+            kind: "cron",
+            label: "Cron: daily-digest",
+            deliveryId: "delivery-1",
+          },
+          createdAt: deliveredAt,
+          updatedAt: deliveredAt,
+        },
+      });
+
+      const messageRows = yield* sql<{
+        readonly messageId: string;
+        readonly text: string;
+        readonly turnId: string | null;
+        readonly role: string;
+        readonly isStreaming: number;
+        readonly notification: string | null;
+      }>`
+        SELECT
+          message_id AS "messageId",
+          text,
+          turn_id AS "turnId",
+          role,
+          is_streaming AS "isStreaming",
+          notification_json AS "notification"
+        FROM projection_thread_messages
+        WHERE thread_id = 'thread-notify'
+      `;
+      assert.equal(messageRows.length, 1);
+      assert.equal(messageRows[0]?.messageId, "message-notify");
+      assert.equal(messageRows[0]?.turnId, null);
+      assert.equal(messageRows[0]?.role, "assistant");
+      assert.equal(messageRows[0]?.isStreaming, 0);
+      assert.deepEqual(
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.parse(messageRows[0]?.notification ?? "null"),
+        { kind: "cron", label: "Cron: daily-digest", deliveryId: "delivery-1" },
+      );
+
+      // The shell summary is what the sidebar and the push relay read; the
+      // provenance is invisible to them unless it is flattened here.
+      const threadRows = yield* sql<{
+        readonly updatedAt: string;
+        readonly latestNotification: string | null;
+      }>`
+        SELECT
+          updated_at AS "updatedAt",
+          latest_notification_json AS "latestNotification"
+        FROM projection_threads
+        WHERE thread_id = 'thread-notify'
+      `;
+      assert.equal(threadRows[0]?.updatedAt, deliveredAt);
+      assert.deepEqual(
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.parse(threadRows[0]?.latestNotification ?? "null"),
+        { kind: "cron", label: "Cron: daily-digest", deliveredAt },
+      );
+    }),
+  );
+
   it.effect("does not fallback-retain messages whose turnId is removed by revert", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

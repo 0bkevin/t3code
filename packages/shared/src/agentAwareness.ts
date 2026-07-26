@@ -10,6 +10,7 @@ export type AgentAwarenessPhase =
   | "running"
   | "waiting_for_approval"
   | "waiting_for_input"
+  | "notification"
   | "completed"
   | "failed"
   | "stale";
@@ -40,6 +41,8 @@ export interface ProjectThreadAwarenessInput {
     | "updatedAt"
     | "hasPendingApprovals"
     | "hasPendingUserInput"
+    | "latestNotification"
+    | "latestUserMessageAt"
   >;
 }
 
@@ -66,7 +69,7 @@ export function projectThreadAwareness(
     projectTitle: project.title,
     threadTitle: thread.title,
     phase,
-    headline: headlineForPhase(phase),
+    headline: headlineForPhase(phase, thread),
     ...(detail === undefined ? {} : { detail }),
     modelTitle: thread.modelSelection.model,
     updatedAt: thread.updatedAt,
@@ -82,6 +85,14 @@ function resolveThreadAwarenessPhase(
   }
   if (thread.hasPendingUserInput) {
     return "waiting_for_input";
+  }
+  // A proactive delivery is news the user has not seen, but only while it is
+  // still the newest thing on the thread: once a turn or a user message lands
+  // after it, the ordinary ladder describes the thread better and pinning it
+  // to "notification" would suppress the real completion/running state
+  // indefinitely (there is no read state to clear it).
+  if (isLatestNotificationCurrent(thread)) {
+    return "notification";
   }
   if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
     return "failed";
@@ -116,7 +127,42 @@ function resolveThreadAwarenessPhase(
   return null;
 }
 
-function headlineForPhase(phase: AgentAwarenessPhase): string {
+/**
+ * True while the thread's newest proactive delivery is also the newest thing
+ * that happened to the thread — nothing the user sent and no turn activity
+ * postdates it.
+ */
+function isLatestNotificationCurrent(thread: ProjectThreadAwarenessInput["thread"]): boolean {
+  const notification = thread.latestNotification ?? null;
+  if (!notification) {
+    return false;
+  }
+  const deliveredAtMs = Date.parse(notification.deliveredAt);
+  if (Number.isNaN(deliveredAtMs)) {
+    return false;
+  }
+  const supersedingTimestamps = [
+    thread.latestUserMessageAt,
+    thread.latestTurn?.completedAt ?? null,
+    thread.latestTurn?.startedAt ?? null,
+    thread.latestTurn?.requestedAt ?? null,
+  ];
+  for (const timestamp of supersedingTimestamps) {
+    if (timestamp === null) {
+      continue;
+    }
+    const timestampMs = Date.parse(timestamp);
+    if (!Number.isNaN(timestampMs) && timestampMs > deliveredAtMs) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function headlineForPhase(
+  phase: AgentAwarenessPhase,
+  thread: ProjectThreadAwarenessInput["thread"],
+): string {
   switch (phase) {
     case "starting":
       return "Starting agent";
@@ -126,6 +172,10 @@ function headlineForPhase(phase: AgentAwarenessPhase): string {
       return "Approval needed";
     case "waiting_for_input":
       return "Waiting for input";
+    // The delivering agent's own label ("Cron: daily-digest") is the headline:
+    // a generic one would strip the only information the delivery carries.
+    case "notification":
+      return thread.latestNotification?.label ?? "New message";
     case "completed":
       return "Agent finished";
     case "failed":

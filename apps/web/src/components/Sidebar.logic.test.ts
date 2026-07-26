@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   archiveSelectedThreadEntries,
   buildAgentSidebarEntries,
+  buildHomeThreadIdByProjectKey,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
   formatAgentSidebarLabel,
@@ -42,6 +43,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 
+import { sortThreads, type ThreadSortInput } from "../lib/threadSort";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -1556,5 +1558,152 @@ describe("agents sidebar section", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]?.instanceId).toBe(instanceId);
+  });
+
+  it("carries the provider's designated home thread onto the entry", () => {
+    const entries = buildAgentSidebarEntries({
+      projects: [makeAgentProject()],
+      providerByInstanceId: new Map([
+        [String(instanceId), makeServerProvider({ homeThreadId: "thread-home" as never })],
+      ]),
+    });
+
+    expect(entries[0]?.homeThreadId).toBe("thread-home");
+  });
+
+  it("reports no home thread for a driver that designates none", () => {
+    // Every non-Hermes driver, and a Hermes instance before its first
+    // handshake — both must read as "this list has no pinned row".
+    const entries = buildAgentSidebarEntries({
+      projects: [makeAgentProject()],
+      providerByInstanceId: new Map([[String(instanceId), makeServerProvider()]]),
+    });
+
+    expect(entries[0]?.homeThreadId).toBeNull();
+  });
+});
+
+describe("buildHomeThreadIdByProjectKey", () => {
+  function makeEntry(input: {
+    readonly instanceId: string;
+    readonly projectKey: string;
+    readonly homeThreadId: string | null;
+  }) {
+    return {
+      instanceId: input.instanceId as never,
+      project: {
+        agentInstanceId: input.instanceId as never,
+        title: input.instanceId,
+        displayName: input.instanceId,
+        projectKey: input.projectKey,
+      },
+      label: input.instanceId,
+      statusKey: "ready" as const,
+      statusLabel: "Connected",
+      statusPulse: false,
+      homeThreadId: input.homeThreadId as never,
+    };
+  }
+
+  it("maps each agent's project key to its home thread", () => {
+    const map = buildHomeThreadIdByProjectKey([
+      makeEntry({ instanceId: "hermes-a", projectKey: "project-a", homeThreadId: "thread-home-a" }),
+      makeEntry({ instanceId: "hermes-b", projectKey: "project-b", homeThreadId: "thread-home-b" }),
+    ]);
+
+    expect(map.get("project-a")).toBe("thread-home-a");
+    expect(map.get("project-b")).toBe("thread-home-b");
+  });
+
+  it("omits agents with no designation", () => {
+    const map = buildHomeThreadIdByProjectKey([
+      makeEntry({ instanceId: "hermes-a", projectKey: "project-a", homeThreadId: null }),
+    ]);
+
+    expect(map.size).toBe(0);
+  });
+
+  it("keeps the first entry when two agents collapse onto one project key", () => {
+    // `visibleSidebarSections` de-duplicates by `projectKey` and keeps the
+    // first section, so the pin must resolve to the same one.
+    const map = buildHomeThreadIdByProjectKey([
+      makeEntry({ instanceId: "hermes-a", projectKey: "shared", homeThreadId: "thread-home-a" }),
+      makeEntry({ instanceId: "hermes-b", projectKey: "shared", homeThreadId: "thread-home-b" }),
+    ]);
+
+    expect(map.get("shared")).toBe("thread-home-a");
+  });
+});
+
+describe("home thread pinning across both sidebar sort sites", () => {
+  // `SidebarProjectItem` (the rendered rows) and `visibleSidebarThreadKeys`
+  // (jump shortcuts, prev/next, prewarming) each call `sortThreads` with the
+  // same pinned id. These assert the shared helper produces one ordering, and
+  // that the ordering survives the prewarm slice.
+  function makeSortableThread(input: {
+    readonly id: string;
+    readonly updatedAt: string;
+  }): { id: string } & ThreadSortInput {
+    return {
+      id: input.id,
+      createdAt: input.updatedAt,
+      updatedAt: input.updatedAt,
+      latestUserMessageAt: input.updatedAt,
+      messages: [],
+    };
+  }
+
+  const threads = [
+    makeSortableThread({ id: "thread-newest", updatedAt: "2026-03-09T12:00:00.000Z" }),
+    makeSortableThread({ id: "thread-middle", updatedAt: "2026-03-09T10:00:00.000Z" }),
+    // Deliberately the oldest row in the list: a home thread whose last cron
+    // ran a month ago must still hold position one.
+    makeSortableThread({ id: "thread-home", updatedAt: "2026-01-01T00:00:00.000Z" }),
+  ];
+
+  it("sorts the home thread first even when it is the oldest", () => {
+    expect(sortThreads(threads, "updated_at", "thread-home").map((thread) => thread.id)).toEqual([
+      "thread-home",
+      "thread-newest",
+      "thread-middle",
+    ]);
+  });
+
+  it("produces an identical ordering at both sort sites", () => {
+    const renderOrder = sortThreads(threads, "updated_at", "thread-home");
+    const traversalOrder = sortThreads(threads, "updated_at", "thread-home");
+
+    expect(renderOrder.map((thread) => thread.id)).toEqual(
+      traversalOrder.map((thread) => thread.id),
+    );
+  });
+
+  it("leaves a provider list with no designation unchanged", () => {
+    // Non-Hermes drivers and pre-handshake Hermes instances both land here.
+    expect(sortThreads(threads, "updated_at", null).map((thread) => thread.id)).toEqual([
+      "thread-newest",
+      "thread-middle",
+      "thread-home",
+    ]);
+    expect(sortThreads(threads, "updated_at").map((thread) => thread.id)).toEqual([
+      "thread-newest",
+      "thread-middle",
+      "thread-home",
+    ]);
+  });
+
+  it("ignores a pinned id that matches no thread", () => {
+    expect(sortThreads(threads, "updated_at", "thread-gone").map((thread) => thread.id)).toEqual([
+      "thread-newest",
+      "thread-middle",
+      "thread-home",
+    ]);
+  });
+
+  it("puts the home thread in the prewarm slice even when the limit is one", () => {
+    // Pinning happens before the prewarm slice, so Home is always warm.
+    const ordered = sortThreads(threads, "updated_at", "thread-home").map((thread) => thread.id);
+
+    expect(getSidebarThreadIdsToPrewarm(ordered, 1)).toEqual(["thread-home"]);
   });
 });

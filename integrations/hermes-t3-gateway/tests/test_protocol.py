@@ -66,7 +66,7 @@ def fake_hermes_skills(skills_list=None, skill_view=None):
 
 
 class ProtocolTests(unittest.TestCase):
-    def test_hello_matches_v2_contract(self):
+    def test_hello_matches_v3_contract(self):
         hello = protocol.connection_hello(
             hermes_version="0.19.0",
             authentication={"type": "enrollment-token", "token": "once"},
@@ -75,7 +75,7 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(hello["type"], "connection.hello")
         self.assertEqual(hello["requestId"], "request-1")
-        self.assertEqual(hello["protocolVersion"], 2)
+        self.assertEqual(hello["protocolVersion"], 3)
         self.assertFalse(hello["capabilities"]["attachments"])
         self.assertTrue(hello["capabilities"]["streaming"])
         self.assertEqual(hello["model"], "gpt-5.6-terra")
@@ -125,15 +125,15 @@ class ProtocolTests(unittest.TestCase):
 
     def test_server_frame_validation_is_closed(self):
         with self.assertRaisesRegex(ValueError, "unsupported"):
-            protocol.validate_server_frame({"type": "made.up", "protocolVersion": 2})
+            protocol.validate_server_frame({"type": "made.up", "protocolVersion": 3})
         with self.assertRaisesRegex(ValueError, "version"):
-            # Protocol v1 peers must upgrade before sending runtime frames.
-            protocol.validate_server_frame({"type": "ping", "protocolVersion": 1})
+            # Protocol v2 peers must upgrade before sending runtime frames.
+            protocol.validate_server_frame({"type": "ping", "protocolVersion": 2})
 
     def test_describe_frames_are_accepted_server_commands(self):
         for frame_type in ("describe.request", "skill.body.request"):
             with self.subTest(frame_type=frame_type):
-                message = {"type": frame_type, "protocolVersion": 2}
+                message = {"type": frame_type, "protocolVersion": 3}
                 self.assertEqual(protocol.validate_server_frame(message), message)
 
     # ── describe.response ──────────────────────────────────────────────
@@ -151,7 +151,7 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(response["type"], "describe.response")
         self.assertEqual(response["requestId"], "describe-1")
-        self.assertEqual(response["protocolVersion"], 2)
+        self.assertEqual(response["protocolVersion"], 3)
         self.assertEqual(response["pluginVersion"], protocol.PLUGIN_VERSION)
         self.assertEqual(response["hermesVersion"], "0.19.0")
         self.assertEqual(response["model"], "gpt-5.6-terra")
@@ -282,7 +282,7 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(response["type"], "skill.body.response")
         self.assertEqual(response["requestId"], "body-1")
-        self.assertEqual(response["protocolVersion"], 2)
+        self.assertEqual(response["protocolVersion"], 3)
         self.assertEqual(response["skillName"], "codex")
         self.assertEqual(response["markdown"], "# Codex\n\nDelegate coding.")
 

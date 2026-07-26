@@ -23,7 +23,10 @@ Three independent gates block Hermes-initiated messages into T3:
 
 1. **Plugin turn gate** — every emitter requires `_active_turns[thread_id]`, populated
    only by a T3-issued `turn.start`; `send()` fails with `"no active T3 turn"`
-   (`adapter.py:207-209`, `:254-256`).
+   (`adapter.py:209`, `:256`). Since the finalize-bug fixes (`3f71c601a`), turn
+   completion is keyed **exclusively** off `notify=True` metadata on `send()`
+   (`adapter.py:212-217`); `finalize` on `edit_message` is ignored outright. Any
+   proactive branch added to `send()` must respect that contract — see Part 3.
 2. **Contract gate** — no plugin→T3 frame in protocol v2 opens a session or turn
    (`packages/contracts/src/hermesGateway.ts:672-694`); everything is a reply carrying
    a T3-minted `requestId`.
@@ -190,19 +193,63 @@ env-only resolution path is always in sync with T3's durable designation.
 
 ### Adapter delivery path
 
-`T3PlatformAdapter.send(chat_id, content, metadata)` grows a proactive branch: when
-there is **no active turn** for the target and `chat_id` equals the home thread id,
-emit `home.deliver` instead of failing with `"no active T3 turn"`. Kind/label
-classification is best-effort from what Hermes passes in `metadata` and the send
-context (cron deliveries are identifiable; gateway startup/shutdown broadcasts match
-known message shapes; everything else defaults to `kind: "message"`, label "Hermes").
-Sends to a non-home thread without an active turn keep the current explicit error —
-scope creep into "message any thread unprompted" is deliberately excluded.
+`T3PlatformAdapter.send(chat_id, content, metadata)` grows a proactive branch for the
+home thread. **The gate must be provenance, not merely turn absence.** The naive rule
+("no active turn for this thread → `home.deliver`") deadlocks against the
+notify-completion contract when the home thread itself has a live turn: a cron or
+`send_message` delivery targeting the home chat while the user is mid-conversation
+there would fall into the active-turn path, be streamed as that turn's assistant
+content, and — because final cron deliveries arrive notify-stamped — **complete the
+user's live turn with the cron output as its answer**. That is the same
+keyed-off-the-wrong-signal defect class COMPATIBILITY.md documents for `finalize`.
 
-The `/sethome` nudge suppression (`adapter.py:41-46`, `:211-214`, `:258-259`) stays:
-once `env_enablement_fn` seeds a home channel Hermes stops emitting the nudge
+The discriminator already exists: `_gateway_session_key()` (`adapter.py`, added in
+`3f71c601a`) reads `HERMES_SESSION_KEY` from Hermes' session contextvar. A genuine
+turn reply is produced inside the turn's session context, so the key resolves to this
+plugin's `build_session_key` id for that thread; cron deliveries run in their own
+`cron_*` session and broadcasts run in none, so the key is absent or names a different
+session. The branch rule in `send()` is therefore:
+
+- Active turn for `chat_id` **and** session key matches that turn's session → normal
+  turn path (`_emit_assistant_content`, `notify` completes the turn).
+- `chat_id` is the home thread and the session key does **not** match an active turn
+  there (or no turn exists) → emit `home.deliver`. Never touch `_active_turns`.
+- Non-home thread without a matching active turn → keep the current explicit
+  `"no active T3 turn"` error; "message any thread unprompted" stays out of scope.
+
+Kind/label classification is best-effort from `metadata` and the send context (cron
+deliveries are identifiable; gateway startup/shutdown broadcasts match known message
+shapes; everything else defaults to `kind: "message"`, label "Hermes").
+
+Three constraints from the turn-lifecycle fixes (`3f71c601a`, `a4000b86d`,
+COMPATIBILITY.md "Turn completion is keyed off `notify`, never `finalize`") shape
+this branch:
+
+- **Ordering inside `send()`.** The steer-control capture
+  (`_capture_steer_control_response`, `adapter.py:205`) must stay first — steer
+  acknowledgements arrive with `notify=True` and must never be misread as proactive
+  deliveries. The proactive branch slots after capture, gated by the provenance rule
+  above.
+- **`notify` does not end anything here.** In the active-turn path `notify=True`
+  triggers `_complete_turn`; in the proactive branch there is no turn to complete —
+  the metadata is consumed only as a classification hint (final cron deliveries
+  arrive notify-stamped via `_mark_notify_metadata`, `gateway/platforms/base.py:89`).
+  The branch must not touch `_active_turns` or emit any turn/item frames — only
+  `home.deliver`.
+- **Proactive edits are not supported.** Hermes' progress loop may follow a `send`
+  with `edit_message` calls against the returned `message_id` (the tool-progress
+  bubble pattern). `edit_message` outside an active turn keeps returning
+  `"no active T3 turn"` — a delivery is an atomic document, not a streaming surface.
+  In practice cron/`send_message`/lifecycle deliveries are single sends; if an
+  upstream path ever streams a home delivery, revisit with a
+  `home.deliver`-supersedes-by-`deliveryId` scheme rather than edit frames.
+
+The `/sethome` nudge suppression (`adapter.py:41-46`; checks at `:211`, `:258`)
+stays: once `env_enablement_fn` seeds a home channel Hermes stops emitting the nudge
 naturally, but the suppression covers the pre-designation window (first connect before
-any `connection.accepted` has written the env var).
+any `connection.accepted` has written the env var). Note the nudge check now also
+gates on `notify` for turn completion (`adapter.py:211-214`) — the suppression tests
+in `tests/test_adapter.py` pin this and must keep passing.
 
 ### Durable plugin-side queue
 
@@ -238,6 +285,88 @@ location and any metadata fields read for classification are new entries).
   (server-side decider rejection is the real guard; UI just avoids offering it).
 - Composer in the home thread is the normal Hermes composer — replying starts an
   ordinary `session.ensure`/`turn.start` flow on the same `threadId`.
+- **Pinning must survive the sidebar dedupe.** `visibleSidebarSections` now
+  de-duplicates by `projectKey` (`Sidebar.tsx:3555+`, added in `3f71c601a`'s batch)
+  and `getSidebarThreadIdsToPrewarm` dedupes thread ids. Home-thread pinning is a
+  sort inside one section's thread list, so it composes with both — but the pinned
+  ordering must be applied before the prewarm slice so Home is always warm.
+
+---
+
+## Part 5 — Bundled fix: settled-turn activity escapes the "Worked for …" fold
+
+Not home-channel machinery, but it lands in the same surfaces (Hermes activity
+ordering in the timeline) and the home thread will render notification + turn
+activity constantly, so it ships with this work.
+
+**Symptom.** After a Hermes turn settles, its activity should collapse behind the
+"Worked for …" fold above the final answer. Instead the activity splits: one cluster
+(work summary) folds correctly above, and a second cluster (the steps taken /
+"Work Log" with rows like "Hermes activity is running …") renders **below** the final
+assistant message, outside the fold. Both belong above.
+
+**What's already fixed.** `a4000b86d` reordered `_complete_turn` to close the live
+status item before the assistant message, because T3's fold only captures entries
+preceding the turn's terminal message — the status item was being stamped ~2ms after
+the answer and escaping. That fix is correct but insufficient: the symptom still
+reproduces (observed post-fix with a "Work Log — Hermes activity" section below the
+answer), which means at least one more path produces late- or mis-attributed entries.
+
+**How the fold actually works** (`MessagesTimeline.logic.ts`):
+
+- `deriveTimelineEntries` (`session-logic.ts:1340-1366`) merges messages, plans, and
+  work entries and sorts **purely by `createdAt` string compare**. Assistant messages
+  sort at their _creation_ time (early in the turn); activities re-stamp `createdAt`
+  on every update (the projector replaces by id and re-sorts,
+  `projector.ts:725-753`), so a turn's activities always sort _after_ its assistant
+  message. Position alone is therefore expected to be "activities below".
+- The fold compensates: `deriveTurnFolds` (`MessagesTimeline.logic.ts:285-404`)
+  groups entries by `turnId` and hides **every non-terminal entry of a settled turn
+  regardless of timestamp position**. So a trailing activity row that carries the
+  right `turnId` cannot escape the fold.
+- Consequently, an entry rendering below the final message **must have failed turn
+  attribution** — grouping skips entries whose `turnId` resolves null
+  (`MessagesTimeline.logic.ts:311-318`), and unattributed entries can never be hidden.
+
+**Candidate mechanisms to run down, in likelihood order:**
+
+1. **Late frames lose their turn.** Plugin tool hooks run on Hermes tool worker
+   threads; a `post_tool_call` → `item.completed` frame can arrive after
+   `turn.completed`. `ProviderRuntimeIngestion`'s turn-conflict gate
+   (`ProviderRuntimeIngestion.ts:1370-1411`) rejects events naming a non-active turn
+   — but any acceptance path that strips or nulls `turnId` (or an ingestion branch
+   that emits the activity with `toTurnId(...) ?? null`) produces exactly this
+   symptom. Check what happens to an `item.*` frame for a just-completed turn.
+2. **Command-dispatch race.** Activity appends and message finalization are separate
+   orchestration commands; wire order (status completed before assistant, per
+   `a4000b86d`) does not guarantee commit order. If the activity append commits after
+   the turn record settles, does any code path re-key or drop its `turnId`?
+3. **Fallback attribution gap.** `_turn_for_tool_hook`'s sole-active-turn fallback
+   emits nothing when it cannot resolve — but the _generic status_ item
+   (`_ensure_generic_activity`) and any frames emitted between `notify` completion
+   and socket flush should be audited for a window where `turn.turn_id` is stale or
+   the frame is built without it.
+
+The decisive experiment: reproduce, then inspect the projected thread — the escaping
+activity row's `turnId` in `projection_thread_activities`. Null confirms attribution
+loss (mechanisms 1/3); a correct `turnId` with the row still visible would falsify
+the fold analysis and point back at web-side grouping.
+
+**Fix direction.** Two layers, both worth doing:
+
+- Root cause: guarantee `turnId` attribution end-to-end for every activity a turn
+  produces, including frames that land after `turn.completed` (accept-and-attribute
+  late items for a recently-completed turn rather than dropping/nulling).
+- Defense: the fold should not depend on perfect attribution. For a settled turn,
+  any work entry timestamped between the turn's first entry and its terminal
+  message's `updatedAt` (plus a small trailing grace window) with no other turn
+  claiming it belongs to that turn's fold. This also future-proofs the home thread,
+  where notification rows and turn activity will interleave.
+
+Regression test: replay the recorded frame sequence of a real Hermes turn (the
+existing `test_adapter.py` frame-replay pattern) plus a late `item.completed`, and
+assert the derived timeline rows place no work/activity row after the terminal
+assistant message of a settled turn.
 
 ---
 
@@ -259,6 +388,9 @@ Each step typechecks and is testable on its own:
 6. **Web UI** — snapshot `homeThreadId`, pinned row, notification badges, delete
    suppression.
 7. **Push** — `AgentAwarenessRelay` acceptance + headline mapping.
+8. **Fold-escape fix (Part 5)** — independent of 1–7; can land first. Doing it
+   before the home-channel UI keeps notification rows from inheriting the same
+   mis-ordering.
 
 Steps 1–3 make T3 able to receive; step 4 makes the flagship flows (cron via live
 gateway, `send_message`, lifecycle, `/handoff`) work end to end; 5–7 complete it.
@@ -293,6 +425,14 @@ Manual checks:
    generation-bumping a live gateway socket (verify with a concurrent live connection).
 9. Regression: Claude/Codex threads and non-home Hermes threads unchanged; unsolicited
    sends to non-home threads still error.
+10. Turn/delivery interleave in Home: while a user turn is running in the home
+    thread, fire a `deliver=t3` cron job → the delivery lands as a notification row
+    and the live turn keeps streaming and completes normally on its own `notify`
+    (this is the provenance-gate check from Part 3 — the failure mode is the cron
+    output completing the user's turn).
+11. Part 5: settle a Hermes turn that used tools → all activity, including the
+    status line and every tool row, folds behind "Worked for …"; nothing renders
+    between or below the final answer.
 
 Automated: `pnpm typecheck`, `pnpm test`, `pnpm lint`; plugin tests in
 `integrations/hermes-t3-gateway/tests` (queue FIFO + ack purge, nudge suppression
@@ -313,3 +453,15 @@ still pinned, proactive-send branch, standalone sender against a mock server);
 - **Lifecycle notice volume.** Frequent gateway restarts write quiet rows into Home.
   If that proves noisy, Hermes' per-platform `gateway_restart_notification: false`
   opt-out is the escape hatch (a one-line config change, no code).
+- **The sole-active-turn tool-hook fallback misattributes cron tool activity.**
+  `_turn_for_tool_hook` (added in `3f71c601a`) falls back to "the sole active turn"
+  when no routing key resolves. The plugin's `pre/post_tool_call` hooks are
+  process-global, so a **cron job running tools** while exactly one T3 turn is
+  active resolves through that fallback and paints the cron job's tool calls into
+  the unrelated live turn. Upstream is aware of the general hazard (the cron
+  scheduler deliberately avoids the process-global env var for exactly this
+  routing risk, `cron/scheduler.py:3077`). Low-frequency today; this feature makes
+  `deliver=t3` cron jobs common, so fix alongside Part 3: before the sole-turn
+  fallback, exclude hook calls whose `session_id` is a cron run id (`cron_*`
+  prefix, `cron/scheduler.py:3017`) — their activity belongs to the eventual
+  `home.deliver`, not to any live turn.

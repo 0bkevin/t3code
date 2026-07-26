@@ -166,6 +166,24 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
 
   /**
+   * Answer "does this thread row exist", independent of archive state.
+   *
+   * Every other thread read here filters `archived_at IS NULL`, which is right
+   * for "what should the user see" and wrong for existence: an archived thread
+   * is parked, not gone. Callers holding a durable reference to a specific
+   * thread — the Hermes home-thread designation — need this distinction, or
+   * archiving reads as deletion and they replace a thread the user still has.
+   *
+   * A soft-deleted row still reports absent.
+   */
+  readonly getThreadArchiveStateById: (
+    threadId: ThreadId,
+  ) => Effect.Effect<
+    Option.Option<{ readonly archivedAt: string | null }>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Read a single active thread detail snapshot by id.
    */
   readonly getThreadDetailById: (

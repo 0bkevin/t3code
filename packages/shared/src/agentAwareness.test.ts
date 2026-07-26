@@ -29,6 +29,8 @@ function thread(
   | "updatedAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "latestNotification"
+  | "latestUserMessageAt"
 > {
   return {
     id: "thread-1" as ThreadId,
@@ -39,6 +41,8 @@ function thread(
     updatedAt: NOW,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    latestNotification: null,
+    latestUserMessageAt: null,
     ...overrides,
   };
 }
@@ -100,6 +104,76 @@ describe("projectThreadAwareness", () => {
       modelTitle: "gpt-5.4",
       deepLink: "/threads/env-1/thread-1",
     });
+  });
+
+  it("projects a fresh proactive delivery with the delivery's own label as the headline", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: thread({
+        latestNotification: {
+          kind: "cron",
+          label: "Cron: daily-digest",
+          deliveredAt: NOW,
+        },
+      }),
+    });
+
+    expect(state?.phase).toBe("notification");
+    // A generic headline would strip the only information the delivery carries.
+    expect(state?.headline).toBe("Cron: daily-digest");
+  });
+
+  it("stops reporting a delivery once later thread activity supersedes it", () => {
+    const delivered = "2026-05-22T11:00:00.000Z";
+    const later = "2026-05-22T11:30:00.000Z";
+    const notification = {
+      kind: "message" as const,
+      label: "Hermes",
+      deliveredAt: delivered,
+    };
+
+    // A user reply after the delivery: the ordinary ladder takes over again.
+    expect(
+      projectThreadAwareness({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: thread({ latestNotification: notification, latestUserMessageAt: later }),
+      }),
+    ).toBeNull();
+
+    // A turn that started after it likewise wins — otherwise "notification"
+    // would pin forever, since nothing ever marks it read.
+    expect(
+      projectThreadAwareness({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: thread({
+          latestNotification: notification,
+          latestTurn: {
+            turnId: "turn-1" as TurnId,
+            state: "running",
+            requestedAt: later,
+            startedAt: later,
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        }),
+      })?.phase,
+    ).toBe("running");
+  });
+
+  it("keeps blocked-on-you phases ahead of a delivery", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: thread({
+        hasPendingApprovals: true,
+        latestNotification: { kind: "cron", label: "Cron: nightly", deliveredAt: NOW },
+      }),
+    });
+
+    expect(state?.phase).toBe("waiting_for_approval");
   });
 
   it("projects completed turns as completed even when teardown settled them as interrupted", () => {

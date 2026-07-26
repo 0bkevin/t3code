@@ -9,6 +9,7 @@
 import {
   ChatAttachment,
   MessageId,
+  OrchestrationMessageNotification,
   OrchestrationMessageRole,
   ThreadId,
   TurnId,
@@ -28,6 +29,14 @@ export const ProjectionThreadMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  /**
+   * Proactive-delivery provenance, present only on notification rows.
+   *
+   * Optional like `attachments`, and persisted with the same
+   * `COALESCE(excluded, existing)` upsert rule: an ordinary update that omits
+   * it must not erase the provenance of a row that has it.
+   */
+  notification: Schema.optional(OrchestrationMessageNotification),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

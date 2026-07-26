@@ -429,6 +429,19 @@ export const HermesSettings = makeProviderSettingsSchema({
   revoked: Schema.optionalKey(Schema.Boolean).pipe(
     Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
   ),
+  /**
+   * The instance's durable home thread — the authoritative designation for
+   * where Hermes' proactive output lands.
+   *
+   * Kept here rather than in a dedicated table for the same reason as the
+   * fields above: it is per-instance enrollment metadata, and settings avoids
+   * a migration. Absent means "not yet designated"; the next handshake
+   * converges it on read. The plugin's `T3_HOME_CHANNEL` env var is a synced
+   * cache of this value, never the source of truth.
+   */
+  homeThreadId: Schema.optionalKey(TrimmedString).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+  ),
 });
 export type HermesSettings = typeof HermesSettings.Type;
 

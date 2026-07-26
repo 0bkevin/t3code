@@ -1,18 +1,22 @@
 "use client";
 
 import { useAtomValue } from "@effect/atom-react";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type {
   ProviderInstanceDescription,
   ProviderInstanceId,
   ServerProviderSkill,
 } from "@t3tools/contracts";
+import type { SidebarThreadSortOrder, TimestampFormat } from "@t3tools/contracts/settings";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ChevronRightIcon,
   CpuIcon,
+  HouseIcon,
   LoaderIcon,
+  MessageSquareIcon,
   MessageSquarePlusIcon,
   PlugZapIcon,
   RefreshCwIcon,
@@ -20,19 +24,25 @@ import {
   ServerIcon,
   SettingsIcon,
   SparklesIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
+import { useClientSettings } from "../../hooks/useSettings";
+import { useThreadActions } from "../../hooks/useThreadActions";
 import { cn } from "../../lib/utils";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import {
   formatProviderSkillDisplayName,
   formatProviderSkillInstallSource,
 } from "../../providerSkillPresentation";
+import { useProjects, useThreadShellsForProjectRefs } from "../../state/entities";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { primaryServerProvidersAtom, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { buildThreadRouteParams } from "../../threadRoutes";
+import { formatShortTimestamp } from "../../timestampFormat";
 import ChatMarkdown from "../ChatMarkdown";
 import { hermesGatewayProviderSignal } from "../settings/HermesGatewayInstanceSection.logic";
 import { PROVIDER_STATUS_STYLES } from "../settings/providerStatus";
@@ -61,7 +71,9 @@ import {
   isAgentPageBusy,
   messageFromAgentPageError,
   nextExpandedSkillName,
+  resolveAgentHomeThreadId,
   shouldFetchAgentSkillBody,
+  sortAgentPageThreads,
   supportsGatewayReconnect,
   upsertAgentSkillBody,
   type AgentPageAction,
@@ -173,6 +185,61 @@ function AgentSkillRow(props: {
   );
 }
 
+/**
+ * One row in the agent's thread list.
+ *
+ * The home row gets the same restrained treatment the sidebar uses: a muted
+ * leading glyph and no Delete. The title is whatever the thread is called
+ * ("Home") — plain text, no emoji.
+ */
+function AgentThreadRow(props: {
+  readonly thread: EnvironmentThreadShell;
+  readonly isHomeThread: boolean;
+  readonly timestampFormat: TimestampFormat;
+  readonly onOpen: (thread: EnvironmentThreadShell) => void;
+  readonly onDelete: ((thread: EnvironmentThreadShell) => void) | null;
+}) {
+  const { isHomeThread, thread } = props;
+  return (
+    <div className="group/agent-thread relative flex items-center border-b border-border/50 last:border-b-0">
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2.5 text-left hover:bg-accent/40"
+        data-testid={`agent-thread-row-${thread.id}`}
+        onClick={() => props.onOpen(thread)}
+      >
+        {isHomeThread ? (
+          <HouseIcon
+            aria-label="Home thread"
+            className="size-3.5 shrink-0 text-muted-foreground/70"
+          />
+        ) : (
+          <MessageSquareIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground/40" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-sm text-foreground" title={thread.title}>
+          {thread.title}
+        </span>
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {formatShortTimestamp(thread.updatedAt, props.timestampFormat)}
+        </span>
+      </button>
+      {/* Withheld for the home thread: the server's decider rejects the
+          delete, so the button could only ever produce an error. */}
+      {props.onDelete && !isHomeThread ? (
+        <button
+          type="button"
+          aria-label={`Delete ${thread.title}`}
+          data-testid={`agent-thread-delete-${thread.id}`}
+          className="mr-1.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/12 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/agent-thread:opacity-100"
+          onClick={() => props.onDelete?.(thread)}
+        >
+          <Trash2Icon className="size-3.5" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function AgentPage({ instanceId }: { readonly instanceId: ProviderInstanceId }) {
   const environmentId = usePrimaryEnvironment()?.environmentId ?? null;
   const navigate = useNavigate();
@@ -194,6 +261,7 @@ export function AgentPage({ instanceId }: { readonly instanceId: ProviderInstanc
   const getGatewayStatus = useAtomCommand(serverEnvironment.hermesGatewayGetInstanceStatus, {
     reportFailure: false,
   });
+  const { deleteThread } = useThreadActions();
 
   const [description, setDescription] = useState<ProviderInstanceDescription | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -322,6 +390,62 @@ export function AgentPage({ instanceId }: { readonly instanceId: ProviderInstanc
       );
     })();
   };
+
+  // Threads come off the same shell projection every other surface reads —
+  // the sidebar, the command palette — rather than a page-local fetch, so the
+  // list repaints live as the agent works and never disagrees with the
+  // sidebar's copy of the same rows. The agent's synthetic project is found by
+  // its `agentInstanceId` discriminator, which is exactly how the sidebar
+  // recognizes an agent row.
+  const projects = useProjects();
+  const agentProjectRefs = useMemo(
+    () =>
+      projects
+        .filter((project) => project.agentInstanceId === instanceId)
+        .map((project) => scopeProjectRef(project.environmentId, project.id)),
+    [instanceId, projects],
+  );
+  const agentThreads = useThreadShellsForProjectRefs(agentProjectRefs);
+  const threadSortOrder = useClientSettings<SidebarThreadSortOrder>(
+    (settings) => settings.sidebarThreadSortOrder,
+  );
+  const timestampFormat = useClientSettings<TimestampFormat>(
+    (settings) => settings.timestampFormat,
+  );
+  const homeThreadId = useMemo(
+    () => resolveAgentHomeThreadId(providers, instanceId),
+    [instanceId, providers],
+  );
+  const visibleThreads = useMemo(
+    () => sortAgentPageThreads({ threads: agentThreads, sortOrder: threadSortOrder, homeThreadId }),
+    [agentThreads, homeThreadId, threadSortOrder],
+  );
+
+  const handleOpenThread = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+      });
+    },
+    [navigate],
+  );
+  const handleDeleteThread = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      void (async () => {
+        const result = await deleteThread(scopeThreadRef(thread.environmentId, thread.id));
+        if (result._tag === "Failure") {
+          const failure = squashAtomCommandFailure(result);
+          toastManager.add({
+            type: "error",
+            title: "Failed to delete thread",
+            description: messageFromAgentPageError(failure),
+          });
+        }
+      })();
+    },
+    [deleteThread],
+  );
 
   const status = description?.connection.status ?? "offline";
   const isBusy = isAgentPageBusy(pendingAction);
@@ -575,6 +699,37 @@ export function AgentPage({ instanceId }: { readonly instanceId: ProviderInstanc
                       ))}
                     </div>
                   )}
+                </div>
+              )}
+            </SectionCard>
+          </SettingsSection>
+
+          <SettingsSection
+            title="Threads"
+            icon={<MessageSquareIcon className="size-4" />}
+            headerAction={
+              visibleThreads.length > 0 ? (
+                <span className="text-xs text-muted-foreground">{visibleThreads.length}</span>
+              ) : null
+            }
+          >
+            <SectionCard>
+              {visibleThreads.length === 0 ? (
+                <p className="text-xs text-muted-foreground/70 italic">
+                  No threads yet. Start one with “New thread” above.
+                </p>
+              ) : (
+                <div className="min-w-0 rounded-lg border border-border/60 bg-background/60">
+                  {visibleThreads.map((thread) => (
+                    <AgentThreadRow
+                      key={`${thread.environmentId}:${thread.id}`}
+                      thread={thread}
+                      isHomeThread={homeThreadId !== null && thread.id === homeThreadId}
+                      timestampFormat={timestampFormat}
+                      onOpen={handleOpenThread}
+                      onDelete={handleDeleteThread}
+                    />
+                  ))}
                 </div>
               )}
             </SectionCard>

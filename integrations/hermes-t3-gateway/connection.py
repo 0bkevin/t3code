@@ -21,6 +21,8 @@ except ImportError:  # pragma: no cover - Hermes currently installs websockets
 
 MessageHandler = Callable[[dict[str, Any]], Awaitable[None]]
 StateHandler = Callable[[bool, str | None], Awaitable[None] | None]
+AcceptedHandler = Callable[[dict[str, Any]], Awaitable[None]]
+AcceptedHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class ConnectionRejected(RuntimeError):
@@ -72,10 +74,12 @@ async def authenticate_socket(
     authentication: dict[str, str],
     hermes_version: str,
     timeout: float = 20,
+    role: str = "gateway",
 ) -> dict[str, Any]:
     hello = connection_hello(
         hermes_version=hermes_version,
         authentication=authentication,
+        role=role,
     )
     await socket.send(json.dumps(hello, separators=(",", ":"), ensure_ascii=False))
 
@@ -165,6 +169,7 @@ class T3GatewayConnection:
         hermes_version: str,
         on_message: MessageHandler,
         on_state: StateHandler | None = None,
+        on_accepted: AcceptedHandler | None = None,
     ):
         self.url = websocket_url(url)
         self.instance_id = instance_id
@@ -172,6 +177,7 @@ class T3GatewayConnection:
         self.hermes_version = hermes_version
         self._on_message = on_message
         self._on_state = on_state
+        self._on_accepted = on_accepted
         self._socket: Any = None
         self._supervisor: asyncio.Task[None] | None = None
         self._send_lock = asyncio.Lock()
@@ -266,7 +272,7 @@ class T3GatewayConnection:
             try:
                 socket = await _open_socket(self.url)
                 self._socket = socket
-                await authenticate_socket(
+                accepted = await authenticate_socket(
                     socket,
                     authentication={
                         "type": "instance-credential",
@@ -278,6 +284,10 @@ class T3GatewayConnection:
                 self._connected.set()
                 if self._first_result is not None and not self._first_result.done():
                     self._first_result.set_result(True)
+                # Deliberately after `_connected.set()`: the accepted callback
+                # reconciles the home designation and flushes the durable
+                # delivery queue, and both send frames back over this socket.
+                await self._notify_accepted(accepted)
                 await self._notify_state(True, None)
                 delay = 1.0
                 async for raw in socket:
@@ -321,6 +331,34 @@ class T3GatewayConnection:
                 break
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30.0)
+
+    async def _notify_accepted(self, accepted: dict[str, Any]) -> None:
+        """Hand the `connection.accepted` frame to the adapter, best-effort.
+
+        A failure here — a read-only `.env`, an unwritable queue file — must
+        not tear down a connection that authenticated successfully, so it is
+        logged and swallowed exactly like the state callback.
+        """
+        if self._on_accepted is None:
+            return
+        try:
+            await self._on_accepted(accepted)
+        except Exception:  # noqa: BLE001 - reconciliation must not fail a good handshake
+            logger.warning("T3 connection accepted callback failed", exc_info=True)
+
+    async def _notify_accepted(self, accepted: dict[str, Any]) -> None:
+        """Hand the `connection.accepted` frame to the adapter, best-effort.
+
+        A failure here — a read-only `.env`, an unwritable queue file — must
+        not tear down a connection that authenticated successfully, so it is
+        logged and swallowed exactly like the state callback.
+        """
+        if self._on_accepted is None:
+            return
+        try:
+            await self._on_accepted(accepted)
+        except Exception:  # noqa: BLE001 - reconciliation must not fail a good handshake
+            logger.warning("T3 connection accepted callback failed", exc_info=True)
 
     async def _notify_state(self, connected: bool, reason: str | None) -> None:
         if self._on_state is None:

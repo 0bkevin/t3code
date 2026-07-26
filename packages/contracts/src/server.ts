@@ -203,6 +203,15 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
+  /**
+   * The instance's designated home thread, where its agent's proactive output
+   * lands. Clients use it to pin the thread first in the instance's list and
+   * to withhold Delete.
+   *
+   * Only Hermes instances designate one; absent everywhere else, and absent on
+   * a Hermes instance that has not completed a handshake yet.
+   */
+  homeThreadId: Schema.optional(ThreadId),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 

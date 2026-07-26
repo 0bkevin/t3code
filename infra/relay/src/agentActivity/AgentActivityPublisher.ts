@@ -187,6 +187,8 @@ function statusForPhase(phase: RelayAgentActivityState["phase"]): string {
       return "Approval";
     case "waiting_for_input":
       return "Input";
+    case "notification":
+      return "Update";
     case "completed":
       return "Done";
     case "failed":

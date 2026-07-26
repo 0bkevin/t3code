@@ -325,6 +325,36 @@ export function applyThreadDetailEvent(
       };
     }
 
+    case "thread.notification-delivered": {
+      // A proactive delivery is an ordinary transcript message carrying
+      // provenance. It binds to no turn, so latestTurn and the checkpoint
+      // rebinding that `thread.message-sent` performs are deliberately
+      // untouched — attributing it to the live turn would fold it away
+      // behind that turn's summary.
+      const message: OrchestrationMessage = {
+        id: event.payload.messageId,
+        role: "assistant",
+        text: event.payload.text,
+        turnId: null,
+        streaming: false,
+        notification: event.payload.notification,
+        createdAt: event.payload.createdAt,
+        updatedAt: event.payload.updatedAt,
+      };
+
+      // Replays re-emit the persisted row verbatim, so replacing in place
+      // keeps the transcript stable instead of duplicating the delivery.
+      const existingMessage = thread.messages.find((entry) => entry.id === message.id);
+      const messages = existingMessage
+        ? Arr.map(thread.messages, (entry) => (entry.id === message.id ? message : entry))
+        : Arr.append(thread.messages, message);
+
+      return {
+        kind: "updated",
+        thread: { ...thread, messages, updatedAt: event.occurredAt },
+      };
+    }
+
     // ── Session ─────────────────────────────────────────────────────
     case "thread.session-set": {
       // Leaving the "running" session status is the turn-end signal: settle a

@@ -23,6 +23,15 @@ from gateway.session import build_session_key
 
 from .cli import CREDENTIAL_ENV, INSTANCE_ID_ENV, NICKNAME_ENV, URL_ENV
 from .connection import T3GatewayConnection, dependency_available
+from .home import (
+    HOME_CHANNEL_ENV,
+    MAX_FLUSH_PER_CONNECT,
+    HomeDeliveryQueue,
+    build_delivery,
+    classify_delivery,
+    home_thread_id,
+    save_home_thread_id,
+)
 from .protocol import (
     canonical_tool_data,
     canonical_tool_item_type,
@@ -139,6 +148,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
         self._active_turns: dict[str, _TurnState] = {}
         self._approval_requests: dict[str, tuple[str, str]] = {}
         self._user_input_requests: dict[str, tuple[str, str]] = {}
+        self._home_queue = HomeDeliveryQueue()
         # Strong references to fire-and-forget tasks. asyncio only holds a weak
         # reference to a running task, so without this the GC may collect one
         # mid-flight and its exception surfaces as a bare warning.
@@ -172,6 +182,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
             hermes_version=_hermes_version(),
             on_message=self._handle_server_frame,
             on_state=self._handle_connection_state,
+            on_accepted=self._handle_connection_accepted,
         )
         try:
             connected = await self._connection.connect()
@@ -204,7 +215,10 @@ class T3PlatformAdapter(BasePlatformAdapter):
         captured = self._capture_steer_control_response(chat_id, content, reply_to)
         if captured is not None:
             return captured
-        turn = self._active_turns.get(str(chat_id))
+        thread_id = str(chat_id)
+        turn = self._active_turns.get(thread_id)
+        if self._is_proactive_delivery(thread_id, turn, content, metadata):
+            return await self._deliver_to_home(thread_id, content, metadata)
         if turn is None:
             return SendResult(success=False, error="no active T3 turn")
         try:
@@ -264,6 +278,170 @@ class T3PlatformAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": f"T3 thread {chat_id}", "type": "dm"}
+
+    # ── proactive home delivery ────────────────────────────────────────
+
+    def _is_proactive_delivery(
+        self,
+        thread_id: str,
+        turn: _TurnState | None,
+        content: str,
+        metadata: dict[str, Any] | None,
+    ) -> bool:
+        """Decide whether this send is Hermes-initiated home delivery.
+
+        **The gate is provenance, not turn absence.** The naive rule ("no
+        active turn for this thread → deliver") deadlocks against the
+        notify-completion contract the moment the home thread has a live turn:
+        a cron result or `send_message` targeting the home chat mid-conversation
+        would take the active-turn path, stream as that turn's assistant
+        content, and — because final cron deliveries arrive notify-stamped via
+        `_mark_notify_metadata` (`gateway/platforms/base.py:89`) — **complete
+        the user's live turn with the cron output as its answer.** That is the
+        same keyed-off-the-wrong-signal defect class as the `finalize` bug.
+
+        The discriminator is `_gateway_session_key()`: the gateway binds
+        `HERMES_SESSION_KEY` onto the turn's context for the whole handler
+        (`gateway/run.py:12972` → `:14626`), and every send a turn produces —
+        streamed or final — happens inside that scope. A genuine turn reply
+        therefore resolves to this plugin's `build_session_key` id for its
+        thread. Cron runs in its own `cron_*` session with the gateway keys
+        explicitly cleared (`cron/scheduler.py:3066-3091`), and lifecycle
+        broadcasts run in no session at all, so neither resolves to the live
+        turn's key.
+
+        The rules, in order:
+
+        * A send whose session key matches an active turn on this thread is
+          that turn's own output. Never a delivery — checked first so a turn
+          reply can never be rerouted.
+        * A send to a non-home thread is never a delivery: "message any thread
+          unprompted" is deliberately out of scope, and the existing
+          `"no active T3 turn"` error stays verbatim for it.
+        * On the home thread with no active turn, any send is a delivery.
+          There is nothing it could belong to.
+        * On the home thread **with** an active turn whose session key does not
+          match, provenance must be positively established (`classify_delivery`
+          returning certain) before the send bypasses the turn. This is the
+          conservative half of the gate: an unattributable send in that window
+          falls through to the turn path — a possible misplacement inside the
+          same thread — rather than being torn out of a turn it may belong to.
+          An unclassifiable send can therefore never steal a live answer, and a
+          recognisable cron/lifecycle/handoff delivery never completes one.
+        """
+        if turn is not None and self._gateway_session_key() == turn.session_id:
+            return False
+        home = home_thread_id()
+        if not home or thread_id != home:
+            return False
+        if turn is None:
+            return True
+        _kind, _label, certain = classify_delivery(
+            content,
+            metadata,
+            session_user_id=self._session_user_id(),
+        )
+        return certain
+
+    async def _deliver_to_home(
+        self,
+        thread_id: str,
+        content: str,
+        metadata: dict[str, Any] | None,
+    ) -> SendResult:
+        """Emit one `home.deliver`, queueing it until T3 acknowledges it.
+
+        Deliberately touches none of the turn machinery. `_active_turns` is not
+        read or written, no turn/item frame is emitted, and `notify` — which
+        arrives True on every final cron delivery — is consumed only as a
+        classification hint. A delivery landing while the user has a live turn
+        in this same thread must leave that turn running.
+        """
+        kind, label, _certain = classify_delivery(
+            content,
+            metadata,
+            session_user_id=self._session_user_id(),
+        )
+        delivery = build_delivery(
+            thread_id=thread_id,
+            text=str(content or ""),
+            kind=kind,
+            label=label,
+        )
+        delivery_id_value = str(delivery["deliveryId"])
+        # Persist BEFORE sending. The queue is the durability guarantee: if the
+        # socket dies between here and the ack, the entry survives to be
+        # replayed on the next connect, and T3's `deliveryId` dedupe makes the
+        # replay harmless.
+        self._home_queue.append(delivery)
+        try:
+            await self._send_frame(delivery)
+        except Exception as exc:  # noqa: BLE001 - adapter send must return SendResult
+            logger.warning(
+                "T3 home delivery %s could not be sent (%s); it is queued for "
+                "the next connect",
+                delivery_id_value,
+                exc,
+            )
+        # Reported successful either way: the delivery is durably queued, and
+        # failing the send would make a cron job report an error for output
+        # that will in fact arrive.
+        return SendResult(success=True, message_id=delivery_id_value)
+
+    async def _handle_connection_accepted(self, accepted: dict[str, Any]) -> None:
+        """Reconcile the home designation, then flush the delivery queue.
+
+        T3's settings blob is the authoritative designation and it republishes
+        it on every successful handshake, so the plugin's `T3_HOME_CHANNEL` is
+        a synced cache: a differing local value — including a hand-edited one —
+        is overwritten. Reconciling on every accept bounds drift to a single
+        reconnect.
+        """
+        thread_id = str(accepted.get("homeThreadId") or "").strip()
+        if thread_id and thread_id != home_thread_id():
+            logger.info("T3 designated home thread %s", thread_id)
+            save_home_thread_id(thread_id)
+        elif thread_id:
+            save_home_thread_id(thread_id)
+        await self._flush_home_queue()
+
+    async def _flush_home_queue(self) -> None:
+        """Replay unacknowledged deliveries oldest-first.
+
+        Entries are NOT removed here — only a `home.deliver.ack` purges one.
+        Re-sending an entry T3 already durably wrote is harmless (it dedupes on
+        `deliveryId`); dropping one it never wrote is not.
+        """
+        pending = self._home_queue.entries()
+        if not pending:
+            return
+        logger.info("Flushing %d queued T3 home deliver(y|ies)", len(pending))
+        for entry in pending[:MAX_FLUSH_PER_CONNECT]:
+            try:
+                await self._send_frame(entry)
+            except Exception as exc:  # noqa: BLE001 - the rest rides the next connect
+                logger.warning("T3 home delivery flush stopped: %s", exc)
+                return
+
+    async def _acknowledge_home_delivery(self, message: dict[str, Any]) -> None:
+        """Purge a delivery T3 has durably written."""
+        delivery_id_value = str(message.get("deliveryId") or "").strip()
+        if not delivery_id_value:
+            raise ValueError("home.deliver.ack requires a deliveryId")
+        self._home_queue.purge(delivery_id_value)
+
+    @staticmethod
+    def _session_user_id() -> str:
+        """Read the bound session's user id, for `/handoff` classification.
+
+        Returns `""` on any failure, exactly like `_gateway_session_key`.
+        """
+        try:
+            from gateway.session_context import get_session_env
+
+            return str(get_session_env("HERMES_SESSION_USER_ID", "") or "")
+        except Exception:  # noqa: BLE001 - classification must never raise
+            return ""
 
     def format_tool_event(
         self, event: Any, *, mode: str = "all", preview_max_len: int = 40
@@ -410,6 +588,8 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 await self._describe(message)
             elif frame_type == "skill.body.request":
                 await self._send_skill_body(message)
+            elif frame_type == "home.deliver.ack":
+                await self._acknowledge_home_delivery(message)
         except ValueError as exc:
             await self._send_frame(
                 protocol_error(
@@ -965,18 +1145,46 @@ class T3PlatformAdapter(BasePlatformAdapter):
           2. `HERMES_SESSION_KEY` from the Hermes session context.
           3. The sole active turn, when exactly one exists — a single-threaded
              Hermes process has no ambiguity to resolve, and dropping the
-             activity would be strictly worse.
+             activity would be strictly worse. **Cron runs are excluded from
+             this step** (see below).
         Anything unresolved returns `None` and the item is simply not emitted;
         tool activity is decorative, so this must never raise or misroute.
+
+        The cron exclusion: these hooks are process-global, so a cron job
+        running tools while exactly one T3 turn happens to be live would
+        resolve through the sole-turn fallback and paint the cron job's tool
+        calls into an unrelated live conversation. Cron runs are identifiable —
+        the scheduler builds its agent with
+        `session_id=f"cron_{job_id}_{timestamp}"` (`cron/scheduler.py:3017`,
+        passed at `:3484`), which is exactly the value these hooks receive as
+        `session_id`. Upstream treats the same routing hazard as real: the
+        scheduler deliberately clears the process-global session env vars for
+        it (`cron/scheduler.py:3066-3091`). A cron job's activity belongs to
+        the eventual `home.deliver`, never to a live turn, so it is dropped
+        rather than guessed at.
         """
         thread_id = self._thread_by_session.get(str(session_id))
         if thread_id is None:
             thread_id = self._thread_by_session.get(self._gateway_session_key())
         if thread_id is not None:
             return self._active_turns.get(thread_id)
+        if self._is_cron_session(session_id):
+            return None
         if len(self._active_turns) == 1:
             return next(iter(self._active_turns.values()))
         return None
+
+    @staticmethod
+    def _is_cron_session(session_id: str) -> bool:
+        """True when this hook call belongs to a cron run, not a gateway turn.
+
+        Keyed on the `cron_` prefix the scheduler mints at
+        `cron/scheduler.py:3017`. Matching a prefix rather than an exported
+        constant carries the usual drift risk: if upstream renames the shape,
+        this degrades to today's behaviour (cron tool rows may again be
+        misattributed to a sole live turn) rather than breaking anything.
+        """
+        return str(session_id or "").startswith("cron_")
 
     @staticmethod
     def _gateway_session_key() -> str:
@@ -1181,15 +1389,45 @@ def validate_config(config: PlatformConfig) -> bool:
     )
 
 
-def env_enablement() -> dict[str, str] | None:
+def env_enablement() -> dict[str, Any] | None:
+    """Seed `PlatformConfig.extra` from the environment at config-load time.
+
+    Called by the platform registry's env-enablement hook before the adapter is
+    constructed, so `gateway status` and `get_connected_platforms()` reflect an
+    env-only enrollment without instantiating a connection.
+
+    `home_channel` is a **magic key**, not an ordinary extra: core pops it out
+    of the returned dict and promotes it to a real `HomeChannel` dataclass on
+    the `PlatformConfig` (`gateway/config.py:2648-2660`, reading only
+    `chat_id` / `name` / `thread_id`). That promotion is what makes
+    `get_home_channel("t3")` resolve, which is in turn what makes
+    `send_message` with a bare `t3` target, the gateway's lifecycle broadcasts,
+    and `/handoff t3` work at all — core hardcodes env promotion only for
+    built-in platforms, so a plugin must supply it here. Pattern copied from
+    IRC (`plugins/platforms/irc/adapter.py:653-701`).
+
+    The thread id comes from `T3_HOME_CHANNEL`, which T3 owns: the plugin
+    rewrites it from `homeThreadId` on every `connection.accepted`. Before the
+    first accept there is nothing to seed and the key is simply absent — Hermes
+    then behaves exactly as it did pre-home-channel, which is why the
+    `/sethome` nudge suppression is still needed for that window.
+    """
     url = os.environ.get(URL_ENV, "").strip()
     instance_id = os.environ.get(INSTANCE_ID_ENV, "").strip()
     credential = os.environ.get(CREDENTIAL_ENV, "").strip()
     if not (url and instance_id and credential):
         return None
-    return {
+    seed: dict[str, Any] = {
         "url": url,
         "instance_id": instance_id,
         "credential": credential,
         "nickname": os.environ.get(NICKNAME_ENV, "").strip() or "Hermes",
     }
+    home = os.environ.get(HOME_CHANNEL_ENV, "").strip()
+    if home:
+        # T3 threads are the addressing unit end to end: `chat_id` IS the
+        # thread id, and the separate `thread_id` field stays unset. Setting
+        # both would make Hermes route `chat_id` + `thread_id` metadata at a
+        # platform whose `send(chat_id, ...)` already resolves the thread.
+        seed["home_channel"] = {"chat_id": home, "name": "Home"}
+    return seed

@@ -68,4 +68,44 @@ describe("sortThreads", () => {
 
     expect(sorted.map((thread) => thread.id)).toEqual(["thread-1", "thread-2"]);
   });
+
+  it("pins the requested thread first regardless of its timestamp", () => {
+    // The agent home thread: a designated destination, not a conversation the
+    // user started, so staleness must not demote it.
+    const sorted = sortThreads(
+      [
+        makeThread({ id: "thread-newest", updatedAt: "2026-03-09T12:00:00.000Z" }),
+        makeThread({ id: "thread-home", updatedAt: "2026-01-01T00:00:00.000Z" }),
+        makeThread({ id: "thread-middle", updatedAt: "2026-03-09T10:00:00.000Z" }),
+      ],
+      "updated_at",
+      "thread-home",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      "thread-home",
+      "thread-newest",
+      "thread-middle",
+    ]);
+  });
+
+  it("sorts unchanged when no thread is pinned or the pinned id is unknown", () => {
+    const threads = [
+      makeThread({ id: "thread-newest", updatedAt: "2026-03-09T12:00:00.000Z" }),
+      makeThread({ id: "thread-oldest", updatedAt: "2026-01-01T00:00:00.000Z" }),
+    ];
+
+    expect(sortThreads(threads, "updated_at").map((thread) => thread.id)).toEqual([
+      "thread-newest",
+      "thread-oldest",
+    ]);
+    expect(sortThreads(threads, "updated_at", null).map((thread) => thread.id)).toEqual([
+      "thread-newest",
+      "thread-oldest",
+    ]);
+    expect(sortThreads(threads, "updated_at", "thread-gone").map((thread) => thread.id)).toEqual([
+      "thread-newest",
+      "thread-oldest",
+    ]);
+  });
 });

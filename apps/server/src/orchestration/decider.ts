@@ -1197,6 +1197,102 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [unsettledEvent, activityAppendedEvent];
     }
 
+    case "thread.notification.deliver": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Dedupe on deliveryId: the plugin's durable queue retries anything it
+      // has not seen acked, so the same delivery legitimately arrives more
+      // than once. Idempotency is by re-emission (see thread.settle) because
+      // the engine rejects a command that produces no events — but unlike
+      // settle, the payload must be rebuilt from the ALREADY-WRITTEN message
+      // rather than from the command, so reducing it a second time lands on
+      // byte-identical state instead of rewriting the row from a retry whose
+      // messageId or text may differ.
+      //
+      // NOT SUFFICIENT ON ITS OWN. This scans the in-memory read model, which
+      // `getCommandReadModel` builds with `messages: []` on every thread — it
+      // deliberately does not hydrate message bodies at boot. So this catches
+      // only replays of deliveries appended since the process started, and
+      // sees nothing after a restart. The delivery path re-checks against
+      // `projection_thread_messages` before dispatching
+      // (`hermesGatewayHttp.ts`), and that read is what actually holds across
+      // a restart. Keep both: this one keeps the aggregate self-consistent for
+      // any future caller, the other one is load-bearing.
+      const duplicate = thread.messages.find(
+        (message) => message.notification?.deliveryId === command.deliveryId,
+      );
+      const notificationEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: duplicate?.createdAt ?? command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.notification-delivered",
+        payload: {
+          threadId: command.threadId,
+          messageId: duplicate?.id ?? command.messageId,
+          text: duplicate?.text ?? command.text,
+          notification: duplicate?.notification ?? {
+            kind: command.kind,
+            label: command.label,
+            deliveryId: command.deliveryId,
+          },
+          createdAt: duplicate?.createdAt ?? command.createdAt,
+          updatedAt: duplicate?.updatedAt ?? command.createdAt,
+        },
+      };
+      // A replay is not new activity: it must never wake a thread the user
+      // has since settled or snoozed.
+      if (duplicate !== undefined) {
+        return notificationEvent;
+      }
+      // A lifecycle notice ("agent restarted") is bookkeeping, not a claim on
+      // the user's attention: it appends quietly and leaves a settled or
+      // snoozed thread where it is. Every other kind is the agent raising its
+      // hand and resets the lifecycle exactly like a user message does.
+      if (command.kind === "lifecycle") {
+        return notificationEvent;
+      }
+      const lifecycleResetEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (thread.settledOverride !== null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (thread.snoozedUntil != null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsnoozed",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      return [...lifecycleResetEvents, notificationEvent];
+    }
+
     default: {
       command satisfies never;
       const fallback = command as never as { type: string };

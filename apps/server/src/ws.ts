@@ -73,6 +73,7 @@ import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { getOrCreateAgentProject } from "./orchestration/agentProjects.ts";
+import { isHomeThread } from "./orchestration/homeThreads.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -262,6 +263,7 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   {
     type:
       | "thread.message-sent"
+      | "thread.notification-delivered"
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
@@ -271,6 +273,9 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
 > {
   return (
     event.type === "thread.message-sent" ||
+    // A proactive delivery appends a transcript message, so an open detail
+    // subscription has to receive it or the row only appears on reload.
+    event.type === "thread.notification-delivered" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||
@@ -1124,6 +1129,23 @@ const makeWsRpcLayer = (
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
               const normalizedCommand = yield* normalizeDispatchCommand(command);
+
+              // A home thread is a fixed designation, not a movable one:
+              // deleting it would leave its agent with nowhere to deliver, and
+              // the next handshake would silently mint a replacement, orphaning
+              // the history in the old one. This is the real guard — the UI
+              // only declines to offer the action.
+              if (
+                normalizedCommand.type === "thread.delete" &&
+                (yield* isHomeThread(normalizedCommand.threadId))
+              ) {
+                return yield* Effect.fail(
+                  new OrchestrationDispatchCommandError({
+                    message: "This agent's Home thread cannot be deleted.",
+                  }),
+                );
+              }
+
               const shouldStopSessionAfterArchive =
                 normalizedCommand.type === "thread.archive"
                   ? yield* projectionSnapshotQuery

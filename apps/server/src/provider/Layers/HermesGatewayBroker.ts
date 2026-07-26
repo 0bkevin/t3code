@@ -965,6 +965,31 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
           );
       }
 
+      // ── Delivery connections: authenticated, but never the primary.
+      //
+      // An out-of-process cron run dials in only to hand over a `home.deliver`
+      // and leave. Registering it would displace the instance's live gateway
+      // socket ("replaced by a newer connection") and bump the generation,
+      // knocking the real plugin offline for the duration of a cron job. So it
+      // is accepted and then deliberately left out of the connection registry:
+      // no generation, no liveness ping, no status publish, nothing to
+      // disconnect. The existing primary is untouched.
+      if (hello.role === "delivery") {
+        return {
+          instanceId,
+          generation: null,
+          role: "delivery",
+          accepted: {
+            type: "connection.accepted",
+            requestId: hello.requestId,
+            protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+            instanceId,
+            nickname: record.nickname,
+            ...(credential ? { credential } : {}),
+          },
+        } as const satisfies HermesGatewayConnectionRegistration;
+      }
+
       const observed: HermesObservedConnection = {
         pluginVersion: hello.pluginVersion,
         hermesVersion: hello.hermesVersion,
@@ -986,6 +1011,7 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
       const registration = {
         instanceId,
         generation: accepted.generation,
+        role: "gateway",
         accepted: {
           type: "connection.accepted",
           requestId: hello.requestId,
@@ -1009,6 +1035,14 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
 
   const receive = (registration: HermesGatewayConnectionRegistration, message: PluginMessage) =>
     Effect.gen(function* () {
+      // A delivery connection's one frame — `home.deliver` — is handled at the
+      // transport layer, because its ack has to go back to that specific
+      // short-lived socket. Anything else it sends is outside its remit and is
+      // dropped here: it holds no session, so completing a correlated request
+      // or publishing a status off it would let a throwaway cron socket speak
+      // for the live connection.
+      if (registration.role === "delivery") return;
+
       if (message.type === "connection.status") {
         // Generation-fenced inside the Ref update; a stale registration is a
         // no-op rather than an overwrite.
@@ -1031,6 +1065,10 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
 
   const disconnect = (registration: HermesGatewayConnectionRegistration) =>
     Effect.gen(function* () {
+      // Delivery sockets close as a matter of course — that is their whole
+      // lifecycle. They were never in the registry, so retiring one must not
+      // touch the instance's liveness or fail the live connection's requests.
+      if (registration.role === "delivery") return;
       const retired = yield* connections.disconnect(registration);
       if (!retired) return;
       yield* publishCurrentStatus(registration.instanceId, "get-status");

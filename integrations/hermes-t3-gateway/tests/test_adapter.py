@@ -7,6 +7,7 @@ import enum
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 import unittest.mock
@@ -146,7 +147,7 @@ def load_plugin_modules():
     package = types.ModuleType(PACKAGE)
     package.__path__ = [str(ROOT)]
     sys.modules[PACKAGE] = package
-    for name in ("protocol", "connection", "cli", "adapter"):
+    for name in ("protocol", "connection", "cli", "home", "adapter"):
         spec = importlib.util.spec_from_file_location(
             f"{PACKAGE}.{name}", ROOT / f"{name}.py"
         )
@@ -159,6 +160,7 @@ def load_plugin_modules():
 
 adapter_module = load_plugin_modules()
 protocol_module = sys.modules[f"{PACKAGE}.protocol"]
+home_module = sys.modules[f"{PACKAGE}.home"]
 
 
 @contextlib.contextmanager
@@ -217,7 +219,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": f"ensure-{thread_id}",
                 "threadId": thread_id,
             }
@@ -226,7 +228,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": f"start-{thread_id}",
                 "threadId": thread_id,
                 "sessionId": session_id,
@@ -240,7 +242,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "ensure-1",
                 "threadId": "thread-1",
             }
@@ -253,7 +255,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "start-1",
                 "threadId": "thread-1",
                 "sessionId": ready["sessionId"],
@@ -833,7 +835,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "ensure-reconnect",
                 "threadId": "thread-reconnect",
                 "resumeSessionId": session_id,
@@ -849,7 +851,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "ensure-2",
                 "threadId": "thread-2",
             }
@@ -858,7 +860,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "start-2",
                 "threadId": "thread-2",
                 "sessionId": session_id,
@@ -877,7 +879,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "steer-2",
                 "threadId": "thread-2",
                 "sessionId": session_id,
@@ -949,7 +951,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "steer-race",
                 "threadId": "thread-steer-race",
                 "sessionId": session_id,
@@ -998,7 +1000,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "steer-edit",
                 "threadId": "thread-steer-edit",
                 "sessionId": session_id,
@@ -1017,7 +1019,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "ensure-rejected-steer",
                 "threadId": "thread-rejected-steer",
             }
@@ -1026,7 +1028,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "start-rejected-steer",
                 "threadId": "thread-rejected-steer",
                 "sessionId": session_id,
@@ -1043,7 +1045,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "steer-rejected",
                 "threadId": "thread-rejected-steer",
                 "sessionId": session_id,
@@ -1090,7 +1092,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "ensure-failed-steer",
                 "threadId": "thread-failed-steer",
             }
@@ -1099,7 +1101,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "start-failed-steer",
                 "threadId": "thread-failed-steer",
                 "sessionId": session_id,
@@ -1116,7 +1118,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "steer-failed",
                 "threadId": "thread-failed-steer",
                 "sessionId": session_id,
@@ -1204,7 +1206,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "ensure-3",
                 "threadId": "thread-3",
             }
@@ -1214,7 +1216,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.stop",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "stop-3",
                 "threadId": "thread-3",
                 "sessionId": session_id,
@@ -1235,7 +1237,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "describe.request",
-                    "protocolVersion": 2,
+                    "protocolVersion": 3,
                     "requestId": "describe-1",
                 }
             )
@@ -1244,7 +1246,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply["type"], "describe.response")
         # Correlation, exactly like ping -> pong.
         self.assertEqual(reply["requestId"], "describe-1")
-        self.assertEqual(reply["protocolVersion"], 2)
+        self.assertEqual(reply["protocolVersion"], 3)
         self.assertEqual(reply["hermesVersion"], "0.19.0")
         self.assertIsInstance(reply["skills"], list)
         self.assertIn("capabilities", reply)
@@ -1258,7 +1260,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "describe.request",
-                    "protocolVersion": 2,
+                    "protocolVersion": 3,
                     "requestId": "describe-degraded",
                 }
             )
@@ -1275,7 +1277,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "skill.body.request",
-                    "protocolVersion": 2,
+                    "protocolVersion": 3,
                     "requestId": "body-degraded",
                     "skillName": "codex",
                 }
@@ -1293,7 +1295,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "skill.body.request",
-                    "protocolVersion": 2,
+                    "protocolVersion": 3,
                     "requestId": "body-1",
                     "skillName": "codex",
                 }
@@ -1310,7 +1312,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "skill.body.request",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "body-2",
                 "skillName": "does-not-exist",
             }
@@ -1330,7 +1332,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "skill.body.request",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "body-3",
             }
         )
@@ -1344,12 +1346,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         for message in (
             {
                 "type": "describe.request",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "describe-no-error",
             },
             {
                 "type": "skill.body.request",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": "body-no-error",
                 "skillName": "codex",
             },
@@ -1534,6 +1536,442 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         types_after = [m["type"] for m in self.connection.messages[order_start:]]
         self.assertEqual(types_after[-2:], ["turn.completed", "connection.status"])
+
+    async def test_cron_tool_hooks_are_excluded_from_the_sole_turn_fallback(self):
+        """A cron job's tool calls must never land in an unrelated live turn.
+
+        The hooks are process-global, so a cron job running tools while exactly
+        one T3 turn happens to be active would otherwise resolve through the
+        sole-active-turn fallback and paint its tool rows into a conversation
+        it has nothing to do with. Cron runs are identifiable by the
+        `cron_<job>_<timestamp>` session id the scheduler mints
+        (`cron/scheduler.py:3017`); their activity belongs to the eventual
+        `home.deliver`, not to any turn.
+        """
+        self.adapter._event_loop = asyncio.get_running_loop()
+        await self._start_turn("thread-live", "turn-live")
+        frames_before = len(self.connection.messages)
+        cron_session = "cron_daily-digest_20260726_090000"
+
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: ""),
+        ):
+            self.adapter.emit_tool_started(
+                cron_session, "web_search", {"query": "weather"}, "cron-call-1"
+            )
+            self.adapter.emit_tool_completed(
+                cron_session, "web_search", "sunny", 12, "cron-call-1"
+            )
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.connection.messages[frames_before:], [])
+        # The unrelated turn is untouched and still streaming.
+        self.assertIn("thread-live", self.adapter._active_turns)
+
+        # A genuine gateway run id still takes the fallback — the exclusion is
+        # scoped to cron, not a blanket removal of the fallback.
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: ""),
+        ):
+            self.adapter.emit_tool_started(
+                "20260726_090000_ab12cd34", "read_file", {"path": "a.py"}, "call-9"
+            )
+        await asyncio.sleep(0)
+        fallback_frames = self.connection.messages[frames_before:]
+        self.assertEqual([m["type"] for m in fallback_frames], ["item.started"])
+        self.assertEqual(fallback_frames[0]["threadId"], "thread-live")
+
+
+class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    """The proactive `home.deliver` branch and its durable queue."""
+
+    HOME = "home-thread"
+
+    async def asyncSetUp(self):
+        self.adapter = adapter_module.T3PlatformAdapter(
+            PlatformConfig(
+                extra={
+                    "url": "wss://t3.example/api/hermes-gateway/ws",
+                    "instance_id": "instance",
+                    "credential": "credential",
+                }
+            )
+        )
+        self.connection = FakeConnection()
+        self.adapter._connection = self.connection
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        queue_file = pathlib.Path(self._tmp.name) / "gateway" / "queue.jsonl"
+        self.queue = home_module.HomeDeliveryQueue(path=queue_file)
+        self.adapter._home_queue = self.queue
+
+        environment = unittest.mock.patch.dict(
+            adapter_module.os.environ,
+            {home_module.HOME_CHANNEL_ENV: self.HOME},
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+
+        # No Hermes session context is bound in tests, so the real accessors
+        # would fall through to os.environ. Pin them to "no session" — the
+        # state a cron run or a lifecycle broadcast is actually in.
+        for name in ("_gateway_session_key", "_session_user_id"):
+            patch = unittest.mock.patch.object(
+                adapter_module.T3PlatformAdapter, name, staticmethod(lambda: "")
+            )
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    async def _start_turn(self, thread_id: str, turn_id: str) -> str:
+        await self.adapter._handle_server_frame(
+            {
+                "type": "session.ensure",
+                "protocolVersion": 3,
+                "requestId": f"ensure-{thread_id}",
+                "threadId": thread_id,
+            }
+        )
+        session_id = self.adapter._sessions[thread_id]
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 3,
+                "requestId": f"start-{thread_id}",
+                "threadId": thread_id,
+                "sessionId": session_id,
+                "turnId": turn_id,
+                "text": "Start",
+            }
+        )
+        return session_id
+
+    async def test_a_proactive_send_to_home_emits_home_deliver(self):
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send(
+            self.HOME,
+            "Cronjob Response: nightly\n(job_id: nightly)\n-------------\n\nDone.",
+            metadata={"notify": True, "job_id": "nightly"},
+        )
+
+        frames = self.connection.messages[frames_before:]
+        self.assertEqual([frame["type"] for frame in frames], ["home.deliver"])
+        delivery = frames[0]
+        self.assertEqual(delivery["protocolVersion"], 3)
+        self.assertEqual(delivery["threadId"], self.HOME)
+        self.assertEqual(delivery["kind"], "cron")
+        self.assertEqual(delivery["label"], "Cron: nightly")
+        self.assertTrue(delivery["createdAt"].endswith("Z"))
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, delivery["deliveryId"])
+
+        # No turn was invented, and none was completed.
+        self.assertEqual(self.adapter._active_turns, {})
+
+    async def test_a_delivery_never_emits_turn_or_item_frames(self):
+        frames_before = len(self.connection.messages)
+        await self.adapter.send(self.HOME, "♻️ Gateway online — Hermes is back and ready.")
+        emitted = {frame["type"] for frame in self.connection.messages[frames_before:]}
+        self.assertEqual(emitted, {"home.deliver"})
+        self.assertEqual(self.adapter._active_turns, {})
+
+    async def test_a_notify_stamped_delivery_does_not_complete_the_live_turn(self):
+        """THE deadlock regression.
+
+        A cron delivery landing in Home while the user has a live turn there
+        arrives notify-stamped (`_mark_notify_metadata`,
+        `gateway/platforms/base.py:89`). Under a naive "no active turn →
+        deliver" gate it would fall into the active-turn path, stream as that
+        turn's assistant content, and its notify stamp would COMPLETE the
+        user's turn with the cron output as the answer. The gate is provenance,
+        not turn absence: the cron send does not carry the turn's session key,
+        so it becomes a `home.deliver` and the turn keeps running.
+        """
+        session_id = await self._start_turn(self.HOME, "turn-user")
+        # The user's turn has already streamed some of its real answer.
+        await self.adapter.send(self.HOME, "Working on it")
+        frames_before = len(self.connection.messages)
+
+        # A cron delivery fires mid-turn, notify-stamped as every final cron
+        # delivery is.
+        result = await self.adapter.send(
+            self.HOME,
+            "Cronjob Response: nightly\n(job_id: nightly)\n-------------\n\nDone.",
+            metadata={"notify": True, "job_id": "nightly"},
+        )
+
+        frames = self.connection.messages[frames_before:]
+        self.assertEqual([frame["type"] for frame in frames], ["home.deliver"])
+        self.assertTrue(result.success)
+
+        # The user's turn is untouched: still active, still owning its stream.
+        self.assertIn(self.HOME, self.adapter._active_turns)
+        turn = self.adapter._active_turns[self.HOME]
+        self.assertEqual(turn.turn_id, "turn-user")
+        self.assertEqual(turn.visible_text, "Working on it")
+        self.assertNotIn(
+            "turn.completed", [frame["type"] for frame in self.connection.messages]
+        )
+
+        # …and it still completes normally on its own notify, inside its own
+        # session context.
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: session_id),
+        ):
+            await self.adapter.send(
+                self.HOME, "Here is the answer", metadata={"notify": True}
+            )
+        self.assertNotIn(self.HOME, self.adapter._active_turns)
+        self.assertIn(
+            "turn.completed", [frame["type"] for frame in self.connection.messages]
+        )
+
+    async def test_a_turn_reply_in_home_is_never_rerouted_to_a_delivery(self):
+        """Output produced inside the turn's session context is turn content."""
+        session_id = await self._start_turn(self.HOME, "turn-user")
+        frames_before = len(self.connection.messages)
+
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: session_id),
+        ):
+            await self.adapter.send(self.HOME, "Streaming answer")
+
+        types = [frame["type"] for frame in self.connection.messages[frames_before:]]
+        self.assertEqual(types, ["item.started", "content.delta"])
+        self.assertNotIn("home.deliver", types)
+
+    async def test_an_unclassifiable_send_during_a_live_home_turn_stays_with_it(self):
+        """The conservative half of the gate.
+
+        With a live turn in Home and no positive provenance, the send may well
+        be that turn's own output arriving from a context where the session key
+        did not resolve. Routing it to `home.deliver` would tear a real answer
+        out of the turn; leaving it with the turn is at worst a misplacement
+        inside the same thread.
+        """
+        await self._start_turn(self.HOME, "turn-user")
+        frames_before = len(self.connection.messages)
+
+        await self.adapter.send(self.HOME, "Something unclassifiable")
+
+        types = [frame["type"] for frame in self.connection.messages[frames_before:]]
+        self.assertEqual(types, ["item.started", "content.delta"])
+        self.assertIn(self.HOME, self.adapter._active_turns)
+
+    async def test_a_non_home_thread_without_a_turn_still_errors(self):
+        """"Message any thread unprompted" stays out of scope."""
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send(
+            "some-other-thread",
+            "Cronjob Response: nightly\n(job_id: nightly)\n-------------\n\nDone.",
+            metadata={"notify": True, "job_id": "nightly"},
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "no active T3 turn")
+        self.assertEqual(self.connection.messages[frames_before:], [])
+
+    async def test_no_designated_home_means_no_proactive_delivery(self):
+        """Before the first `connection.accepted` there is nowhere to deliver."""
+        with unittest.mock.patch.dict(
+            adapter_module.os.environ, {home_module.HOME_CHANNEL_ENV: ""}
+        ):
+            result = await self.adapter.send(self.HOME, "Nowhere to go")
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "no active T3 turn")
+
+    async def test_edit_message_has_no_proactive_branch(self):
+        """A delivery is an atomic document, not a streaming surface."""
+        result = await self.adapter.edit_message(
+            self.HOME, "some-message", "Revised delivery", finalize=True
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "no active T3 turn")
+        self.assertEqual(
+            [frame["type"] for frame in self.connection.messages], []
+        )
+
+    async def test_a_delivery_is_queued_before_it_is_sent_and_purged_on_ack(self):
+        result = await self.adapter.send(self.HOME, "Queued then acked")
+        delivery_id = result.message_id
+        self.assertEqual(
+            [entry["deliveryId"] for entry in self.queue.entries()], [delivery_id]
+        )
+
+        await self.adapter._handle_server_frame(
+            {
+                "type": "home.deliver.ack",
+                "protocolVersion": 3,
+                "deliveryId": delivery_id,
+            }
+        )
+        self.assertEqual(self.queue.entries(), [])
+
+    async def test_a_delivery_survives_a_dead_socket_and_flushes_on_reconnect(self):
+        """Offline delivery: nothing is lost across either side restarting."""
+
+        class DeadConnection:
+            connected = False
+
+            async def send(self, message):
+                raise ConnectionError("T3 Code gateway is offline")
+
+        self.adapter._connection = DeadConnection()
+        with self.assertLogs(adapter_module.logger, level="WARNING"):
+            offline = await self.adapter.send(self.HOME, "Sent while offline")
+        # Reported successful: it is durably queued and WILL arrive, so a cron
+        # job must not log a failure for it.
+        self.assertTrue(offline.success)
+        self.assertEqual(
+            [entry["text"] for entry in self.queue.entries()], ["Sent while offline"]
+        )
+
+        # Reconnect: the accepted frame reconciles the designation and flushes.
+        self.adapter._connection = self.connection
+        await self.adapter._handle_connection_accepted(
+            {
+                "type": "connection.accepted",
+                "protocolVersion": 3,
+                "requestId": "hello-1",
+                "instanceId": "instance",
+                "nickname": "Hermes",
+                "homeThreadId": self.HOME,
+            }
+        )
+
+        flushed = self.connection.messages
+        self.assertEqual([frame["type"] for frame in flushed], ["home.deliver"])
+        self.assertEqual(flushed[0]["text"], "Sent while offline")
+        self.assertEqual(flushed[0]["deliveryId"], offline.message_id)
+        # Still queued — only the ack purges it.
+        self.assertEqual(len(self.queue.entries()), 1)
+
+        await self.adapter._handle_server_frame(
+            {
+                "type": "home.deliver.ack",
+                "protocolVersion": 3,
+                "deliveryId": offline.message_id,
+            }
+        )
+        self.assertEqual(self.queue.entries(), [])
+
+    async def test_the_queue_flushes_in_fifo_order(self):
+        class DeadConnection:
+            connected = False
+
+            async def send(self, message):
+                raise ConnectionError("T3 Code gateway is offline")
+
+        self.adapter._connection = DeadConnection()
+        with self.assertLogs(adapter_module.logger, level="WARNING"):
+            for text in ("first", "second", "third"):
+                await self.adapter.send(self.HOME, text)
+
+        self.adapter._connection = self.connection
+        await self.adapter._flush_home_queue()
+
+        self.assertEqual(
+            [frame["text"] for frame in self.connection.messages],
+            ["first", "second", "third"],
+        )
+
+    async def test_connection_accepted_reconciles_the_home_designation(self):
+        """T3 owns the designation; a differing local value is overwritten."""
+        with unittest.mock.patch.dict(
+            adapter_module.os.environ,
+            {home_module.HOME_CHANNEL_ENV: "stale-hand-edited-thread"},
+        ), unittest.mock.patch.object(
+            adapter_module, "save_home_thread_id"
+        ) as save:
+            await self.adapter._handle_connection_accepted(
+                {
+                    "type": "connection.accepted",
+                    "protocolVersion": 3,
+                    "requestId": "hello-1",
+                    "instanceId": "instance",
+                    "nickname": "Hermes",
+                    "homeThreadId": "authoritative-thread",
+                }
+            )
+        save.assert_called_once_with("authoritative-thread")
+
+    async def test_an_accepted_frame_without_a_home_thread_changes_nothing(self):
+        """Resolving the home thread must never fail a handshake."""
+        with unittest.mock.patch.object(
+            adapter_module, "save_home_thread_id"
+        ) as save:
+            await self.adapter._handle_connection_accepted(
+                {
+                    "type": "connection.accepted",
+                    "protocolVersion": 3,
+                    "requestId": "hello-1",
+                    "instanceId": "instance",
+                    "nickname": "Hermes",
+                }
+            )
+        save.assert_not_called()
+        self.assertEqual(adapter_module.home_thread_id(), self.HOME)
+
+    async def test_a_nameless_ack_is_a_correlated_protocol_error(self):
+        await self.adapter._handle_server_frame(
+            {"type": "home.deliver.ack", "protocolVersion": 3, "requestId": "ack-1"}
+        )
+        reply = self.connection.messages[-1]
+        self.assertEqual(reply["type"], "protocol.error")
+        self.assertEqual(reply["code"], "unsupported-message")
+
+
+class EnvEnablementTests(unittest.TestCase):
+    """`home_channel` is the magic key that makes `get_home_channel` resolve."""
+
+    ENROLLED = {
+        "HERMES_T3_GATEWAY_URL": "wss://t3.example/api/hermes-gateway/ws",
+        "HERMES_T3_GATEWAY_INSTANCE_ID": "instance",
+        "HERMES_T3_GATEWAY_CREDENTIAL": "credential",
+    }
+
+    def test_a_designated_home_seeds_the_magic_home_channel_key(self):
+        with unittest.mock.patch.dict(
+            adapter_module.os.environ,
+            {**self.ENROLLED, home_module.HOME_CHANNEL_ENV: "home-thread"},
+        ):
+            seed = adapter_module.env_enablement()
+        # Core pops this key and promotes it to a real HomeChannel dataclass
+        # (gateway/config.py:2648-2660), reading only chat_id/name/thread_id.
+        # T3 threads are the addressing unit, so chat_id IS the thread id and
+        # thread_id stays unset.
+        self.assertEqual(
+            seed["home_channel"], {"chat_id": "home-thread", "name": "Home"}
+        )
+
+    def test_no_designation_yet_seeds_no_home_channel(self):
+        with unittest.mock.patch.dict(
+            adapter_module.os.environ,
+            {**self.ENROLLED, home_module.HOME_CHANNEL_ENV: ""},
+        ):
+            seed = adapter_module.env_enablement()
+        # The pre-designation window — first connect, before any
+        # `connection.accepted`. This is exactly why the `/sethome` nudge
+        # suppression is still needed.
+        self.assertNotIn("home_channel", seed)
+        self.assertEqual(seed["instance_id"], "instance")
+
+    def test_an_unenrolled_hermes_seeds_nothing_at_all(self):
+        with unittest.mock.patch.dict(
+            adapter_module.os.environ,
+            {**self.ENROLLED, "HERMES_T3_GATEWAY_CREDENTIAL": ""},
+        ):
+            self.assertIsNone(adapter_module.env_enablement())
 
 
 if __name__ == "__main__":

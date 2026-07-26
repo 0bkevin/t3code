@@ -1,5 +1,10 @@
 import * as React from "react";
-import type { ContextMenuItem, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
+import type {
+  ContextMenuItem,
+  ProviderInstanceId,
+  ServerProvider,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { ProviderStatusKey } from "./settings/providerStatus";
 import {
@@ -879,6 +884,39 @@ export interface AgentSidebarEntry<TProject extends AgentSidebarProjectInput> {
   readonly statusLabel: string;
   /** True while the instance is mid-handshake, so the dot can pulse. */
   readonly statusPulse: boolean;
+  /**
+   * The instance's home thread, pinned first in its thread list and withheld
+   * from Delete.
+   *
+   * `null` for every driver that designates none, and for a Hermes instance
+   * whose first handshake has not landed — both mean "this list has no pinned
+   * row", which is the same rendering.
+   */
+  readonly homeThreadId: ThreadId | null;
+}
+
+/**
+ * Home thread per sidebar section key.
+ *
+ * The two thread-ordering sites (the rendered project row and the flat
+ * `visibleSidebarThreadKeys` used by jump shortcuts, prev/next, and
+ * prewarming) both need this, and they MUST agree — a section whose visual
+ * order differs from the traversal order desyncs the keyboard from the eye.
+ * One map derived once is what keeps them honest.
+ */
+export function buildHomeThreadIdByProjectKey<
+  TProject extends AgentSidebarProjectInput & { readonly projectKey: string },
+>(entries: ReadonlyArray<AgentSidebarEntry<TProject>>): ReadonlyMap<string, ThreadId> {
+  const byProjectKey = new Map<string, ThreadId>();
+  for (const entry of entries) {
+    if (entry.homeThreadId === null) continue;
+    // First writer wins: `visibleSidebarSections` de-duplicates by
+    // `projectKey`, keeping the first section for a key, so the pin has to
+    // resolve to that same one.
+    if (byProjectKey.has(entry.project.projectKey)) continue;
+    byProjectKey.set(entry.project.projectKey, entry.homeThreadId);
+  }
+  return byProjectKey;
 }
 
 const AGENT_STATUS_LABELS: Record<ProviderStatusKey, string> = {
@@ -960,6 +998,9 @@ export function buildAgentSidebarEntries<TProject extends AgentSidebarProjectInp
       statusKey,
       statusLabel: AGENT_STATUS_LABELS[statusKey],
       statusPulse: statusKey === "warning" && provider?.auth.status === "unauthenticated",
+      // Re-emitted on every provider status tick, so a designation made after
+      // the sidebar mounted pins on the next push without a refetch.
+      homeThreadId: provider?.homeThreadId ?? null,
     });
   }
 

@@ -39,6 +39,7 @@ import {
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  BellIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -81,6 +82,10 @@ import {
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
+import {
+  resolveNotificationBadge,
+  type NotificationBadgePresentation,
+} from "./notificationBadge.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -1015,13 +1020,39 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
   );
 }
 
+/**
+ * Provenance chip above a proactive agent delivery.
+ *
+ * Deliberately not a status pill: it is inline, unpadded on the left, and
+ * sits in the message's own column so the body below reads as the same
+ * assistant message it would have been without it.
+ */
+function NotificationBadge({ badge }: { badge: NotificationBadgePresentation }) {
+  return (
+    <div
+      className={cn(
+        "mb-1 inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+        badge.muted
+          ? "bg-muted/50 text-muted-foreground/80"
+          : "bg-accent/60 text-accent-foreground",
+      )}
+      data-notification-badge
+    >
+      <BellIcon className="size-3 opacity-70" />
+      <span className="min-w-0 truncate normal-case tracking-normal">{badge.label}</span>
+    </div>
+  );
+}
+
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const notificationBadge = resolveNotificationBadge(row.message.notification);
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
+        {notificationBadge ? <NotificationBadge badge={notificationBadge} /> : null}
         <ChatMarkdown
           text={messageText}
           cwd={ctx.markdownCwd}

@@ -14,11 +14,14 @@ import {
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
 } from "../Services/ProjectionThreads.ts";
-import { ModelSelection } from "@t3tools/contracts";
+import { ModelSelection, OrchestrationThreadNotificationSummary } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
+    latestNotification: Schema.NullOr(
+      Schema.fromJsonString(OrchestrationThreadNotificationSummary),
+    ),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -28,8 +31,10 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
 
   const upsertProjectionThreadRow = SqlSchema.void({
     Request: ProjectionThread,
-    execute: (row) =>
-      sql`
+    execute: (row) => {
+      const latestNotificationJson =
+        row.latestNotification === null ? null : JSON.stringify(row.latestNotification);
+      return sql`
         INSERT INTO projection_threads (
           thread_id,
           project_id,
@@ -51,6 +56,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pending_approval_count,
           pending_user_input_count,
           has_actionable_proposed_plan,
+          latest_notification_json,
           deleted_at
         )
         VALUES (
@@ -74,6 +80,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.pendingApprovalCount},
           ${row.pendingUserInputCount},
           ${row.hasActionableProposedPlan},
+          ${latestNotificationJson},
           ${row.deletedAt}
         )
         ON CONFLICT (thread_id)
@@ -97,8 +104,10 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pending_approval_count = excluded.pending_approval_count,
           pending_user_input_count = excluded.pending_user_input_count,
           has_actionable_proposed_plan = excluded.has_actionable_proposed_plan,
+          latest_notification_json = excluded.latest_notification_json,
           deleted_at = excluded.deleted_at
-      `,
+      `;
+    },
   });
 
   const getProjectionThreadRow = SqlSchema.findOneOption({
@@ -127,6 +136,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          latest_notification_json AS "latestNotification",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE thread_id = ${threadId}
@@ -159,6 +169,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          latest_notification_json AS "latestNotification",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE project_id = ${projectId}

@@ -69,18 +69,35 @@ export function getThreadSortTimestamp(
   return getLatestUserMessageTimestamp(thread);
 }
 
+/**
+ * Sort threads for a list, optionally pinning one thread to the top.
+ *
+ * `pinnedThreadId` exists for the agent home thread: it is a designated
+ * destination rather than a conversation the user started, so it must hold
+ * position one no matter how stale it looks — an agent whose last cron ran a
+ * month ago still has to be the first row of its instance. The pin is a
+ * leading sort key rather than a splice so a single pass produces the whole
+ * ordering, and every downstream consumer of that ordering (preview slice,
+ * keyboard traversal, prewarming) inherits it for free.
+ *
+ * A pinned id that matches no thread changes nothing.
+ */
 export function sortThreads<T extends { readonly id: string } & ThreadSortInput>(
   threads: readonly T[],
   sortOrder: SidebarThreadSortOrder,
+  pinnedThreadId?: string | null,
 ): T[] {
   return Arr.sort(
     threads,
     Order.mapInput(
       Order.Struct({
+        // `Order.Boolean` puts `false` first; flipped, the pinned row leads.
+        pinned: Order.flip(Order.Boolean),
         timestamp: Order.flip(Order.Number),
         id: Order.flip(Order.String),
       }),
       (thread: T) => ({
+        pinned: pinnedThreadId != null && thread.id === pinnedThreadId,
         timestamp: getThreadSortTimestamp(thread, sortOrder),
         id: thread.id,
       }),

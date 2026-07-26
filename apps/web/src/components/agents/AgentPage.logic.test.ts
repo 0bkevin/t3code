@@ -1,6 +1,7 @@
 import type {
   ProviderInstanceDescription,
   ProviderInstanceId,
+  ServerProvider,
   ServerProviderSkill,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -25,8 +26,10 @@ import {
   isAgentPageBusy,
   messageFromAgentPageError,
   nextExpandedSkillName,
+  resolveAgentHomeThreadId,
   resolveAgentRouteInstanceId,
   shouldFetchAgentSkillBody,
+  sortAgentPageThreads,
   supportsGatewayReconnect,
   upsertAgentSkillBody,
   type AgentConnectionStatus,
@@ -332,5 +335,103 @@ describe("resolveAgentRouteInstanceId", () => {
     expect(resolveAgentRouteInstanceId({})).toBe(null);
     expect(resolveAgentRouteInstanceId({ instanceId: undefined })).toBe(null);
     expect(resolveAgentRouteInstanceId({ instanceId: "   " })).toBe(null);
+  });
+});
+
+describe("agent thread list", () => {
+  function makeProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
+    return {
+      instanceId: "hermes-main" as ProviderInstanceId,
+      driver: "hermes",
+      displayName: "Hermes · Main",
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated", type: "gateway" },
+      checkedAt: "2026-03-09T10:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+      ...overrides,
+    } as ServerProvider;
+  }
+
+  function makeThread(input: {
+    readonly id: string;
+    readonly updatedAt: string;
+    readonly archivedAt?: string | null;
+  }) {
+    return {
+      id: input.id,
+      createdAt: input.updatedAt,
+      updatedAt: input.updatedAt,
+      latestUserMessageAt: input.updatedAt,
+      messages: [],
+      archivedAt: input.archivedAt ?? null,
+    };
+  }
+
+  const threads = [
+    makeThread({ id: "thread-newest", updatedAt: "2026-03-09T12:00:00.000Z" }),
+    makeThread({ id: "thread-middle", updatedAt: "2026-03-09T10:00:00.000Z" }),
+    makeThread({ id: "thread-home", updatedAt: "2026-01-01T00:00:00.000Z" }),
+  ];
+
+  it("reads the designation off the matching provider snapshot", () => {
+    expect(
+      resolveAgentHomeThreadId(
+        [makeProvider({ homeThreadId: "thread-home" as never })],
+        "hermes-main" as ProviderInstanceId,
+      ),
+    ).toBe("thread-home");
+  });
+
+  it("reports no designation for an undesignated or absent provider", () => {
+    expect(resolveAgentHomeThreadId([makeProvider()], "hermes-main" as ProviderInstanceId)).toBe(
+      null,
+    );
+    expect(resolveAgentHomeThreadId([], "hermes-main" as ProviderInstanceId)).toBe(null);
+    expect(
+      resolveAgentHomeThreadId(
+        [makeProvider({ homeThreadId: "thread-home" as never })],
+        "hermes-other" as ProviderInstanceId,
+      ),
+    ).toBe(null);
+  });
+
+  it("pins the home thread first even when it is the oldest", () => {
+    expect(
+      sortAgentPageThreads({
+        threads,
+        sortOrder: "updated_at",
+        homeThreadId: "thread-home" as never,
+      }).map((thread) => thread.id),
+    ).toEqual(["thread-home", "thread-newest", "thread-middle"]);
+  });
+
+  it("leaves an undesignated agent's list in plain recency order", () => {
+    expect(
+      sortAgentPageThreads({ threads, sortOrder: "updated_at", homeThreadId: null }).map(
+        (thread) => thread.id,
+      ),
+    ).toEqual(["thread-newest", "thread-middle", "thread-home"]);
+  });
+
+  it("excludes archived threads", () => {
+    expect(
+      sortAgentPageThreads({
+        threads: [
+          ...threads,
+          makeThread({
+            id: "thread-archived",
+            updatedAt: "2026-03-09T13:00:00.000Z",
+            archivedAt: "2026-03-09T13:30:00.000Z",
+          }),
+        ],
+        sortOrder: "updated_at",
+        homeThreadId: "thread-home" as never,
+      }).map((thread) => thread.id),
+    ).toEqual(["thread-home", "thread-newest", "thread-middle"]);
   });
 });

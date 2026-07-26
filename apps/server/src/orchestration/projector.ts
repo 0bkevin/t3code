@@ -21,6 +21,7 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadNotificationDeliveredPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadSettledPayload,
@@ -721,6 +722,55 @@ export function projectEvent(
           };
         }),
       );
+
+    case "thread.notification-delivered":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadNotificationDeliveredPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        const message: OrchestrationMessage = yield* decodeForEvent(
+          OrchestrationMessage,
+          {
+            id: payload.messageId,
+            role: "assistant",
+            text: payload.text,
+            // A delivery belongs to no turn: it arrives outside the turn
+            // machinery and may land while an unrelated turn is live.
+            turnId: null,
+            streaming: false,
+            notification: payload.notification,
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+          },
+          event.type,
+          "message",
+        );
+
+        // Replays of an already-written delivery re-emit the persisted row, so
+        // replacing in place is a byte-identical no-op rather than a duplicate.
+        const existingMessage = thread.messages.find((entry) => entry.id === message.id);
+        const messages = (
+          existingMessage
+            ? thread.messages.map((entry) => (entry.id === message.id ? message : entry))
+            : [...thread.messages, message]
+        ).slice(-MAX_THREAD_MESSAGES);
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
 
     case "thread.activity-appended":
       return decodeForEvent(

@@ -7,9 +7,16 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-PROTOCOL_VERSION = 2
-PLUGIN_VERSION = "0.2.0"
+PROTOCOL_VERSION = 3
+PLUGIN_VERSION = "0.3.0"
 WEBSOCKET_PATH = "/api/hermes-gateway/ws"
+
+# What a connecting socket intends to be. `gateway` is the instance's one live
+# plugin connection; `delivery` is a short-lived socket (an out-of-process cron
+# run) that hands over a `home.deliver` and leaves. T3 never registers a
+# `delivery` socket as the primary connection, so it cannot displace a healthy
+# gateway connection under the broker's generation fencing.
+CONNECTION_ROLES = frozenset({"gateway", "delivery"})
 
 CAPABILITIES = {
     "protocolVersion": PROTOCOL_VERSION,
@@ -34,8 +41,20 @@ SERVER_COMMANDS = frozenset(
         "ping",
         "describe.request",
         "skill.body.request",
+        "home.deliver.ack",
     }
 )
+
+# Kinds a `home.deliver` may carry. Mirrors the T3 contract's
+# `HermesGatewayHomeDeliveryKind`; anything not classified lands on "message".
+HOME_DELIVERY_KINDS = frozenset({"cron", "message", "lifecycle", "handoff", "other"})
+
+# Wire bounds from the T3 contract (`HermesGatewayHomeDeliver`): `label` is a
+# trimmed non-empty string of at most 200 chars, `text` is 1..120000 chars.
+# Enforced here so a pathological Hermes payload is clamped rather than
+# rejected by the server after the plugin already dropped its local copy.
+MAX_HOME_DELIVERY_LABEL_CHARS = 200
+MAX_HOME_DELIVERY_TEXT_CHARS = 120_000
 
 # Ceiling on a single skill body crossing the wire. Skill markdown is
 # human-authored documentation, not data: 512 KiB is far past any real
@@ -48,6 +67,26 @@ def request_id() -> str:
 
 
 def item_id() -> str:
+    return str(uuid.uuid4())
+
+
+def delivery_id() -> str:
+    """Mint the idempotency key for one home delivery.
+
+    Stable across retries by construction: the id is minted once, when the
+    delivery is created, and the queued copy carries it verbatim through every
+    flush. T3 dedupes on it, which is what makes double-flushing safe.
+    """
+    return str(uuid.uuid4())
+
+
+def delivery_id() -> str:
+    """Mint the idempotency key for one home delivery.
+
+    Stable across retries by construction: the id is minted once, when the
+    delivery is created, and the queued copy carries it verbatim through every
+    flush. T3 dedupes on it, which is what makes double-flushing safe.
+    """
     return str(uuid.uuid4())
 
 
@@ -261,8 +300,19 @@ def connection_hello(
     authentication: dict[str, str],
     hello_request_id: str | None = None,
     model: str | None = None,
+    role: str = "gateway",
 ) -> dict[str, Any]:
+    """Build the handshake frame.
+
+    `role` is sent explicitly even though the T3 contract decodes a missing
+    value as `"gateway"`: an out-of-process cron sender MUST announce
+    `"delivery"` or the broker registers it as the instance's primary
+    connection and generation-fences the live gateway socket off.
+    """
     resolved_model = model if model is not None else configured_model()
+    normalized_role = str(role or "gateway").strip().lower()
+    if normalized_role not in CONNECTION_ROLES:
+        normalized_role = "gateway"
     hello: dict[str, Any] = {
         "type": "connection.hello",
         "requestId": hello_request_id or request_id(),
@@ -271,12 +321,101 @@ def connection_hello(
         "hermesVersion": hermes_version,
         "capabilities": dict(CAPABILITIES),
         "authentication": authentication,
+        "role": normalized_role,
     }
     # Optional on the wire: omit entirely rather than send null/empty so a
     # server that has the field still falls back to its generic label.
     if resolved_model:
         hello["model"] = resolved_model
     return hello
+
+
+def home_deliver(
+    *,
+    delivery_id_value: str,
+    thread_id: str,
+    kind: str,
+    label: str,
+    text: str,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a `home.deliver` frame with every wire bound already applied.
+
+    Like `protocol_error`, this wraps the generic `frame()` helper rather than
+    assembling the envelope itself — but unlike the plain outbound frames the
+    adapter builds inline, a delivery has server-side validation the plugin
+    must not trip: `label` is trimmed non-empty ≤200 chars and `text` is
+    1..120000 chars in the T3 contract. Normalizing here rather than at the
+    call sites means a queued delivery is already wire-valid on disk, so a
+    flush after a plugin upgrade cannot resurrect a payload the server will
+    reject — the plugin would purge it only on an ack that never comes.
+
+    An unknown `kind` degrades to `"other"` and an empty label to `"Hermes"`:
+    a misclassified badge is the documented worst case, a dropped delivery is
+    not.
+    """
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind not in HOME_DELIVERY_KINDS:
+        normalized_kind = "other"
+    normalized_label = str(label or "").strip()[:MAX_HOME_DELIVERY_LABEL_CHARS].strip()
+    if not normalized_label:
+        normalized_label = "Hermes"
+    normalized_text = str(text or "")[:MAX_HOME_DELIVERY_TEXT_CHARS]
+    if not normalized_text:
+        normalized_text = " "
+    return frame(
+        "home.deliver",
+        deliveryId=delivery_id_value,
+        threadId=str(thread_id),
+        kind=normalized_kind,
+        label=normalized_label,
+        text=normalized_text,
+        createdAt=created_at or iso_now(),
+    )
+
+
+def home_deliver(
+    *,
+    delivery_id_value: str,
+    thread_id: str,
+    kind: str,
+    label: str,
+    text: str,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a `home.deliver` frame with every wire bound already applied.
+
+    Like `protocol_error`, this wraps the generic `frame()` helper rather than
+    assembling the envelope itself — but unlike the plain outbound frames the
+    adapter builds inline, a delivery has server-side validation the plugin
+    must not trip: `label` is trimmed non-empty <=200 chars and `text` is
+    1..120000 chars in the T3 contract. Normalizing here rather than at the
+    call sites means a queued delivery is already wire-valid on disk, so a
+    flush after a plugin upgrade cannot resurrect a payload the server will
+    reject — the plugin would purge it only on an ack that never comes.
+
+    An unknown `kind` degrades to `"other"` and an empty label to `"Hermes"`:
+    a misclassified badge is the documented worst case, a dropped delivery is
+    not.
+    """
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind not in HOME_DELIVERY_KINDS:
+        normalized_kind = "other"
+    normalized_label = str(label or "").strip()[:MAX_HOME_DELIVERY_LABEL_CHARS].strip()
+    if not normalized_label:
+        normalized_label = "Hermes"
+    normalized_text = str(text or "")[:MAX_HOME_DELIVERY_TEXT_CHARS]
+    if not normalized_text:
+        normalized_text = " "
+    return frame(
+        "home.deliver",
+        deliveryId=delivery_id_value,
+        threadId=str(thread_id),
+        kind=normalized_kind,
+        label=normalized_label,
+        text=normalized_text,
+        createdAt=created_at or iso_now(),
+    )
 
 
 def protocol_error(

@@ -34,7 +34,10 @@ import {
   type ProjectionTurn,
   ProjectionTurnRepository,
 } from "../../persistence/Services/ProjectionTurns.ts";
-import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import {
+  type ProjectionThread,
+  ProjectionThreadRepository,
+} from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
@@ -564,12 +567,28 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       ]);
 
       let latestUserMessageAt: string | null = null;
+      // Newest proactive delivery, flattened for shell readers that never load
+      // messages (sidebar rows, agent awareness). Ties break on message id so
+      // two deliveries stamped in the same millisecond resolve deterministically.
+      let latestNotification: ProjectionThread["latestNotification"] = null;
+      let latestNotificationKey: string | null = null;
       for (const message of messages) {
         if (
           message.role === "user" &&
           (latestUserMessageAt === null || message.createdAt > latestUserMessageAt)
         ) {
           latestUserMessageAt = message.createdAt;
+        }
+        if (message.notification !== undefined) {
+          const key = `${message.createdAt} ${message.messageId}`;
+          if (latestNotificationKey === null || key > latestNotificationKey) {
+            latestNotificationKey = key;
+            latestNotification = {
+              kind: message.notification.kind,
+              label: message.notification.label,
+              deliveredAt: message.createdAt,
+            };
+          }
         }
       }
 
@@ -588,6 +607,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         pendingApprovalCount,
         pendingUserInputCount,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
+        latestNotification,
       });
     });
 
@@ -617,6 +637,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
+            latestNotification: null,
             deletedAt: null,
           });
           return;
@@ -784,6 +805,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent":
+        case "thread.notification-delivered":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -912,6 +934,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.notification-delivered": {
+          // No merge accounting: a delivery is written whole, never streamed,
+          // and a replay re-emits the identical payload (the decider rebuilds
+          // it from the persisted row), so the upsert is idempotent.
+          yield* projectionThreadMessageRepository.upsert({
+            messageId: event.payload.messageId,
+            threadId: event.payload.threadId,
+            turnId: null,
+            role: "assistant",
+            text: event.payload.text,
+            notification: event.payload.notification,
+            isStreaming: false,
+            createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
           });
           return;

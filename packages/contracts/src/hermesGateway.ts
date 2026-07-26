@@ -7,6 +7,7 @@
  *
  * @module hermesGateway
  */
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -21,7 +22,7 @@ import { ProviderApprovalDecision, ProviderUserInputAnswers } from "./orchestrat
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { CanonicalItemType, CanonicalRequestType, UserInputQuestion } from "./providerRuntime.ts";
 
-export const HERMES_GATEWAY_PROTOCOL_VERSION = 2 as const;
+export const HERMES_GATEWAY_PROTOCOL_VERSION = 3 as const;
 
 export const HermesGatewayProtocolVersion = Schema.Literal(HERMES_GATEWAY_PROTOCOL_VERSION);
 export type HermesGatewayProtocolVersion = typeof HermesGatewayProtocolVersion.Type;
@@ -87,7 +88,7 @@ export type HermesGatewayCapabilities = typeof HermesGatewayCapabilities.Type;
  *
  * This deliberately permits capability shapes from a newer protocol so T3 can
  * return a structured `version-incompatible` rejection instead of failing the
- * WebSocket frame decoder. Accepted v2 connections must subsequently validate
+ * WebSocket frame decoder. Accepted connections must subsequently validate
  * this advertisement with `HermesGatewayCapabilities`.
  */
 export const HermesGatewayHelloCapabilities = Schema.Struct({
@@ -257,9 +258,22 @@ export const HermesGatewayAuthentication = Schema.Union([
 export type HermesGatewayAuthentication = typeof HermesGatewayAuthentication.Type;
 
 /**
+ * What a connecting socket intends to be.
+ *
+ * `gateway` is the instance's one live plugin connection: registered under
+ * generation fencing, pinged for liveness, and displacing any predecessor.
+ * `delivery` is a short-lived socket — an out-of-process cron run dialing in
+ * only to hand over a `home.deliver` and leave. Delivery connections are
+ * authenticated identically but are never registered as the primary
+ * connection, so they cannot kick a healthy gateway socket off its instance.
+ */
+export const HermesGatewayConnectionRole = Schema.Literals(["gateway", "delivery"]);
+export type HermesGatewayConnectionRole = typeof HermesGatewayConnectionRole.Type;
+
+/**
  * `protocolVersion` accepts any positive integer at the initial boundary so
  * T3 can reject incompatible plugins with a structured upgrade response.
- * Once accepted, all remaining v2 frames use the literal v2 schema.
+ * Once accepted, all remaining frames use the literal current-version schema.
  */
 export const HermesGatewayConnectionHello = Schema.Struct({
   type: Schema.Literal("connection.hello"),
@@ -278,6 +292,12 @@ export const HermesGatewayConnectionHello = Schema.Struct({
    * value degrades to the generic label rather than failing the handshake.
    */
   model: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Defaults to `"gateway"` on decode so the field stays honest about intent
+   * rather than making every caller repeat the common case. v3 requires both
+   * sides updated regardless, so this default is ergonomics, not tolerance.
+   */
+  role: HermesGatewayConnectionRole.pipe(Schema.withDecodingDefault(Effect.succeed("gateway"))),
 });
 export type HermesGatewayConnectionHello = typeof HermesGatewayConnectionHello.Type;
 
@@ -288,6 +308,17 @@ export const HermesGatewayConnectionAccepted = Schema.Struct({
   instanceId: ProviderInstanceId,
   nickname: HermesGatewayNickname,
   credential: Schema.optional(HermesGatewayCredential),
+  /**
+   * The instance's durable home thread — where Hermes' proactive output lands
+   * when nothing named a destination. Sent on every successful handshake so
+   * the plugin reconciles its `T3_HOME_CHANNEL` cache each connect; T3's
+   * settings blob is the authoritative designation.
+   *
+   * Optional because resolving it must never fail a handshake: if the thread
+   * could not be created this connect, the plugin keeps whatever it had and
+   * reconciles on the next one.
+   */
+  homeThreadId: Schema.optional(ThreadId),
 });
 export type HermesGatewayConnectionAccepted = typeof HermesGatewayConnectionAccepted.Type;
 
@@ -633,6 +664,68 @@ export const HermesGatewayPong = Schema.Struct({
 });
 export type HermesGatewayPong = typeof HermesGatewayPong.Type;
 
+/**
+ * Plugin-minted, stable across retries. T3 dedupes on it, which is what makes
+ * the plugin's queue safe to flush more than once.
+ */
+export const HermesGatewayDeliveryId = TrimmedNonEmptyString.pipe(
+  Schema.brand("HermesGatewayDeliveryId"),
+);
+export type HermesGatewayDeliveryId = typeof HermesGatewayDeliveryId.Type;
+
+/**
+ * What produced a home delivery. Drives both the rendered badge and whether
+ * the delivery raises its hand: everything except `lifecycle` un-settles the
+ * thread and pushes; gateway online/shutdown notices land quietly.
+ *
+ * Classification is best-effort on the plugin side — Hermes' `adapter.send()`
+ * contract carries no structured provenance marker on every path — so a
+ * misclassification costs a wrong badge, never a lost delivery.
+ */
+export const HermesGatewayHomeDeliveryKind = Schema.Literals([
+  "cron",
+  "message",
+  "lifecycle",
+  "handoff",
+  "other",
+]);
+export type HermesGatewayHomeDeliveryKind = typeof HermesGatewayHomeDeliveryKind.Type;
+
+/**
+ * Hermes-initiated delivery into the instance's home thread.
+ *
+ * Deliberately not a turn: there is no provider session, no turn id, and no
+ * request the delivery answers. A delivery may arrive while the home thread
+ * has a live user turn and must not disturb it.
+ */
+export const HermesGatewayHomeDeliver = Schema.Struct({
+  type: Schema.Literal("home.deliver"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  deliveryId: HermesGatewayDeliveryId,
+  threadId: ThreadId,
+  kind: HermesGatewayHomeDeliveryKind,
+  /** Human source label rendered as the badge — "Cron: daily-digest". */
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120_000)),
+  /**
+   * When Hermes produced the content, not when it reached T3. These diverge
+   * whenever a queued delivery flushes after a reconnect.
+   */
+  createdAt: IsoDateTime,
+});
+export type HermesGatewayHomeDeliver = typeof HermesGatewayHomeDeliver.Type;
+
+/**
+ * Sent only after the delivery is durably written. The plugin purges its
+ * queued copy on this frame and nothing else, so acking early loses messages.
+ */
+export const HermesGatewayHomeDeliverAck = Schema.Struct({
+  type: Schema.Literal("home.deliver.ack"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  deliveryId: HermesGatewayDeliveryId,
+});
+export type HermesGatewayHomeDeliverAck = typeof HermesGatewayHomeDeliverAck.Type;
+
 export const HermesGatewayProtocolErrorCode = Schema.Literals([
   "invalid-message",
   "unsupported-message",
@@ -666,6 +759,7 @@ export const HermesGatewayT3ToPluginMessage = Schema.Union([
   HermesGatewayDescribeRequest,
   HermesGatewaySkillBodyRequest,
   HermesGatewayPing,
+  HermesGatewayHomeDeliverAck,
 ]);
 export type HermesGatewayT3ToPluginMessage = typeof HermesGatewayT3ToPluginMessage.Type;
 
@@ -690,6 +784,7 @@ export const HermesGatewayPluginToT3Message = Schema.Union([
   HermesGatewaySkillBodyResponse,
   HermesGatewayPong,
   HermesGatewayProtocolError,
+  HermesGatewayHomeDeliver,
 ]);
 export type HermesGatewayPluginToT3Message = typeof HermesGatewayPluginToT3Message.Type;
 

@@ -19,6 +19,8 @@ export const RelayAgentAwarenessPhase = Schema.Literals([
   "running",
   "waiting_for_approval",
   "waiting_for_input",
+  // A proactive agent delivery (cron result, agent-initiated message).
+  "notification",
   "completed",
   "failed",
   "stale",

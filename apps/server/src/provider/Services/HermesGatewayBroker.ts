@@ -1,5 +1,6 @@
 import type {
   HermesGatewayConnectionHello,
+  HermesGatewayConnectionRole,
   HermesGatewayCreateEnrollmentInput,
   HermesGatewayEnrollmentResult,
   HermesGatewayInstanceStatus,
@@ -27,7 +28,22 @@ export interface HermesGatewayTransport {
 
 export interface HermesGatewayConnectionRegistration {
   readonly instanceId: ProviderInstanceId;
-  readonly generation: number;
+  /**
+   * Fencing token for the instance's primary connection, or `null` for a
+   * delivery connection.
+   *
+   * A delivery connection is deliberately outside the generation scheme: it
+   * was never registered as the primary, so there is nothing for it to be
+   * stale against, and giving it a generation would let it be compared —
+   * and therefore mistaken for a replacement — against the live socket.
+   */
+  readonly generation: number | null;
+  /**
+   * What this socket registered as. `delivery` sockets may only hand over
+   * `home.deliver` frames; they carry no session, take no ping loop, and
+   * their disconnect must not disturb the instance's liveness state.
+   */
+  readonly role: HermesGatewayConnectionRole;
   readonly accepted: Extract<
     HermesGatewayT3ToPluginMessage,
     { readonly type: "connection.accepted" }

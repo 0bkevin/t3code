@@ -201,6 +201,30 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         },
       } as unknown as OrchestrationEvent),
     ).toBe(false);
+    // A cron result or agent-initiated message is exactly the news push
+    // exists for; a lifecycle notice appends quietly and must never ring.
+    for (const kind of ["cron", "message", "handoff", "other"] as const) {
+      expect(
+        AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+          ...base,
+          type: "thread.notification-delivered",
+          payload: {
+            threadId: "thread-1" as ThreadId,
+            notification: { kind, label: "Cron: daily-digest", deliveryId: "delivery-1" },
+          },
+        } as unknown as OrchestrationEvent),
+      ).toBe(true);
+    }
+    expect(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        ...base,
+        type: "thread.notification-delivered",
+        payload: {
+          threadId: "thread-1" as ThreadId,
+          notification: { kind: "lifecycle", label: "Agent restarted", deliveryId: "delivery-2" },
+        },
+      } as unknown as OrchestrationEvent),
+    ).toBe(false);
   });
 
   it("deduplicates awareness state updates whose only change is their event timestamp", () => {

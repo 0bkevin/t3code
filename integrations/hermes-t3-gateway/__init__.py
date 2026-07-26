@@ -10,6 +10,8 @@ from .adapter import (
     validate_config,
 )
 from .cli import register_cli, t3_command
+from .home import HOME_CHANNEL_ENV, standalone_send
+from .home import HOME_CHANNEL_ENV, standalone_send
 
 
 def _pre_tool_call(
@@ -53,6 +55,22 @@ def register(ctx) -> None:
             "HERMES_T3_GATEWAY_CREDENTIAL",
         ],
         env_enablement_fn=env_enablement,
+        # Cron home-channel delivery. The name is not free-form: Hermes
+        # resolves a platform's cron home target through `_home_target_env_var`
+        # (`gateway/run.py:1541`), which falls back to
+        # f"{PLATFORM.upper()}_HOME_CHANNEL" for any platform without a
+        # built-in override entry — exactly this string for platform `t3`. So
+        # `send_message`'s error hints, `/sethome` messaging, and cron's
+        # env-only resolution all agree with the value the plugin writes, with
+        # no upstream override table entry. Without this, `deliver=t3` is
+        # silently dropped by cron.
+        cron_deliver_env_var=HOME_CHANNEL_ENV,
+        # Out-of-process cron delivery: when `hermes cron` runs in a separate
+        # process from `hermes gateway` there is no live adapter, and without
+        # this hook `deliver=t3` fails with "No live adapter for platform".
+        # Dials T3 over a short-lived `role: "delivery"` socket so it cannot
+        # displace the live gateway connection.
+        standalone_sender_fn=standalone_send,
         max_message_length=120_000,
         emoji="🔺",
         pii_safe=True,

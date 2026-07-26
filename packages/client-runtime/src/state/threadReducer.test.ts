@@ -444,6 +444,88 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.notification-delivered", () => {
+    const deliveryEvent = {
+      ...baseEventFields,
+      sequence: 20,
+      occurredAt: "2026-04-01T07:00:00.000Z",
+      aggregateKind: "thread",
+      aggregateId: ThreadId.make("thread-1"),
+      type: "thread.notification-delivered",
+      payload: {
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("msg-notify"),
+        text: "Digest ready.",
+        notification: {
+          kind: "cron",
+          label: "Cron: daily-digest",
+          deliveryId: "delivery-1",
+        },
+        createdAt: "2026-04-01T07:00:00.000Z",
+        updatedAt: "2026-04-01T07:00:00.000Z",
+      },
+    } as const;
+
+    it("appends the delivery as a turnless assistant message carrying provenance", () => {
+      const result = applyThreadDetailEvent(baseThread, deliveryEvent);
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages).toHaveLength(1);
+        expect(result.thread.messages[0]).toEqual({
+          id: "msg-notify",
+          role: "assistant",
+          text: "Digest ready.",
+          turnId: null,
+          streaming: false,
+          notification: {
+            kind: "cron",
+            label: "Cron: daily-digest",
+            deliveryId: "delivery-1",
+          },
+          createdAt: "2026-04-01T07:00:00.000Z",
+          updatedAt: "2026-04-01T07:00:00.000Z",
+        });
+        expect(result.thread.updatedAt).toBe("2026-04-01T07:00:00.000Z");
+      }
+    });
+
+    it("leaves an unrelated live turn untouched", () => {
+      // A delivery can land mid-turn; attributing it to that turn would fold
+      // it away behind the turn's summary and mis-settle the turn state.
+      const threadWithRunningTurn: OrchestrationThread = {
+        ...baseThread,
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "running",
+          requestedAt: "2026-04-01T06:00:00.000Z",
+          startedAt: "2026-04-01T06:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      };
+
+      const result = applyThreadDetailEvent(threadWithRunningTurn, deliveryEvent);
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.latestTurn).toEqual(threadWithRunningTurn.latestTurn);
+      }
+    });
+
+    it("replaces rather than duplicates on a replayed delivery", () => {
+      const first = applyThreadDetailEvent(baseThread, deliveryEvent);
+      expect(first.kind).toBe("updated");
+      if (first.kind !== "updated") return;
+
+      const second = applyThreadDetailEvent(first.thread, { ...deliveryEvent, sequence: 21 });
+      expect(second.kind).toBe("updated");
+      if (second.kind === "updated") {
+        expect(second.thread.messages).toHaveLength(1);
+        expect(second.thread.messages[0]).toEqual(first.thread.messages[0]);
+      }
+    });
+  });
+
   describe("thread.session-set", () => {
     it("settles a running latestTurn when the session leaves the running status", () => {
       const threadWithRunningTurn: OrchestrationThread = {

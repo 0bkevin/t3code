@@ -78,6 +78,11 @@ export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boo
     case "thread.runtime-mode-set":
     case "thread.interaction-mode-set":
       return false;
+    case "thread.notification-delivered":
+      // A cron result or agent-initiated message is exactly the kind of news
+      // push exists for. A lifecycle notice ("agent restarted") is not: it
+      // appends quietly and must never ring a device.
+      return event.payload.notification.kind !== "lifecycle";
     case "thread.activity-appended":
       return (
         event.payload.activity.kind === "approval.requested" ||

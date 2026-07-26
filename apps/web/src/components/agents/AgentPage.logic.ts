@@ -2,11 +2,15 @@ import type {
   ProviderInstanceConnection,
   ProviderInstanceDescription,
   ProviderInstanceId,
+  ServerProvider,
   ServerProviderSkill,
+  ThreadId,
 } from "@t3tools/contracts";
+import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 
 import { getProviderVersionLabel, type ProviderStatusKey } from "../settings/providerStatus";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { sortThreads, type ThreadSortInput } from "../../lib/threadSort";
 
 /**
  * Placeholder for any field the driver did not report.
@@ -280,6 +284,45 @@ export function isAgentInstanceNotFoundError(error: unknown): boolean {
     error !== null &&
     "code" in error &&
     error.code === "instance-not-found"
+  );
+}
+
+/**
+ * The instance's designated home thread, off the pushed provider snapshot.
+ *
+ * Read from `ServerProvider` rather than `ProviderInstanceDescription`: the
+ * snapshot is re-emitted on every status tick, so a designation made after
+ * the page mounted arrives without a re-describe. Absent for every non-Hermes
+ * driver and for a Hermes instance that has never completed a handshake —
+ * both are `null`, because both mean "this list has no pinned row".
+ */
+export function resolveAgentHomeThreadId(
+  providers: ReadonlyArray<ServerProvider>,
+  instanceId: ProviderInstanceId | string,
+): ThreadId | null {
+  const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+  return provider?.homeThreadId ?? null;
+}
+
+/**
+ * The agent's thread list for the page, home first.
+ *
+ * Archived threads are excluded for the same reason the sidebar excludes
+ * them — this list is "what can I open right now?", and the sort is the same
+ * shared `sortThreads` the sidebar uses so the two surfaces cannot disagree
+ * about order.
+ */
+export function sortAgentPageThreads<
+  T extends { readonly id: string; readonly archivedAt: string | null } & ThreadSortInput,
+>(input: {
+  readonly threads: ReadonlyArray<T>;
+  readonly sortOrder: SidebarThreadSortOrder;
+  readonly homeThreadId: ThreadId | null;
+}): T[] {
+  return sortThreads(
+    input.threads.filter((thread) => thread.archivedAt === null),
+    input.sortOrder,
+    input.homeThreadId,
   );
 }
 

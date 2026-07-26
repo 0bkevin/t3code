@@ -8,6 +8,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
 } from "./model.ts";
 import {
+  HERMES_GATEWAY_PROTOCOL_VERSION,
   HermesGatewayCapabilities,
   HermesGatewayConnectionHello,
   HermesGatewayCreateEnrollmentInput,
@@ -72,9 +73,9 @@ describe("Hermes gateway management contracts", () => {
       model: "gpt-5.6-terra",
       connectionGeneration: 3,
       activeSessionCount: 2,
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       capabilities: {
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         streaming: true,
         activity: true,
         approvals: true,
@@ -107,11 +108,11 @@ describe("Hermes gateway handshake", () => {
     const hello = decodeHello({
       type: "connection.hello",
       requestId: "hello-1",
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
       capabilities: {
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         streaming: true,
         activity: true,
         approvals: true,
@@ -131,11 +132,11 @@ describe("Hermes gateway handshake", () => {
     const hello = decodeHello({
       type: "connection.hello",
       requestId: "hello-2",
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
       capabilities: {
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         streaming: true,
         activity: true,
         approvals: true,
@@ -161,11 +162,11 @@ describe("Hermes gateway handshake", () => {
     const hello = decodeHello({
       type: "connection.hello",
       requestId: "hello-no-model",
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       pluginVersion: "0.2.0",
       hermesVersion: "1.2.3",
       capabilities: {
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         streaming: true,
         activity: true,
         approvals: true,
@@ -210,7 +211,7 @@ describe("Hermes gateway handshake", () => {
   it("reserves attachments for a future protocol version", () => {
     expect(() =>
       decodeCapabilities({
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         streaming: true,
         activity: true,
         approvals: true,
@@ -221,12 +222,12 @@ describe("Hermes gateway handshake", () => {
   });
 });
 
-describe("T3 to Hermes v2 messages", () => {
+describe("T3 to Hermes messages", () => {
   it("decodes session creation and opaque resume cursors", () => {
     expect(
       decodeT3Message({
         type: "session.ensure",
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         requestId: "ensure-1",
         threadId: "thread-1",
         resumeSessionId: "opaque/hermes/session/value",
@@ -235,7 +236,7 @@ describe("T3 to Hermes v2 messages", () => {
 
     expect(
       decodeResumeCursor({
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         sessionId: "opaque/hermes/session/value",
       }).sessionId,
     ).toBe("opaque/hermes/session/value");
@@ -243,7 +244,7 @@ describe("T3 to Hermes v2 messages", () => {
 
   it("decodes start and steering as distinct turn operations", () => {
     const context = {
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       requestId: "turn-command-1",
       threadId: "thread-1",
       sessionId: "session-1",
@@ -257,7 +258,7 @@ describe("T3 to Hermes v2 messages", () => {
 
   it("decodes interrupt, approval, structured input, stop, and ping", () => {
     const turnContext = {
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       threadId: "thread-1",
       sessionId: "session-1",
       turnId: "turn-1",
@@ -289,7 +290,7 @@ describe("T3 to Hermes v2 messages", () => {
     expect(
       decodeT3Message({
         type: "session.stop",
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         requestId: "stop-1",
         threadId: "thread-1",
         sessionId: "session-1",
@@ -298,7 +299,7 @@ describe("T3 to Hermes v2 messages", () => {
     expect(
       decodeT3Message({
         type: "ping",
-        protocolVersion: 2,
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
         requestId: "ping-1",
         sentAt: "2026-07-23T12:00:00.000Z",
       }).type,
@@ -316,11 +317,103 @@ describe("T3 to Hermes v2 messages", () => {
       }),
     ).toThrow();
   });
+
+  it("defaults an unstated connection role to gateway", () => {
+    // The field is about intent, not tolerance: a hello that says nothing is
+    // the ordinary live plugin, which must never be read as a throwaway
+    // delivery socket.
+    const hello = decodeHello({
+      type: "connection.hello",
+      requestId: "hello-role-default",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      pluginVersion: "0.2.0",
+      hermesVersion: "1.2.3",
+      capabilities: {
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+        streaming: true,
+        activity: true,
+        approvals: true,
+        userInput: true,
+        attachments: false,
+      },
+      authentication: { type: "instance-credential", instanceId: "hermes", credential: "secret" },
+    });
+
+    expect(hello.role).toBe("gateway");
+  });
+
+  it("carries the home thread designation on acceptance", () => {
+    const accepted = decodeT3Message({
+      type: "connection.accepted",
+      requestId: "hello-1",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      instanceId: "hermes",
+      nickname: "Remote Hermes",
+      homeThreadId: "thread-home-1",
+    });
+
+    expect(accepted.type).toBe("connection.accepted");
+    if (accepted.type === "connection.accepted") {
+      expect(accepted.homeThreadId).toBe("thread-home-1");
+    }
+
+    // Optional: a handshake whose home-thread resolution failed still accepts
+    // the plugin rather than refusing an authenticated connection.
+    const withoutHome = decodeT3Message({
+      type: "connection.accepted",
+      requestId: "hello-2",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      instanceId: "hermes",
+      nickname: "Remote Hermes",
+    });
+    expect(withoutHome.type).toBe("connection.accepted");
+  });
 });
 
-describe("Hermes to T3 v2 events", () => {
+describe("Hermes home deliveries", () => {
+  const delivery = {
+    type: "home.deliver",
+    protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+    deliveryId: "delivery-1",
+    threadId: "thread-home-1",
+    kind: "cron",
+    label: "Cron: daily-digest",
+    text: "Your digest is ready.",
+    createdAt: "2026-07-25T12:00:00.000Z",
+  } as const;
+
+  it("decodes a delivery and its acknowledgement", () => {
+    const decoded = decodePluginMessage(delivery);
+    expect(decoded.type).toBe("home.deliver");
+    if (decoded.type === "home.deliver") {
+      expect(decoded.kind).toBe("cron");
+      expect(decoded.deliveryId).toBe("delivery-1");
+    }
+
+    const ack = decodeT3Message({
+      type: "home.deliver.ack",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      deliveryId: "delivery-1",
+    });
+    expect(ack.type).toBe("home.deliver.ack");
+  });
+
+  it("requires a delivery id, since it is the dedupe key for retries", () => {
+    expect(() => decodePluginMessage({ ...delivery, deliveryId: "" })).toThrow();
+  });
+
+  it("rejects an unknown delivery kind rather than guessing a badge", () => {
+    expect(() => decodePluginMessage({ ...delivery, kind: "surprise" })).toThrow();
+  });
+
+  it("rejects empty delivery text", () => {
+    expect(() => decodePluginMessage({ ...delivery, text: "" })).toThrow();
+  });
+});
+
+describe("Hermes to T3 events", () => {
   const turnContext = {
-    protocolVersion: 2,
+    protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
     threadId: "thread-1",
     sessionId: "session-1",
     turnId: "turn-1",
@@ -329,7 +422,7 @@ describe("Hermes to T3 v2 events", () => {
   it("decodes session readiness, turn start, streaming text, and completion", () => {
     const legacyReady = decodePluginMessage({
       type: "session.ready",
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       requestId: "ensure-1",
       threadId: "thread-1",
       sessionId: "session-1",
@@ -338,7 +431,7 @@ describe("Hermes to T3 v2 events", () => {
     expect(legacyReady.type).toBe("session.ready");
     const activeReady = decodePluginMessage({
       type: "session.ready",
-      protocolVersion: 2,
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
       requestId: "ensure-2",
       threadId: "thread-1",
       sessionId: "session-1",

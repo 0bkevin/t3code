@@ -39,6 +39,13 @@ import {
   makeHermesGatewayBroker,
 } from "./HermesGatewayBroker.ts";
 
+/**
+ * A version this server does not speak. Expressed relative to the supported
+ * version rather than as a literal, so bumping the protocol does not turn
+ * these "must be rejected" cases into "is the current version" cases.
+ */
+const UNSUPPORTED_PROTOCOL_VERSION = HERMES_GATEWAY_PROTOCOL_VERSION + 1;
+
 const instanceId = ProviderInstanceId.make("hermes_remote");
 const otherInstanceId = ProviderInstanceId.make("hermes_other");
 const defaultHermesInstanceId = ProviderInstanceId.make("hermes");
@@ -94,7 +101,10 @@ const testLayer = Layer.mergeAll(
 const hello = (
   authentication: HermesGatewayConnectionHello["authentication"],
   protocolVersion: number = HERMES_GATEWAY_PROTOCOL_VERSION,
-  overrides: { readonly model?: string } = {},
+  overrides: {
+    readonly model?: string;
+    readonly role?: HermesGatewayConnectionHello["role"];
+  } = {},
 ): HermesGatewayConnectionHello => ({
   type: "connection.hello",
   requestId: HermesGatewayRequestId.make(`hello-${protocolVersion}`),
@@ -103,6 +113,7 @@ const hello = (
   hermesVersion: "1.0.0",
   capabilities: { ...capabilities, protocolVersion },
   authentication,
+  role: overrides.role ?? "gateway",
   ...(overrides.model !== undefined ? { model: overrides.model } : {}),
 });
 
@@ -174,7 +185,7 @@ it.effect("authenticates before applying incompatible connection state", () =>
             instanceId,
             credential: HermesGatewayCredential.make("not-the-real-credential"),
           },
-          3,
+          UNSUPPORTED_PROTOCOL_VERSION,
         ),
         second.transport,
       ),
@@ -202,7 +213,7 @@ it.effect("authenticates before applying incompatible connection state", () =>
             instanceId,
             credential: registered.accepted.credential!,
           },
-          3,
+          UNSUPPORTED_PROTOCOL_VERSION,
         ),
         second.transport,
       ),
@@ -214,7 +225,10 @@ it.effect("authenticates before applying incompatible connection state", () =>
     const otherEnrollment = yield* enroll(broker, otherInstanceId, "Other Hermes");
     const incompatibleEnrollment = yield* Effect.flip(
       broker.registerConnection(
-        hello({ type: "enrollment-token", token: otherEnrollment.oneTimeToken }, 3),
+        hello(
+          { type: "enrollment-token", token: otherEnrollment.oneTimeToken },
+          UNSUPPORTED_PROTOCOL_VERSION,
+        ),
         second.transport,
       ),
     );
@@ -1224,5 +1238,87 @@ it.effect("migrates a revoked legacy instance and drops its credential", () =>
       ),
     );
     assert.equal(reconnect.code, "invalid-authentication");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a delivery connection never displaces the live gateway connection", () =>
+  Effect.gen(function* () {
+    // The failure this guards: an out-of-process cron run dials in to hand
+    // over one delivery, `registerConnection` treats it as a replacement, and
+    // the real plugin gets closed with 4001 — knocking Hermes offline for the
+    // duration of a cron job.
+    const broker = yield* makeBroker(makeSecretStore());
+    const enrollment = yield* enroll(broker, instanceId, "Remote Hermes");
+    const live = recordingTransport();
+    const gateway = yield* broker.registerConnection(
+      hello({ type: "enrollment-token", token: enrollment.oneTimeToken }),
+      live.transport,
+    );
+    assert.equal(gateway.role, "gateway");
+    assert.isTrue(yield* broker.isConnected(instanceId));
+
+    const credential = gateway.accepted.credential!;
+    const cron = recordingTransport();
+    const delivery = yield* broker.registerConnection(
+      hello(
+        { type: "instance-credential", instanceId, credential },
+        HERMES_GATEWAY_PROTOCOL_VERSION,
+        { role: "delivery" },
+      ),
+      cron.transport,
+    );
+
+    assert.equal(delivery.role, "delivery");
+    // No generation: it was never registered, so there is nothing for it to
+    // be stale against — and a generation would let it be compared with, and
+    // mistaken for, the live connection.
+    assert.equal(delivery.generation, null);
+    assert.deepEqual(live.closes, [], "the live gateway socket must not be closed");
+    assert.isTrue(yield* broker.isConnected(instanceId));
+
+    // A delivery socket holds no session, so it must not be able to answer
+    // the live connection's outstanding requests — otherwise a throwaway cron
+    // socket could speak for the real plugin.
+    const threadId = ThreadId.make("delivery-fencing-thread");
+    const pendingRequestId = HermesGatewayRequestId.make("delivery-fencing-session");
+    const pending = yield* broker
+      .request(instanceId, {
+        type: "session.ensure",
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+        requestId: pendingRequestId,
+        threadId,
+      })
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Effect.yieldNow;
+    yield* broker.receive(delivery, {
+      type: "session.ready",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      requestId: pendingRequestId,
+      threadId,
+      sessionId: HermesGatewaySessionId.make("delivery-forged-session"),
+      resumed: false,
+    });
+    yield* Effect.yieldNow;
+    assert.isUndefined(
+      pending.pollUnsafe(),
+      "a delivery connection must not complete the live connection's requests",
+    );
+
+    // The live connection still can.
+    yield* broker.receive(gateway, {
+      type: "session.ready",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      requestId: pendingRequestId,
+      threadId,
+      sessionId: HermesGatewaySessionId.make("real-session"),
+      resumed: false,
+    });
+    assert.equal((yield* Fiber.join(pending)).type, "session.ready");
+
+    // Closing the delivery socket is its normal lifecycle and must leave the
+    // instance's liveness untouched.
+    yield* broker.disconnect(delivery);
+    assert.isTrue(yield* broker.isConnected(instanceId));
+    assert.deepEqual(live.closes, []);
   }).pipe(Effect.provide(testLayer)),
 );

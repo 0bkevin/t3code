@@ -3,6 +3,11 @@
 The plugin deliberately uses only the public Hermes plugin and platform-adapter
 surfaces audited at Hermes Agent upstream commit `62e07223` (v0.19.0).
 
+Scope note: this file inventories **upstream Hermes** surfaces only. T3-side
+machinery the plugin talks to over the wire — `withHermesConfig`, the broker's
+generation fencing, `getOrCreateHomeThread` — is not a Python concern and is
+documented on the T3 side; only the wire contract those produce appears here.
+
 Audited surfaces, all present at that commit:
 
 | Surface                                  | Location at 62e07223                 |
@@ -35,9 +40,37 @@ Audited surfaces, all present at that commit:
 | Active-command inline dispatch           | `gateway/platforms/base.py:4926`     |
 | User-plugin path `$HERMES_HOME/plugins/` | `hermes_cli/plugins.py:10`, `:1350`  |
 
-This inventory describes gateway wire protocol v2. Protocol v2 adds active-turn
-recovery in `session.ready` and authoritative `content.snapshot` replacement;
-older server/plugin pairs are rejected during the handshake.
+Home-channel surfaces, added for protocol v3:
+
+| Surface                                    | Location at 62e07223               |
+| ------------------------------------------ | ---------------------------------- |
+| `cron_deliver_env_var` registration flag   | `gateway/platform_registry.py:143` |
+| `standalone_sender_fn` registration flag   | `gateway/platform_registry.py:159` |
+| Standalone-sender invocation               | `tools/send_message_tool.py:741`   |
+| `_home_target_env_var` fallback convention | `gateway/run.py:1541`              |
+| `_resolve_home_env_var` (plugin lookup)    | `cron/scheduler.py:1025`           |
+| `env_enablement_fn` `home_channel` promote | `gateway/config.py:2648`           |
+| `HomeChannel` dataclass                    | `gateway/config.py:421`            |
+| `get_home_channel`                         | `gateway/config.py:1022`           |
+| `get_hermes_home` (queue/state base)       | `hermes_constants.py:106`          |
+| `get_hermes_home` re-export                | `hermes_cli/config.py:686`         |
+| Cron run-id shape (`cron_*`)               | `cron/scheduler.py:3017`, `:3484`  |
+| Cron session-var clearing                  | `cron/scheduler.py:3066-3091`      |
+| Cron `job_id` in routed metadata           | `cron/scheduler.py:1782`           |
+| Cron metadata reaching `adapter.send`      | `gateway/delivery.py:606`          |
+| Cron wrap header (`Cronjob Response: …`)   | `cron/scheduler.py:1513`           |
+| Gateway online notice                      | `gateway/run.py:17277`             |
+| Gateway restart notice                     | `gateway/run.py:17236`             |
+| Gateway shutdown/restarting notice         | `gateway/run.py:6599`              |
+| `/handoff` synthetic source identity       | `gateway/run.py:8854`              |
+| `HERMES_SESSION_USER_ID` binding           | `gateway/run.py:17372`             |
+| Session-context lifetime around a turn     | `gateway/run.py:12972` → `:14626`  |
+
+This inventory describes gateway wire protocol v3. Protocol v2 added active-turn
+recovery in `session.ready` and authoritative `content.snapshot` replacement; v3
+adds `role` on `connection.hello`, `homeThreadId` on `connection.accepted`, and
+the `home.deliver` / `home.deliver.ack` pair. Older server/plugin pairs are
+rejected during the handshake — the version policy stays fail-closed.
 
 ## Mapped in the initial scope
 
@@ -55,6 +88,7 @@ older server/plugin pairs are rejected during the handshake.
 | `load_config_readonly()["agent"]["reasoning_effort"]` | Optional `reasoningEffort` on `describe.response` |
 | `skills_list()` metadata                              | `skills` on `describe.response`                   |
 | `skill_view(name, preprocess=False)`                  | `markdown` on `skill.body.response`               |
+| Cron `deliver=t3`, `send_message t3`, lifecycle       | `home.deliver` / `home.deliver.ack`               |
 
 ## Known limitations
 
@@ -195,7 +229,18 @@ older server/plugin pairs are rejected during the handshake.
   and the wire type is non-empty. That takes the ordinary correlated
   `protocol.error` path.
 - Attachments are not accepted. They are the first planned post-stability
-  feature; the capability is reserved and fixed to `false` in protocol v2.
+  feature; the capability is reserved and fixed to `false` in protocol v3. The
+  `standalone_sender_fn` signature accepts `media_files` / `force_document` for
+  parity with `gateway/platform_registry.py:150-158`, but the v3 wire contract
+  has no attachment framing, so both are ignored (logged, not silently
+  dropped).
+- **Kind/label classification is heuristic.** `adapter.send()` carries no
+  structured "this is a cron delivery" marker on every path, so the plugin
+  reads what does exist (see "Home-channel delivery" below). A
+  misclassification costs a wrong badge — and, for `lifecycle`, a delivery that
+  raises its hand when it should have landed quietly — never a lost delivery.
+  If upstream ever exposes delivery provenance in metadata, adopt it and
+  replace the heuristics here.
 
 ## Turn completion is keyed off `notify`, never `finalize`
 
@@ -221,7 +266,7 @@ boundary, and `_complete_turn` is reached from nowhere else on the output path.
 ### The signal that does NOT end a turn: `finalize=True` on `edit_message`
 
 `finalize` reads like "last edit of the response", and the base class documents
-it that way (`gateway/platforms/base.py:3178-3186`). It is **not** a turn
+it that way (`gateway/platforms/base.py:3176-3183`). It is **not** a turn
 boundary. Two upstream paths set it mid-turn:
 
 1. **The tool-progress loop.** When an adapter declares
@@ -265,6 +310,145 @@ being applied to the final delivery (or the streaming path stops calling
 would hang in the running state with the full answer streamed but no
 `turn.completed`. That is the opposite failure mode from the original bug and
 would show up as spinners that never resolve, not truncated answers.
+
+## Home-channel delivery: the gate is provenance, not turn absence
+
+Hermes-initiated output — cron results, `send_message` with a bare `t3` target,
+gateway lifecycle notices, `/handoff t3` — has no T3-issued turn to stream into.
+It is emitted as `home.deliver` against the instance's durable home thread.
+
+### The deadlock this design exists to avoid
+
+The naive rule — "no active turn for this thread → deliver" — is wrong, and
+wrong in the same keyed-off-the-wrong-signal way as the `finalize` bug above.
+When the home thread itself has a live user turn, a cron delivery targeting it
+would fall into the active-turn path, stream as that turn's assistant content,
+and — because final cron deliveries arrive notify-stamped via
+`_mark_notify_metadata` (`gateway/platforms/base.py:89`) — **complete the user's
+live turn with the cron output as its answer**.
+
+The discriminator is `HERMES_SESSION_KEY`. The gateway binds it onto the turn's
+context for the whole handler (`gateway/run.py:12972` → `:14626`, read via
+`get_session_env`), and every send a turn produces — streamed or final — happens
+inside that scope, so a genuine turn reply resolves to this plugin's
+`build_session_key` id for its thread. Cron runs under its own
+`cron_<job>_<timestamp>` session with the gateway routing keys explicitly
+cleared (`cron/scheduler.py:3066-3091`), and lifecycle broadcasts run in no
+session at all.
+
+`_is_proactive_delivery` therefore decides in this order:
+
+1. Session key matches an active turn on this thread → **turn content**, never
+   a delivery. Checked first, so a turn reply can never be rerouted.
+2. Not the home thread → never a delivery. "Message any thread unprompted"
+   stays out of scope and the existing `"no active T3 turn"` error is returned
+   verbatim.
+3. Home thread, no active turn → delivery. There is nothing it could belong to.
+4. Home thread **with** a non-matching active turn → delivery only when
+   provenance is positively established. This is the conservative half: an
+   unattributable send in that window stays with the turn (at worst misplaced
+   inside the same thread) rather than being torn out of a turn it may belong
+   to. So an unclassifiable send can never steal a live answer, and a
+   recognisable cron/lifecycle/handoff delivery never completes one.
+
+Ordering inside `send()` is load-bearing: `_capture_steer_control_response`
+stays first, because steer acknowledgements arrive with `notify=True` and must
+never be read as deliveries.
+
+`edit_message` has **no** proactive branch and keeps returning `"no active T3
+turn"` outside a turn. A delivery is an atomic document, not a streaming
+surface. If an upstream path ever streams a home delivery, revisit with a
+`home.deliver`-supersedes-by-`deliveryId` scheme rather than edit frames.
+
+### What classification keys off
+
+All best-effort, in precedence order, all degrading to
+`("message", "Hermes", uncertain)`:
+
+- `metadata["job_id"]` — the only structured signal. The cron scheduler stamps
+  it into the routed metadata (`cron/scheduler.py:1782`) and
+  `DeliveryRouter._deliver_to_platform` passes the dict through to
+  `adapter.send` unchanged (`gateway/delivery.py:606`).
+- The cron wrap header `Cronjob Response: <name>` (`cron/scheduler.py:1513`),
+  present whenever `cron.wrap_response` is on (the default), which also
+  supplies the human job name for the badge.
+- Lifecycle literals: `gateway/run.py:17277`, `:17236`, `:6599`. These are
+  inline f-strings upstream, not exported constants, so they carry the same
+  drift risk as the `/sethome` notice and the `⏩ Steer queued` prefix.
+- `HERMES_SESSION_USER_ID == "system:handoff"`, the synthetic source identity
+  `/handoff` dispatches under (`gateway/run.py:8854`, bound at `:17372`).
+
+### Registration contracts
+
+- **`cron_deliver_env_var="T3_HOME_CHANNEL"`.** The name is not free-form.
+  `_home_target_env_var` (`gateway/run.py:1541`) consults built-ins, then the
+  plugin registry via `_resolve_home_env_var` (`cron/scheduler.py:1025`), then
+  falls back to `f"{PLATFORM.upper()}_HOME_CHANNEL"` — exactly this string for
+  platform `t3`. Matching the fallback means `send_message`'s error hints and
+  cron's env-only resolution agree with what the plugin writes, with no
+  upstream override-table entry. Without the flag, `deliver=t3` is silently
+  dropped by cron.
+- **`env_enablement_fn` seeds `home_channel`.** That key is magic: core pops it
+  out of the returned dict and promotes it to a real `HomeChannel` dataclass
+  (`gateway/config.py:2648-2660`, reading only `chat_id` / `name` /
+  `thread_id`). The promotion is what makes `get_home_channel("t3")`
+  (`gateway/config.py:1022`) resolve, which is what makes `send_message`,
+  lifecycle broadcasts, and `/handoff` work — core hardcodes env promotion only
+  for built-ins. T3 threads are the addressing unit, so `chat_id` **is** the
+  thread id and `thread_id` stays unset.
+- **`standalone_sender_fn`.** Out-of-process cron has no live adapter
+  (`tools/send_message_tool.py:741`). The plugin dials T3 itself over a
+  short-lived socket announcing `role: "delivery"`. That role is load-bearing:
+  T3's broker registers a `gateway` connection under generation fencing and
+  displaces its predecessor, so a cron dial-in announcing the default role
+  would kick the live gateway socket off its own instance mid-turn.
+
+### Designation is a synced cache, not local state
+
+`T3_HOME_CHANNEL` is written by the plugin, never by the user. T3's settings
+blob is authoritative and republishes `homeThreadId` on every
+`connection.accepted`; the plugin compares and persists via `save_env_value`
+(the same profile-aware helper enrollment uses) and mirrors into `os.environ`
+so a running gateway needs no restart. A hand-edited value is overwritten on
+the next reconnect — documented in the README. A read-only or managed `.env`
+degrades to the in-process mirror only: routing works for the life of the
+process and re-reconciles on the next connect.
+
+### Queue and state location
+
+The plugin previously persisted nothing to disk. It now keeps one JSONL outbox
+at `<hermes home>/gateway/t3_home_delivery_queue.jsonl`, using
+`get_hermes_home()` (`hermes_constants.py:106`, re-exported at
+`hermes_cli/config.py:686`) as the base — the same accessor and the same
+`gateway/` subdirectory Hermes' own Discord adapter uses for per-profile
+adapter state (`plugins/platforms/discord/adapter.py:52`, `:272`, `:1694`).
+Resolving through that accessor rather than `~/.hermes` makes the queue
+profile-scoped: a second profile cannot replay another profile's deliveries
+into its own home thread.
+
+Correctness rests on one rule: an entry is removed **only** on its
+`home.deliver.ack`. Everything else — a socket that dropped mid-send, a server
+that died before writing, a plugin restart — leaves the entry to be replayed,
+which is safe because T3 dedupes on `deliveryId`. Acking before the durable
+write on the server side would break this. The queue is capped at 300 entries
+and drops oldest-first with a logged warning; one flush replays at most 50
+entries so a reconnect does not stall live traffic.
+
+### Cron tool-hook misattribution
+
+`_turn_for_tool_hook`'s sole-active-turn fallback is now skipped for cron runs.
+The hooks are process-global, so a cron job running tools while exactly one T3
+turn happens to be live would resolve through that fallback and paint the cron
+job's tool calls into an unrelated live conversation. Cron runs are identifiable
+by the `cron_<job>_<timestamp>` session id the scheduler mints
+(`cron/scheduler.py:3017`, passed to the agent at `:3484`) — the exact value the
+hooks receive. Upstream treats the same routing hazard as real, clearing the
+process-global session env vars for it (`cron/scheduler.py:3066-3091`). A cron
+job's activity belongs to the eventual `home.deliver`, never to a live turn.
+
+Prefix matching carries the usual drift risk: if upstream renames the shape,
+this degrades to the previous behaviour (cron tool rows may again be
+misattributed to a sole live turn) rather than breaking anything.
 
 ## Tool-progress chrome: the `format_tool_event` override is not the defence
 

@@ -66,6 +66,80 @@ layer("ProjectionThreadMessageRepository", (it) => {
     }),
   );
 
+  it.effect("round-trips notification provenance and preserves it across later upserts", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-notification");
+      const messageId = MessageId.make("message-notification");
+      const createdAt = "2026-07-01T09:00:00.000Z";
+      const notification = {
+        kind: "cron" as const,
+        label: "Cron: daily-digest",
+        deliveryId: "delivery-1",
+      };
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "Digest ready.",
+        notification,
+        isStreaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      });
+
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.equal(rows.length, 1);
+      assert.deepEqual(rows[0]?.notification, notification);
+
+      // Same COALESCE rule as attachments: an unrelated update that omits the
+      // field must not erase a delivery's provenance.
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "Digest ready (edited).",
+        isStreaming: false,
+        createdAt,
+        updatedAt: "2026-07-01T09:00:02.000Z",
+      });
+
+      const rowById = yield* repository.getByMessageId({ messageId });
+      assert.equal(rowById._tag, "Some");
+      if (rowById._tag === "Some") {
+        assert.equal(rowById.value.text, "Digest ready (edited).");
+        assert.deepEqual(rowById.value.notification, notification);
+      }
+    }),
+  );
+
+  it.effect("leaves notification absent on ordinary messages", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-ordinary-message");
+      const messageId = MessageId.make("message-ordinary");
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "hello",
+        isStreaming: false,
+        createdAt: "2026-07-01T09:10:00.000Z",
+        updatedAt: "2026-07-01T09:10:00.000Z",
+      });
+
+      const rows = yield* repository.listByThreadId({ threadId });
+      // Absent, not a synthesized default — consumers key on its absence to
+      // tell an ordinary message from a proactive delivery.
+      assert.equal(rows[0]?.notification, undefined);
+    }),
+  );
+
   it.effect("allows explicit attachment clearing with an empty array", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

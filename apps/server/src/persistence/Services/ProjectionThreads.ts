@@ -10,6 +10,7 @@ import {
   IsoDateTime,
   ModelSelection,
   NonNegativeInt,
+  OrchestrationThreadNotificationSummary,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -44,6 +45,12 @@ export const ProjectionThread = Schema.Struct({
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,
   hasActionableProposedPlan: NonNegativeInt,
+  /**
+   * Newest proactive delivery on this thread, summarized so shell readers do
+   * not have to load messages. Refreshed alongside the other shell-summary
+   * columns; `null` on every thread that has never received a delivery.
+   */
+  latestNotification: Schema.NullOr(OrchestrationThreadNotificationSummary),
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type ProjectionThread = typeof ProjectionThread.Type;
