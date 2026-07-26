@@ -18,7 +18,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 
 import { DevSeedError, MAX_SEED_THREAD_LIMIT, seedDevDatabase } from "./lib/dev-seed.ts";
-import { findRunningServerPid } from "./lib/server-runtime-probe.ts";
+import { findRunningServerPid, findRunningServerPidSync } from "./lib/server-runtime-probe.ts";
 
 const DEFAULT_THREAD_LIMIT = 25;
 const DEFAULT_ACTIVITY_LIMIT = 200;
@@ -86,25 +86,35 @@ class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
  * `dev` — so the tie goes to whichever was written most recently, i.e. the one
  * the last server to run actually opened. The chosen path is printed, so a
  * wrong guess is visible rather than silent.
+ *
+ * Recency is the newest of the database and its `-wal` sidecar. The server runs
+ * SQLite in WAL mode, where writes land in the sidecar and the main file's
+ * mtime can sit unchanged until a checkpoint — so reading the database alone
+ * makes a busy directory look older than a dormant one.
  */
 const resolveStateDir = Effect.fn("devSeed.resolveStateDir")(function* (baseDir: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
+  const modifiedAtMs = (info: FileSystem.File.Info): number =>
+    Option.match(info.mtime, { onSome: (mtime) => mtime.getTime(), onNone: () => 0 });
+
   const candidates: Array<{ readonly stateDir: string; readonly modifiedAtMs: number }> = [];
   for (const stateDir of ["userdata", "dev"] as const) {
-    const info = yield* fileSystem
-      .stat(path.join(baseDir, stateDir, "state.sqlite"))
-      .pipe(Effect.option);
-    if (Option.isSome(info)) {
-      candidates.push({
-        stateDir,
-        modifiedAtMs: Option.match(info.value.mtime, {
-          onSome: (mtime) => mtime.getTime(),
-          onNone: () => 0,
-        }),
-      });
+    const dbPath = path.join(baseDir, stateDir, "state.sqlite");
+    const info = yield* fileSystem.stat(dbPath).pipe(Effect.option);
+    if (Option.isNone(info)) {
+      continue;
     }
+    // The sidecar is absent outside WAL mode, and after a clean checkpoint.
+    const walInfo = yield* fileSystem.stat(`${dbPath}-wal`).pipe(Effect.option);
+    candidates.push({
+      stateDir,
+      modifiedAtMs: Math.max(
+        modifiedAtMs(info.value),
+        Option.match(walInfo, { onSome: modifiedAtMs, onNone: () => 0 }),
+      ),
+    });
   }
 
   // `userdata` first above, so an equal or missing mtime keeps the old default.
@@ -271,6 +281,10 @@ const devSeedCli = Command.make("dev-seed", {
             threadLimit: input.threads,
             activityLimit: input.activities,
             seededAt,
+            // The check above happens before the copy, which can take seconds.
+            // Re-checked just before the commit so a server that started in
+            // between aborts the seed instead of having its database swapped.
+            findRunningServerPid: () => findRunningServerPidSync(targetBaseDir),
           }),
         catch: (cause) => cause as DevSeedError,
       });

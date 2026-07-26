@@ -49,6 +49,19 @@ export interface DevSeedOptions {
   readonly activityLimit: number;
   /** ISO-8601 timestamp stamped on the projector cursor rows. */
   readonly seededAt: string;
+  /**
+   * Re-checked just before the commit, after every destructive statement has
+   * run but while a rollback still costs nothing. The caller's own check
+   * happens before this function is entered, leaving a window in which a server
+   * can start; returning a pid here aborts rather than persisting a swap
+   * underneath it.
+   *
+   * Cannot close the window completely — a server starting between this call
+   * and the commit is still possible, since a filesystem read and a SQLite
+   * transaction have no common lock — but it shrinks it from the whole copy to
+   * the commit itself.
+   */
+  readonly findRunningServerPid?: () => number | undefined;
 }
 
 /** What {@link seedDevDatabase} copied, for the CLI's summary output. */
@@ -592,6 +605,18 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
     // Read back inside the transaction: these are the rows that were just
     // written, not the source's, so a column the target lacks is already gone.
     const attachmentIds = collectAttachmentIds(target, threadIds);
+
+    // Last moment a rollback is still free. The caller checked before calling,
+    // but a server can start during a copy that takes seconds; checking again
+    // here narrows the window to the commit itself. Everything above is inside
+    // the transaction, so aborting now leaves the target exactly as it was.
+    const lateRunningPid = options.findRunningServerPid?.();
+    if (lateRunningPid !== undefined) {
+      throw new DevSeedError(
+        `a T3 Code server (pid ${String(lateRunningPid)}) started while the seed was running`,
+        "Nothing was changed. Stop it and run the seed again.",
+      );
+    }
 
     target.exec("COMMIT");
 

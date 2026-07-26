@@ -6,6 +6,10 @@
  * the same reason `./projection-tables.ts` exists. Only the fields read here are
  * modelled, so a server that adds a field stays readable.
  */
+// @effect-diagnostics nodeBuiltinImport:off - the sync probe runs inside a
+// synchronous SQLite transaction, where the platform layer is not available.
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -82,3 +86,33 @@ export const findRunningServerPid = Effect.fn("findRunningServerPid")(function* 
 
   return Option.none<number>();
 });
+
+/**
+ * The same probe, synchronously.
+ *
+ * `seedDevDatabase` is synchronous — it holds an open SQLite transaction — so
+ * its last-moment re-check cannot await an Effect. Reads the file directly
+ * rather than through the platform layer for that reason, and applies the same
+ * rules: a positive live pid counts, anything unparseable does not.
+ */
+export function findRunningServerPidSync(baseDir: string): number | undefined {
+  for (const stateDir of STATE_DIRS) {
+    const statePath = NodePath.join(baseDir, stateDir, "server-runtime.json");
+    let raw: string;
+    try {
+      raw = NodeFS.readFileSync(statePath, "utf8");
+    } catch {
+      continue;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      const pid: unknown = (parsed as { pid?: unknown } | null)?.pid;
+      if (typeof pid === "number" && isPidLive(pid)) {
+        return pid;
+      }
+    } catch {
+      // Half-written or malformed: says nothing about liveness either way.
+    }
+  }
+  return undefined;
+}

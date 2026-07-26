@@ -605,6 +605,57 @@ describe("seedDevDatabase", () => {
     });
   }
 
+  // The CLI checks for a running server before calling, but a copy takes time
+  // and a server can start during it. The pre-commit re-check has to abort
+  // rather than persist a swap underneath that server.
+  it("aborts without committing when a server appears mid-copy", () => {
+    withDatabases(({ source, target }) => {
+      assert.throws(
+        () =>
+          seedDevDatabase({
+            sourceDbPath: source,
+            targetDbPath: target,
+            threadLimit: 3,
+            activityLimit: 10,
+            seededAt: SEEDED_AT,
+            findRunningServerPid: () => 4242,
+          }),
+        DevSeedError,
+      );
+
+      // Everything destructive ran inside the transaction, so the rollback
+      // leaves the target's own rows intact.
+      const projects = query<{ project_id: string }>(
+        target,
+        "SELECT project_id FROM projection_projects",
+      );
+      assert.deepStrictEqual(
+        projects.map((row) => row.project_id),
+        ["stale"],
+      );
+      const [events] = query<{ count: number }>(
+        target,
+        "SELECT COUNT(*) count FROM orchestration_events",
+      );
+      assert.equal(events?.count, 1);
+    });
+  });
+
+  it("commits when no server appeared during the copy", () => {
+    withDatabases(({ source, target }) => {
+      const summary = seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 3,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+        findRunningServerPid: () => undefined,
+      });
+
+      assert.equal(summary.threads, 3);
+    });
+  });
+
   // A caller that bypasses the CLI flag would otherwise discover the ceiling
   // only after the target had been emptied and the copy rolled back.
   it("refuses a thread limit above the ceiling before touching the target", () => {
