@@ -14,9 +14,12 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 /**
- * The path of the linked git worktree containing `cwd`'s root, or undefined
- * for a main checkout. Git marks a linked worktree by making `.git` a file
+ * The path of the linked git worktree containing `cwd`, or undefined when
+ * `cwd` is not inside one. Git marks a linked worktree by making `.git` a file
  * (`gitdir: …`) rather than a directory.
+ *
+ * Walks up to the repository root, so running from a subdirectory (`apps/web`,
+ * say) resolves the same worktree as running from the top.
  */
 export const resolveGitWorktreePath = (
   cwd: string,
@@ -24,19 +27,36 @@ export const resolveGitWorktreePath = (
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const info = yield* fileSystem.stat(path.join(cwd, ".git")).pipe(Effect.option);
-    return Option.isSome(info) && info.value.type === "File" ? cwd : undefined;
+
+    let directory = path.resolve(cwd);
+    for (;;) {
+      const info = yield* fileSystem.stat(path.join(directory, ".git")).pipe(Effect.option);
+      if (Option.isSome(info)) {
+        // A directory means the main checkout: not a linked worktree, and the
+        // search stops either way — nesting one repo inside another does not
+        // make the outer one this worktree's root.
+        return info.value.type === "File" ? directory : undefined;
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) {
+        return undefined;
+      }
+      directory = parent;
+    }
   });
 
 /**
  * The worktree-local data directory for `cwd`, or undefined outside a linked
- * worktree. With `requireExisting`, also undefined until something (normally
- * the dev runner) has created it — for tools that should fall back to normal
- * resolution rather than inventing an empty data directory.
+ * worktree.
+ *
+ * Deliberately does not check whether the directory exists yet. Inside a
+ * worktree this is *the* answer; falling back to the shared home because it
+ * happens to be missing would send a tool at the user's real database, which
+ * is the accident the worktree default exists to prevent. A caller that needs
+ * a different directory should be told so explicitly (`--base-dir`).
  */
 export const resolveWorktreeT3Home = (
   cwd: string,
-  options?: { readonly requireExisting?: boolean },
 ): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const worktreePath = yield* resolveGitWorktreePath(cwd);
@@ -44,11 +64,5 @@ export const resolveWorktreeT3Home = (
       return undefined;
     }
     const path = yield* Path.Path;
-    const home = path.join(worktreePath, ".t3");
-    if (options?.requireExisting) {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const exists = yield* fileSystem.exists(home).pipe(Effect.orElseSucceed(() => false));
-      return exists ? home : undefined;
-    }
-    return home;
+    return path.join(worktreePath, ".t3");
   });

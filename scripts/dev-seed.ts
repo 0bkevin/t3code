@@ -68,13 +68,17 @@ const devSeedCli = Command.make("dev-seed", {
     Flag.optional,
     Flag.map(Option.getOrUndefined),
   ),
+  // Bounded: SQLite reads a negative LIMIT as "no limit", which would quietly
+  // turn a capped copy into a full-table one.
   threads: Flag.integer("threads").pipe(
+    Flag.withSchema(Schema.Int.check(Schema.isGreaterThan(0))),
     Flag.withDescription(
       `How many recent threads to copy (default ${String(DEFAULT_THREAD_LIMIT)}).`,
     ),
     Flag.withDefault(DEFAULT_THREAD_LIMIT),
   ),
   activities: Flag.integer("activities").pipe(
+    Flag.withSchema(Schema.Int.check(Schema.isGreaterThan(0))),
     Flag.withDescription(
       `Newest activities kept per thread (default ${String(DEFAULT_ACTIVITY_LIMIT)}).`,
     ),

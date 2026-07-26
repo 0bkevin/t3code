@@ -77,6 +77,12 @@ function sharedColumns(
 
 const placeholders = (count: number) => Array.from({ length: count }, () => "?").join(", ");
 
+const hasTable = (database: NodeSqlite.DatabaseSync, table: string): boolean =>
+  database.prepare(`SELECT 1 FROM pragma_table_info(?)`).get(table) !== undefined;
+
+const hasColumn = (database: NodeSqlite.DatabaseSync, table: string, column: string): boolean =>
+  columnsOf(database, table).includes(column);
+
 /**
  * Copies rows for `table` whose `keyColumn` is in `keys`, optionally keeping
  * only the newest `perKeyLimit` rows per key.
@@ -175,13 +181,22 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
 
   try {
     // Threads the user actually touched most recently. Mirrors the sidebar's own
-    // ordering (packages/client-runtime/src/state/threadSort.ts).
+    // ordering (packages/client-runtime/src/state/threadSort.ts). Both recency
+    // columns arrived in later migrations, so an older source database is read
+    // with whichever of them it actually has — the rest of the copy tolerates
+    // schema drift, and this query must too.
+    const recencyColumns = ["latest_user_message_at", "updated_at", "created_at"].filter((column) =>
+      hasColumn(source, "projection_threads", column),
+    );
+    const activeFilters = ["deleted_at", "archived_at"]
+      .filter((column) => hasColumn(source, "projection_threads", column))
+      .map((column) => `${column} IS NULL`);
     const threadIds = (
       source
         .prepare(
           `SELECT thread_id FROM projection_threads
-           WHERE deleted_at IS NULL AND archived_at IS NULL
-           ORDER BY COALESCE(latest_user_message_at, updated_at, created_at) DESC
+           ${activeFilters.length > 0 ? `WHERE ${activeFilters.join(" AND ")}` : ""}
+           ORDER BY COALESCE(${recencyColumns.join(", ")}) DESC
            LIMIT ?`,
         )
         .all(options.threadLimit) as Array<{ thread_id: string }>
@@ -215,7 +230,21 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
     target.exec("BEGIN IMMEDIATE");
 
     for (const table of PROJECTION_TABLES_IN_DEPENDENCY_ORDER) {
-      target.exec(`DELETE FROM ${table}`);
+      // A target behind on migrations may not have every table yet; skipping is
+      // consistent with how column drift is handled, and beats aborting the seed.
+      if (hasTable(target, table)) {
+        target.exec(`DELETE FROM ${table}`);
+      }
+    }
+
+    // Projections are copied wholesale, so any event history the target still
+    // holds describes a different world. Replaying it over the copied rows
+    // would resurrect the target's own deleted threads and projects.
+    if (hasTable(target, "orchestration_events")) {
+      target.exec("DELETE FROM orchestration_events");
+    }
+    if (hasTable(target, "orchestration_command_receipts")) {
+      target.exec("DELETE FROM orchestration_command_receipts");
     }
 
     const projects = record(
@@ -296,12 +325,19 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
 
     // Required: computeSnapshotSequence returns 0 unless every projector has a
     // row, which makes every shell snapshot advertise sequence 0.
+    //
+    // The cursor is exclusive (`WHERE sequence > cursor`) and the event log was
+    // just emptied, so `sequence` restarts at 1. Any positive cursor would make
+    // each projector skip that many of the user's first real events — and a
+    // different count per projector, leaving the projections permanently
+    // inconsistent. Every projector starts at 0: nothing to skip, nothing to
+    // replay.
     const insertState = target.prepare(
       `INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
-       VALUES (?, ?, ?)`,
+       VALUES (?, 0, ?)`,
     );
-    for (const [index, projector] of PROJECTOR_NAMES.entries()) {
-      insertState.run(projector, index + 1, options.seededAt);
+    for (const projector of PROJECTOR_NAMES) {
+      insertState.run(projector, options.seededAt);
     }
 
     target.exec("COMMIT");

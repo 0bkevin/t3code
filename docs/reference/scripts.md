@@ -68,21 +68,22 @@ vp run dev --share
 
 What it does, and why:
 
-- **Projections only.** `orchestration_events` is never copied. The projector
-  cursor is exclusive (`WHERE sequence > cursor`), so an empty event log means
-  bootstrap streams nothing and leaves the copied rows alone. Copying a partial
-  event range is the actual hazard — the projector would replay a tail whose
-  creating events are missing.
-- **Writes all nine `projection_state` rows.** Without them
-  `computeSnapshotSequence` returns 0 and every shell snapshot advertises
-  sequence 0.
+- **Projections only.** `orchestration_events` is never copied, and the target's
+  own event log is emptied: the copied projections describe a different world,
+  so replaying the target's retained history over them would resurrect threads
+  and projects it had deleted.
+- **Writes all nine `projection_state` rows, at sequence 0.** Without the rows
+  `computeSnapshotSequence` returns 0 anyway; with a _positive_ cursor each
+  projector would skip that many of the first real events — a different count
+  each — since the cursor is exclusive and the emptied log restarts at 1.
 - **Neutralizes live state.** Sessions are forced to `stopped` with no active
   turn (a copied `running` session has no agent behind it and would spin
   forever, and the session reaper skips anything with an active turn), and
   pending approval/input counts are zeroed since approvals are not copied.
-- **Copies the intersection of columns.** The two databases are often on
-  different migrations; a column only one side has is skipped and reported
-  rather than failing the copy.
+- **Tolerates migration drift both ways.** The two databases are often on
+  different migrations, so a column only one side has is skipped and reported,
+  a table the target lacks is passed over, and an older source is read with
+  whichever recency columns it actually has.
 - **Refuses to write to `~/.t3`.** It replaces projection tables wholesale, so
   the shared home is rejected outright.
 

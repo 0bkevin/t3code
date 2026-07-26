@@ -204,11 +204,7 @@ const pairingUrlCommand = Command.make("url", {
       // here" — which the dev runner puts in the worktree's own `.t3`. Falling
       // through to the shared home would mint a credential into the database
       // the user's installed T3 Code is running against.
-      // requireExisting: only claim the worktree home once the dev runner has
-      // created it; otherwise report "no running server" against the real home.
-      const worktreeBaseDir = yield* resolveWorktreeT3Home(process.cwd(), {
-        requireExisting: true,
-      });
+      const worktreeBaseDir = yield* resolveWorktreeT3Home(process.cwd());
       const resolvedFlags =
         Option.isSome(flags.baseDir) || worktreeBaseDir === undefined
           ? flags
