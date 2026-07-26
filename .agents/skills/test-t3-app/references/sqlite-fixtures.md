@@ -49,6 +49,8 @@ The web UI primarily reads these projection tables:
 - `projection_pending_approvals`
 - `projection_thread_proposed_plans`
 
+`projection_state` holds one cursor row per projector and is not read by the UI, but a fixture that omits it still breaks: `computeSnapshotSequence` returns 0 unless every projector has a row, which makes every shell snapshot advertise sequence 0. Write all of them (`PROJECTOR_NAMES` in `scripts/lib/projection-tables.ts`), at a sequence no higher than the event log actually reaches.
+
 Inspect `PRAGMA table_info(<table>)` and the current migrations under `apps/server/src/persistence/Migrations/` before constructing inserts. Keep identifiers unique, timestamps as ISO strings, JSON columns valid, and related project/thread/turn IDs consistent.
 
 For a substantial current example, inspect `seedDatabase` in `scripts/mobile-showcase-environment.ts`. Adapt its column set to the target database instead of assuming copied SQL remains current.

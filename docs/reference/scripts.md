@@ -47,7 +47,9 @@
 
 Worktrees derive a preferred port offset from their path. The runner shifts both ports together when either is occupied or the web port is blocked by browsers, so treat the `[dev-runner]` output as authoritative.
 
-An isolated dev database starts empty. `bun run dev:seed` copies projection data only, clears the target event log, and resets every projector cursor to zero so later events are not skipped or replayed over unrelated projections. Copied sessions are stopped and pending interaction counts are cleared because no live agent accompanies the copy. The copy tolerates source/target migration drift and remains local because it includes real message bodies and host paths.
+An isolated dev database starts empty. `bun run dev:seed` copies projection data only, clears the target event log, and resets every projector cursor to zero so later events are not skipped or replayed over unrelated projections. Because no live agent accompanies the copy, it also settles anything that would otherwise wait on one: sessions are stopped, running turns are interrupted, streaming messages are finished, pending interaction counts are cleared, and orphaned provider bindings are removed. Files backing copied image attachments are copied alongside the rows. The copy tolerates source/target migration drift and remains local because it includes real message bodies and host paths.
+
+`dev:seed` refuses to run while a server is using the target directory: it replaces the projections and event log that server is holding open, and it has no way to tell the running process its read model was swapped underneath it. Stop the server, seed, then start it again.
 
 ## Running multiple dev instances
 

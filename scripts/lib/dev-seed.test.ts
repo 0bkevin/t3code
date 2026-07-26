@@ -31,7 +31,7 @@ function createSchema(
     ${options.withMonitor ? ", monitor_json TEXT" : ""})`);
   database.exec(`CREATE TABLE projection_thread_messages (
     message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL,
-    text TEXT NOT NULL, is_streaming INTEGER NOT NULL,
+    text TEXT NOT NULL, is_streaming INTEGER NOT NULL, attachments_json TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
   database.exec(`CREATE TABLE projection_thread_activities (
     activity_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, tone TEXT NOT NULL,
@@ -42,7 +42,8 @@ function createSchema(
     active_turn_id TEXT, last_error TEXT, updated_at TEXT NOT NULL)`);
   database.exec(`CREATE TABLE projection_turns (
     row_id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, turn_id TEXT,
-    state TEXT NOT NULL, requested_at TEXT NOT NULL, checkpoint_files_json TEXT NOT NULL,
+    state TEXT NOT NULL, requested_at TEXT NOT NULL, completed_at TEXT,
+    checkpoint_files_json TEXT NOT NULL,
     UNIQUE (thread_id, turn_id))`);
   database.exec(`CREATE TABLE projection_thread_proposed_plans (
     plan_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, plan_markdown TEXT NOT NULL,
@@ -55,6 +56,9 @@ function createSchema(
   database.exec(`CREATE TABLE orchestration_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
     stream_id TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL)`);
+  database.exec(`CREATE TABLE provider_session_runtime (
+    thread_id TEXT PRIMARY KEY, provider_name TEXT NOT NULL, adapter_key TEXT NOT NULL,
+    status TEXT NOT NULL, last_seen_at TEXT NOT NULL)`);
 }
 
 /** Source DB with `threadCount` threads, oldest first so recency ordering is testable. */
@@ -95,18 +99,35 @@ function makeSource(
         )
         .run(threadId, "p1", `Thread ${String(index)}`, `turn-${threadId}`, at, at, at, 4, 2, "{}");
     }
+    // The newest thread is left mid-turn, as a copy taken while an agent is
+    // working would be: a running turn with no completion, and a message still
+    // streaming into it.
+    const midFlight = index === threadCount - 1;
     database
       .prepare(
-        `INSERT INTO projection_turns (thread_id, turn_id, state, requested_at, checkpoint_files_json)
-         VALUES (?,?,?,?,'[]')`,
+        `INSERT INTO projection_turns (thread_id, turn_id, state, requested_at, completed_at, checkpoint_files_json)
+         VALUES (?,?,?,?,?,'[]')`,
       )
-      .run(threadId, `turn-${threadId}`, "completed", at);
+      .run(
+        threadId,
+        `turn-${threadId}`,
+        midFlight ? "running" : "completed",
+        at,
+        midFlight ? null : at,
+      );
     database
       .prepare(`INSERT INTO projection_thread_sessions VALUES (?,'running','claude',?,'boom',?)`)
       .run(threadId, `turn-${threadId}`, at);
     database
-      .prepare(`INSERT INTO projection_thread_messages VALUES (?,?, 'user','hello',0,?,?)`)
-      .run(`m-${threadId}`, threadId, at, at);
+      .prepare(`INSERT INTO projection_thread_messages VALUES (?,?, 'user','hello',?,?,?,?)`)
+      .run(
+        `m-${threadId}`,
+        threadId,
+        midFlight ? 1 : 0,
+        JSON.stringify([{ type: "image", id: `${threadId}-image`, name: "shot.png" }]),
+        at,
+        at,
+      );
     for (let a = 0; a < activitiesPerThread; a += 1) {
       database
         .prepare(`INSERT INTO projection_thread_activities VALUES (?,?,'neutral','tool','ran',?,?)`)
@@ -129,6 +150,11 @@ function makeTarget(path: string, options?: { readonly dropProposedPlans?: boole
   database
     .prepare(`INSERT INTO orchestration_events (event_id, stream_id, event_type, payload_json)
       VALUES ('old-event','stale-thread','thread.created','{}')`)
+    .run();
+  // A binding for a thread the seed is about to delete.
+  database
+    .prepare(`INSERT INTO provider_session_runtime
+      VALUES ('stale-thread','claude','claude-code','running','${SEEDED_AT}')`)
     .run();
   if (options?.dropProposedPlans) {
     // A target far enough behind that a whole table is missing (migration 013).
@@ -268,6 +294,87 @@ describe("seedDevDatabase", () => {
       );
       assert.equal(counts?.approvals, 0);
       assert.equal(counts?.inputs, 0);
+    });
+  });
+
+  // A copied running turn has no agent left to finish it. The session override
+  // alone does not cover this: the turn is read independently, and an unsettled
+  // one keeps the thread spinning and its timeline unfoldable forever.
+  it("settles turns copied mid-flight", () => {
+    withDatabases(({ source, target }) => {
+      seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 3,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+      });
+
+      const turns = query<{ state: string; completed_at: string | null }>(
+        target,
+        "SELECT state, completed_at FROM projection_turns",
+      );
+      assert.isAbove(turns.length, 0);
+      for (const turn of turns) {
+        assert.notEqual(turn.state, "running");
+        assert.isNotNull(turn.completed_at);
+      }
+    });
+  });
+
+  // Nothing will ever stream into a copied message, so a carried-over flag
+  // renders a caret that never resolves.
+  it("clears the streaming flag on copied messages", () => {
+    withDatabases(({ source, target }) => {
+      seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 3,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+      });
+
+      const streaming = query<{ count: number }>(
+        target,
+        "SELECT COUNT(*) count FROM projection_thread_messages WHERE is_streaming <> 0",
+      );
+      assert.equal(streaming[0]?.count, 0);
+    });
+  });
+
+  // The rows carry attachment metadata but the bytes live on disk, so the
+  // caller has to be told which files to bring along.
+  it("reports the attachment ids the copied messages reference", () => {
+    withDatabases(({ source, target }) => {
+      const summary = seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 2,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+      });
+
+      assert.deepStrictEqual([...summary.attachmentIds].sort(), ["t3-image", "t4-image"]);
+    });
+  });
+
+  // Bindings are keyed by thread id and are not copied; left behind they name
+  // threads the seed just deleted, which the session reaper then tries to stop.
+  it("clears provider runtime bindings the seed orphans", () => {
+    withDatabases(({ source, target }) => {
+      seedDevDatabase({
+        sourceDbPath: source,
+        targetDbPath: target,
+        threadLimit: 1,
+        activityLimit: 10,
+        seededAt: SEEDED_AT,
+      });
+
+      const [bindings] = query<{ count: number }>(
+        target,
+        "SELECT COUNT(*) count FROM provider_session_runtime",
+      );
+      assert.equal(bindings?.count, 0);
     });
   });
 

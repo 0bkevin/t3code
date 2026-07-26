@@ -8,9 +8,13 @@
  * target recorded, so replaying its retained events over them would resurrect
  * threads and projects it had deleted; copying a *partial* source range is
  * worse still, since the projector would replay a tail whose creating events
- * are missing. With the log empty and every projector cursor at 0 (the cursor
- * is exclusive), bootstrap streams nothing and leaves the copied rows alone.
- * See .agents/skills/test-t3-app/references/sqlite-fixtures.md.
+ * are missing. With the log empty and every projector cursor at 0, bootstrap
+ * streams nothing and leaves the copied rows alone.
+ *
+ * Everything that would otherwise wait on an agent is settled too — sessions,
+ * turns, streaming messages, badge counts, provider bindings — because no agent
+ * process comes with the copy. See
+ * .agents/skills/test-t3-app/references/sqlite-fixtures.md.
  */
 
 import * as NodeSqlite from "node:sqlite";
@@ -40,6 +44,12 @@ export interface DevSeedSummary {
   readonly turns: number;
   readonly sessions: number;
   readonly skippedColumns: ReadonlyArray<string>;
+  /**
+   * Attachment ids the copied messages reference. The rows carry the metadata
+   * but the bytes live on disk beside the database, so the caller has to copy
+   * those files too — otherwise a seeded thread renders an image that 404s.
+   */
+  readonly attachmentIds: ReadonlyArray<string>;
 }
 
 export class DevSeedError extends Error {
@@ -85,6 +95,52 @@ const hasTable = (database: NodeSqlite.DatabaseSync, table: string): boolean =>
 
 const hasColumn = (database: NodeSqlite.DatabaseSync, table: string, column: string): boolean =>
   columnsOf(database, table).includes(column);
+
+/**
+ * Attachment ids referenced by the copied messages, so the caller can copy the
+ * files that back them. `attachments_json` is a JSON array of ChatAttachment
+ * (packages/contracts/src/orchestration.ts); anything unparseable is skipped
+ * rather than failing the seed, since a missing image is a cosmetic problem and
+ * an aborted seed is not.
+ */
+function collectAttachmentIds(
+  target: NodeSqlite.DatabaseSync,
+  threadIds: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  if (
+    threadIds.length === 0 ||
+    !hasColumn(target, "projection_thread_messages", "attachments_json")
+  ) {
+    return [];
+  }
+  const ids = new Set<string>();
+  const rows = target
+    .prepare(
+      `SELECT attachments_json FROM projection_thread_messages
+       WHERE attachments_json IS NOT NULL AND thread_id IN (${placeholders(threadIds.length)})`,
+    )
+    .iterate(...threadIds) as Iterable<{ attachments_json: unknown }>;
+  for (const row of rows) {
+    if (typeof row.attachments_json !== "string") {
+      continue;
+    }
+    try {
+      const parsed: unknown = JSON.parse(row.attachments_json);
+      if (!Array.isArray(parsed)) {
+        continue;
+      }
+      for (const attachment of parsed) {
+        const id: unknown = (attachment as { id?: unknown } | null)?.id;
+        if (typeof id === "string" && id.length > 0) {
+          ids.add(id);
+        }
+      }
+    } catch {
+      // A row whose JSON does not parse cannot name a file to copy.
+    }
+  }
+  return [...ids];
+}
 
 /**
  * Copies rows for `table` whose `keyColumn` is in `keys`, optionally keeping
@@ -158,6 +214,35 @@ function copyRows(input: {
   }
 
   return { copied, skipped };
+}
+
+/**
+ * Settles turns copied mid-flight, matching what the server does to a turn
+ * whose session leaves "running": `settledTurnStateForSessionStatus` in
+ * apps/server/src/orchestration/Layers/ProjectionPipeline.ts maps the "stopped"
+ * status the sessions are copied with to "interrupted".
+ *
+ * An UPDATE rather than a copy override, because only the rows that were
+ * actually running should change; the rest keep their real recorded state.
+ */
+function settleRunningTurns(
+  target: NodeSqlite.DatabaseSync,
+  threadIds: ReadonlyArray<string>,
+): void {
+  if (threadIds.length === 0 || !hasColumn(target, "projection_turns", "state")) {
+    return;
+  }
+  // completed_at is what marks a turn settled alongside its state; a running
+  // turn has none, and leaving it null keeps the thread unsettled regardless.
+  const setCompletedAt = hasColumn(target, "projection_turns", "completed_at")
+    ? `, completed_at = COALESCE(completed_at, requested_at)`
+    : "";
+  target
+    .prepare(
+      `UPDATE projection_turns SET state = 'interrupted'${setCompletedAt}
+       WHERE state = 'running' AND thread_id IN (${placeholders(threadIds.length)})`,
+    )
+    .run(...threadIds);
 }
 
 export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
@@ -249,6 +334,15 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
     if (hasTable(target, "orchestration_command_receipts")) {
       target.exec("DELETE FROM orchestration_command_receipts");
     }
+    // Provider bindings are keyed by thread id and are not copied (no agent
+    // process comes with the seed). Left in place they outlive the threads they
+    // name: ProviderSessionReaper sweeps every non-stopped binding, finds no
+    // thread behind it, and so never hits its active-turn guard — it just tries
+    // to stop a session for a thread that no longer exists, against a provider
+    // instance this worktree may not even define.
+    if (hasTable(target, "provider_session_runtime")) {
+      target.exec("DELETE FROM provider_session_runtime");
+    }
 
     const projects = record(
       copyRows({
@@ -281,6 +375,12 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
         omitColumns: ["row_id"],
       }),
     );
+    // A thread copied mid-turn has no agent to finish it. The session status is
+    // forced to "stopped" below, but the turn is read independently: a
+    // `state = 'running'` turn keeps the thread unsettled and unfoldable
+    // forever (deriveUnsettledTurnId in MessagesTimeline.logic.ts). Interrupted
+    // is what the server itself settles an abandoned turn to.
+    settleRunningTurns(target, threadIds);
     const messages = record(
       copyRows({
         source,
@@ -288,6 +388,9 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
         table: "projection_thread_messages",
         keyColumn: "thread_id",
         keys: threadIds,
+        // Same reason: a message copied while streaming has nothing left to
+        // stream into it, so it would render with a caret that never resolves.
+        overrides: { is_streaming: 0 },
       }),
     );
     const activities = record(
@@ -329,12 +432,15 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
     // Required: computeSnapshotSequence returns 0 unless every projector has a
     // row, which makes every shell snapshot advertise sequence 0.
     //
-    // The cursor is exclusive (`WHERE sequence > cursor`) and the event log was
-    // just emptied, so `sequence` restarts at 1. Any positive cursor would make
-    // each projector skip that many of the user's first real events — and a
-    // different count per projector, leaving the projections permanently
-    // inconsistent. Every projector starts at 0: nothing to skip, nothing to
-    // replay.
+    // Zero, not the source's cursors. `orchestration_events.sequence` is
+    // AUTOINCREMENT, so emptying the log does not reset its high-water mark and
+    // the next real event continues from wherever the target left off. A cursor
+    // carried over from the source is unrelated to that number: it could sit
+    // above it (each projector then silently skipping a different count of the
+    // user's first real events, desynchronizing the projections for good) or
+    // below it (replaying events over rows they never produced). Zero is below
+    // every future sequence, so bootstrap streams the empty log, finds nothing,
+    // and leaves the copied rows exactly as they are.
     const insertState = target.prepare(
       `INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
        VALUES (?, 0, ?)`,
@@ -342,6 +448,10 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
     for (const projector of PROJECTOR_NAMES) {
       insertState.run(projector, options.seededAt);
     }
+
+    // Read back inside the transaction: these are the rows that were just
+    // written, not the source's, so a column the target lacks is already gone.
+    const attachmentIds = collectAttachmentIds(target, threadIds);
 
     target.exec("COMMIT");
 
@@ -353,6 +463,7 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
       turns,
       sessions,
       skippedColumns: [...new Set(skipped)].sort(),
+      attachmentIds,
     };
   } catch (cause) {
     try {

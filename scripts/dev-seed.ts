@@ -18,14 +18,17 @@ import { Command, Flag } from "effect/unstable/cli";
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 
 import { DevSeedError, seedDevDatabase } from "./lib/dev-seed.ts";
+import { findRunningServerPid } from "./lib/server-runtime-probe.ts";
 
 const DEFAULT_THREAD_LIMIT = 25;
 const DEFAULT_ACTIVITY_LIMIT = 200;
+/** SQLite's default SQLITE_MAX_VARIABLE_NUMBER; one bound parameter per thread. */
+const MAX_THREAD_LIMIT = 32_766;
 
 class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
   "DevSeedTargetError",
   {
-    reason: Schema.Literals(["shared-home", "missing-target", "not-a-worktree"]),
+    reason: Schema.Literals(["shared-home", "missing-target", "not-a-worktree", "server-running"]),
     detail: Schema.String,
   },
 ) {
@@ -46,12 +49,67 @@ class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
           "Not inside a git worktree, so there is no worktree-local data directory to seed.",
           "Pass --to <base-dir> to choose one explicitly.",
         ].join("\n");
+      case "server-running":
+        return [
+          `A T3 Code server (pid ${this.detail}) is running against this data directory.`,
+          "Seeding replaces its projections and empties its event log while it holds them open,",
+          "which leaves the running server's in-memory read model describing rows that no longer exist.",
+          "Stop it, run the seed, then start it again.",
+        ].join("\n");
     }
   }
 }
 
 const stateDbPath = (path: Path.Path, baseDir: string) =>
   path.join(baseDir, "userdata", "state.sqlite");
+
+/**
+ * Copies the files behind the copied messages' attachment references.
+ *
+ * The rows carry only metadata; the bytes sit in a flat directory beside the
+ * database as `<attachmentId><ext>` (apps/server/src/attachmentStore.ts). Copy
+ * the rows alone and a seeded thread renders an image whose request 404s.
+ *
+ * Matched by directory listing rather than by reconstructing the extension: the
+ * server infers it from mime type and file name at upload, and duplicating that
+ * inference here would rot independently of it.
+ */
+const copyAttachments = Effect.fn("devSeed.copyAttachments")(function* (input: {
+  readonly sourceDir: string;
+  readonly targetDir: string;
+  readonly attachmentIds: ReadonlyArray<string>;
+}) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+
+  if (input.attachmentIds.length === 0) {
+    return 0;
+  }
+
+  const entries = yield* fileSystem
+    .readDirectory(input.sourceDir)
+    .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+  if (entries.length === 0) {
+    return 0;
+  }
+
+  const wanted = new Set(input.attachmentIds);
+  const matches = entries.filter((entry) => wanted.has(path.parse(entry).name));
+  if (matches.length === 0) {
+    return 0;
+  }
+
+  yield* fileSystem.makeDirectory(input.targetDir, { recursive: true });
+  // Attachments are decoration on a dev fixture: one unreadable file should
+  // leave the rest of the seed intact rather than fail a completed copy.
+  const copied = yield* Effect.forEach(matches, (entry) =>
+    fileSystem.copyFile(path.join(input.sourceDir, entry), path.join(input.targetDir, entry)).pipe(
+      Effect.as(1),
+      Effect.orElseSucceed(() => 0),
+    ),
+  );
+  return copied.reduce((total, one) => total + one, 0);
+});
 
 const devSeedCli = Command.make("dev-seed", {
   from: Flag.string("from").pipe(
@@ -68,12 +126,17 @@ const devSeedCli = Command.make("dev-seed", {
     Flag.optional,
     Flag.map(Option.getOrUndefined),
   ),
-  // Bounded: SQLite reads a negative LIMIT as "no limit", which would quietly
-  // turn a capped copy into a full-table one.
+  // Bounded below: SQLite reads a negative LIMIT as "no limit", which would
+  // quietly turn a capped copy into a full-table one. Bounded above because
+  // every selected thread becomes one bound parameter in the copy's `IN (...)`,
+  // and SQLite's compiled-in ceiling is 32766 — past it the seed dies with
+  // "too many SQL variables" after the target has already been emptied.
   threads: Flag.integer("threads").pipe(
-    Flag.withSchema(Schema.Int.check(Schema.isGreaterThan(0))),
+    Flag.withSchema(
+      Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(MAX_THREAD_LIMIT)),
+    ),
     Flag.withDescription(
-      `How many recent threads to copy (default ${String(DEFAULT_THREAD_LIMIT)}).`,
+      `How many recent threads to copy (default ${String(DEFAULT_THREAD_LIMIT)}, max ${String(MAX_THREAD_LIMIT)}).`,
     ),
     Flag.withDefault(DEFAULT_THREAD_LIMIT),
   ),
@@ -117,6 +180,19 @@ const devSeedCli = Command.make("dev-seed", {
         return yield* new DevSeedTargetError({ reason: "missing-target", detail: targetDbPath });
       }
 
+      // SQLite locking is not enough on its own: the seed's transaction can take
+      // the write lock between a running server's own writes and commit cleanly.
+      // What it cannot do is tell that server the projections it is holding in
+      // memory, and the event log it is appending to, were both replaced under
+      // it. Its next write then lands on top of a read model it never built.
+      const runningPid = yield* findRunningServerPid(targetBaseDir);
+      if (Option.isSome(runningPid)) {
+        return yield* new DevSeedTargetError({
+          reason: "server-running",
+          detail: String(runningPid.value),
+        });
+      }
+
       const seededAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
       const summary = yield* Effect.try({
         try: () =>
@@ -130,6 +206,12 @@ const devSeedCli = Command.make("dev-seed", {
         catch: (cause) => cause as DevSeedError,
       });
 
+      const copiedAttachments = yield* copyAttachments({
+        sourceDir: path.join(sourceBaseDir, "userdata", "attachments"),
+        targetDir: path.join(targetBaseDir, "userdata", "attachments"),
+        attachmentIds: summary.attachmentIds,
+      });
+
       yield* Console.log(
         [
           `Seeded ${targetDbPath}`,
@@ -139,6 +221,11 @@ const devSeedCli = Command.make("dev-seed", {
           `  messages ${String(summary.messages)}`,
           `  activity ${String(summary.activities)}`,
           `  turns    ${String(summary.turns)}  sessions ${String(summary.sessions)}`,
+          ...(summary.attachmentIds.length > 0
+            ? [
+                `  files    ${String(copiedAttachments)}/${String(summary.attachmentIds.length)} attachment(s)`,
+              ]
+            : []),
           ...(summary.skippedColumns.length > 0
             ? [
                 `  note: skipped ${String(summary.skippedColumns.length)} column(s) absent from the target schema`,
