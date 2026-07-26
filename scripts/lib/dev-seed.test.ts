@@ -70,6 +70,13 @@ function createSchema(
   database.exec(`CREATE TABLE provider_session_runtime (
     thread_id TEXT PRIMARY KEY, provider_name TEXT NOT NULL, adapter_key TEXT NOT NULL,
     status TEXT NOT NULL, last_seen_at TEXT NOT NULL)`);
+  // Cleared alongside the event log: a receipt records a command whose events
+  // the seed just deleted, so a retry of that command would be treated as
+  // already applied.
+  database.exec(`CREATE TABLE orchestration_command_receipts (
+    command_id TEXT PRIMARY KEY, aggregate_kind TEXT NOT NULL, aggregate_id TEXT NOT NULL,
+    accepted_at TEXT NOT NULL, result_sequence INTEGER NOT NULL, status TEXT NOT NULL,
+    error TEXT)`);
 }
 
 /** Source DB with `threadCount` threads, oldest first so recency ordering is testable. */
@@ -191,6 +198,11 @@ function makeTarget(path: string, options?: { readonly dropProposedPlans?: boole
   database
     .prepare(`INSERT INTO provider_session_runtime
       VALUES ('stale-thread','claude','claude-code','running','${SEEDED_AT}')`)
+    .run();
+  // A receipt for a command whose events the seed is about to delete.
+  database
+    .prepare(`INSERT INTO orchestration_command_receipts
+      VALUES ('old-command','thread','stale-thread','${SEEDED_AT}',1,'accepted',NULL)`)
     .run();
   if (options?.dropProposedPlans) {
     // A target far enough behind that a whole table is missing (migration 013).
@@ -578,6 +590,15 @@ describe("seedDevDatabase", () => {
         "SELECT COUNT(*) count FROM orchestration_events",
       );
       assert.equal(events?.count, 0);
+
+      // Receipts go with them: one left behind records a command whose events
+      // no longer exist, so re-issuing that command would be treated as
+      // already applied and produce nothing.
+      const [receipts] = query<{ count: number }>(
+        target,
+        "SELECT COUNT(*) count FROM orchestration_command_receipts",
+      );
+      assert.equal(receipts?.count, 0);
     });
   });
 
