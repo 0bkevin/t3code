@@ -282,24 +282,31 @@ function deriveUnsettledTurnId(
  * "Worked for ..." row anchored at the turn's first foldable entry; the
  * terminal assistant message stays visible below the fold.
  */
-function deriveTurnFolds(input: {
+interface TurnGroup {
+  entries: Array<TimelineEntry>;
+  terminalEntry: Extract<TimelineEntry, { kind: "message" }> | null;
+  hasStreamingMessage: boolean;
+  /**
+   * The user message that kicked the turn off. Entry timestamps alone
+   * undercount the duration (the first entry appears only once the
+   * provider starts producing output), and a turn cut short by a steer may
+   * hold a single instantaneous commentary message.
+   */
+  startBoundary: string | null;
+}
+
+function timelineEntryTurnId(entry: TimelineEntry): TurnId | null {
+  if (entry.kind === "message") {
+    return entry.message.role === "assistant" ? (entry.message.turnId ?? null) : null;
+  }
+  return entry.kind === "work" ? (entry.entry.turnId ?? null) : null;
+}
+
+function groupTimelineEntriesByTurn(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   terminalAssistantMessageIds: ReadonlySet<string>;
-  latestTurn: TimelineLatestTurn | null;
-  unsettledTurnId: TurnId | null;
-}): ReadonlyMap<string, TurnFold> {
-  interface TurnGroup {
-    entries: Array<TimelineEntry>;
-    terminalEntry: Extract<TimelineEntry, { kind: "message" }> | null;
-    hasStreamingMessage: boolean;
-    /**
-     * The user message that kicked the turn off. Entry timestamps alone
-     * undercount the duration (the first entry appears only once the
-     * provider starts producing output), and a turn cut short by a steer may
-     * hold a single instantaneous commentary message.
-     */
-    startBoundary: string | null;
-  }
+  adoptedTurnIdByEntryId: ReadonlyMap<string, TurnId>;
+}): Map<TurnId, TurnGroup> {
   const groupsByTurnId = new Map<TurnId, TurnGroup>();
 
   let pendingUserBoundary: string | null = null;
@@ -308,12 +315,7 @@ function deriveTurnFolds(input: {
       pendingUserBoundary = entry.message.createdAt;
       continue;
     }
-    const turnId =
-      entry.kind === "message" && entry.message.role === "assistant"
-        ? (entry.message.turnId ?? null)
-        : entry.kind === "work"
-          ? (entry.entry.turnId ?? null)
-          : null;
+    const turnId = timelineEntryTurnId(entry) ?? input.adoptedTurnIdByEntryId.get(entry.id) ?? null;
     if (!turnId) {
       continue;
     }
@@ -340,6 +342,108 @@ function deriveTurnFolds(input: {
         group.hasStreamingMessage = true;
       }
     }
+  }
+
+  return groupsByTurnId;
+}
+
+/**
+ * Trailing window after a settled turn's last output in which an
+ * unattributed work entry is still read as that turn's own late frame.
+ */
+const UNATTRIBUTED_WORK_ADOPTION_GRACE_MS = 10_000;
+
+function timelineEntryEndTimestamp(entry: TimelineEntry): string {
+  return entry.kind === "message" ? entry.message.updatedAt : entry.createdAt;
+}
+
+/**
+ * Attribution can fail upstream (a provider frame that lands after its turn
+ * closed carries no turn id), and an unattributed entry can never be hidden by
+ * a fold — it renders below the settled turn's final answer instead. Claim
+ * such an entry for a settled turn when it falls inside exactly that turn's
+ * span and no other turn could own it. A running turn never adopts: its
+ * entries are supposed to render inline, and an entry that could belong to it
+ * is ambiguous rather than foldable.
+ */
+function deriveAdoptedTurnIdsForUnattributedWork(input: {
+  timelineEntries: ReadonlyArray<TimelineEntry>;
+  groupsByTurnId: ReadonlyMap<TurnId, TurnGroup>;
+  unsettledTurnId: TurnId | null;
+}): ReadonlyMap<string, TurnId> {
+  const adoptedTurnIdByEntryId = new Map<string, TurnId>();
+  const unattributedEntries = input.timelineEntries.filter(
+    (entry) => entry.kind === "work" && timelineEntryTurnId(entry) === null,
+  );
+  if (unattributedEntries.length === 0) {
+    return adoptedTurnIdByEntryId;
+  }
+
+  const windows: Array<{ turnId: TurnId; startMs: number; endMs: number; foldable: boolean }> = [];
+  for (const [turnId, group] of input.groupsByTurnId) {
+    const firstEntry = group.entries[0];
+    if (!firstEntry) {
+      continue;
+    }
+    const startMs = Date.parse(firstEntry.createdAt);
+    if (!Number.isFinite(startMs)) {
+      continue;
+    }
+    const foldable = turnId !== input.unsettledTurnId && !group.hasStreamingMessage;
+    if (!foldable) {
+      // An unsettled turn has no end yet, so everything after it starts is
+      // potentially its own work and must stay unadopted.
+      windows.push({ turnId, startMs, endMs: Number.POSITIVE_INFINITY, foldable });
+      continue;
+    }
+    let endMs = startMs;
+    for (const entry of group.entries) {
+      const entryEndMs = Date.parse(timelineEntryEndTimestamp(entry));
+      if (Number.isFinite(entryEndMs) && entryEndMs > endMs) {
+        endMs = entryEndMs;
+      }
+    }
+    windows.push({ turnId, startMs, endMs: endMs + UNATTRIBUTED_WORK_ADOPTION_GRACE_MS, foldable });
+  }
+
+  for (const entry of unattributedEntries) {
+    const atMs = Date.parse(entry.createdAt);
+    if (!Number.isFinite(atMs)) {
+      continue;
+    }
+    const claimants = windows.filter((window) => atMs >= window.startMs && atMs <= window.endMs);
+    const claimant = claimants[0];
+    if (claimants.length !== 1 || !claimant || !claimant.foldable) {
+      continue;
+    }
+    adoptedTurnIdByEntryId.set(entry.id, claimant.turnId);
+  }
+
+  return adoptedTurnIdByEntryId;
+}
+
+function deriveTurnFolds(input: {
+  timelineEntries: ReadonlyArray<TimelineEntry>;
+  terminalAssistantMessageIds: ReadonlySet<string>;
+  latestTurn: TimelineLatestTurn | null;
+  unsettledTurnId: TurnId | null;
+}): ReadonlyMap<string, TurnFold> {
+  let groupsByTurnId = groupTimelineEntriesByTurn({
+    timelineEntries: input.timelineEntries,
+    terminalAssistantMessageIds: input.terminalAssistantMessageIds,
+    adoptedTurnIdByEntryId: new Map(),
+  });
+  const adoptedTurnIdByEntryId = deriveAdoptedTurnIdsForUnattributedWork({
+    timelineEntries: input.timelineEntries,
+    groupsByTurnId,
+    unsettledTurnId: input.unsettledTurnId,
+  });
+  if (adoptedTurnIdByEntryId.size > 0) {
+    groupsByTurnId = groupTimelineEntriesByTurn({
+      timelineEntries: input.timelineEntries,
+      terminalAssistantMessageIds: input.terminalAssistantMessageIds,
+      adoptedTurnIdByEntryId,
+    });
   }
 
   const foldsByAnchorEntryId = new Map<string, TurnFold>();

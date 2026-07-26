@@ -1395,6 +1395,43 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("keeps the turn attribution when a collapsed lifecycle frame lost its turnId", () => {
+    // A post_tool_call frame can land after turn.completed with no turn id.
+    // Collapsing it into the prior row must not strip the row's turn, or the
+    // row escapes its turn's "Worked for …" fold and renders below the answer.
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-update-attributed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Tool call",
+        turnId: "turn-1",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          detail: 'Read: {"file_path":"/tmp/app.ts"}',
+        },
+      }),
+      makeActivity({
+        id: "tool-complete-unattributed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Tool call completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          detail: 'Read: {"file_path":"/tmp/app.ts"}',
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe("tool-complete-unattributed");
+    expect(entries[0]?.turnId).toBe("turn-1");
+  });
+
   it("keeps separate tool entries when an identical call starts after the prior one completed", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

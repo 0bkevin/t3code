@@ -114,6 +114,47 @@ function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
   return value === undefined ? undefined : TurnId.make(String(value));
 }
 
+/**
+ * How long after a turn settles a turn-less provider frame is still treated as
+ * belonging to that turn. Plugin tool hooks run on worker threads, so a
+ * `post_tool_call` → `item.completed` frame can land after `turn.completed`;
+ * without attribution such an activity can never be folded behind the turn's
+ * "Worked for …" row and renders below the final answer instead.
+ */
+const LATE_ACTIVITY_TURN_ATTRIBUTION_GRACE_MS = 30_000;
+
+export interface RecentlySettledTurn {
+  readonly turnId: TurnId;
+  readonly settledAt: string;
+}
+
+/**
+ * Turn id to stamp on activities produced by a frame that carries none. The
+ * session's active turn wins; once the turn has closed, the turn that just
+ * settled still claims frames landing inside a short trailing window.
+ */
+export function resolveActivityFallbackTurnId(input: {
+  readonly activeTurnId: TurnId | null;
+  readonly recentlySettledTurn: RecentlySettledTurn | null;
+  readonly at: string;
+}): TurnId | null {
+  if (input.activeTurnId !== null) {
+    return input.activeTurnId;
+  }
+  const settled = input.recentlySettledTurn;
+  if (!settled) {
+    return null;
+  }
+  const atMs = Date.parse(input.at);
+  const settledAtMs = Date.parse(settled.settledAt);
+  if (!Number.isFinite(atMs) || !Number.isFinite(settledAtMs)) {
+    return null;
+  }
+  // Frames stamped before the turn closed always belong to it; frames stamped
+  // after it only within the grace window.
+  return atMs - settledAtMs <= LATE_ACTIVITY_TURN_ATTRIBUTION_GRACE_MS ? settled.turnId : null;
+}
+
 function toApprovalRequestId(value: string | undefined): ApprovalRequestId | undefined {
   return value === undefined ? undefined : ApprovalRequestId.make(value);
 }
@@ -784,6 +825,16 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(""),
   });
 
+  // The projection nulls the thread's latest turn id the moment the session
+  // stops running, so a frame arriving right after turn.completed can no
+  // longer see the turn it belongs to. Remember the turn that just settled
+  // per thread so late frames can still be attributed to it.
+  const recentlySettledTurnByThreadId = yield* Cache.make<ThreadId, RecentlySettledTurn | null>({
+    capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
+    timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
+    lookup: () => Effect.succeed(null),
+  });
+
   const rememberTaskDescription = (threadId: ThreadId, taskId: string, description: string) =>
     Cache.set(taskDescriptionByTaskKey, providerTaskKey(threadId, taskId), description);
 
@@ -1266,6 +1317,7 @@ const make = Effect.gen(function* () {
           key.startsWith(prefix) ? Cache.invalidate(taskDescriptionByTaskKey, key) : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
+      yield* Cache.invalidate(recentlySettledTurnByThreadId, threadId);
     });
 
   const getSourceProposedPlanReferenceForPendingTurnStart = Effect.fn(
@@ -1371,6 +1423,11 @@ const make = Effect.gen(function* () {
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
+
+      const getRecentlySettledTurn = () =>
+        Cache.getOption(recentlySettledTurnByThreadId, thread.id).pipe(
+          Effect.map(Option.getOrNull),
+        );
 
       // A turn.started that conflicts with the active turn is legitimate when
       // the server itself has a turn start pending for this thread AND the
@@ -1510,6 +1567,19 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+
+          // Record the turn the session is leaving so frames that land after
+          // it (tool-hook completions on provider worker threads) can still be
+          // attributed to it. A new turn opening clears the memo.
+          const settlingTurnId = activeTurnId ?? eventTurnId ?? null;
+          if (nextActiveTurnId !== null) {
+            yield* Cache.set(recentlySettledTurnByThreadId, thread.id, null);
+          } else if (settlingTurnId !== null) {
+            yield* Cache.set(recentlySettledTurnByThreadId, thread.id, {
+              turnId: settlingTurnId,
+              settledAt: now,
+            });
+          }
         }
       }
 
@@ -1875,7 +1945,25 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event, taskTitle);
+      // Frames that carry no turn id (late tool-hook completions, generic
+      // status items emitted around turn boundaries) would otherwise project
+      // an unattributed activity, which the timeline can never fold behind the
+      // turn's "Worked for …" row. Attribute them to the thread's active turn,
+      // or to the turn that just settled. Frames that do name a turn keep it —
+      // the turn-conflict gate above governs lifecycle, not attribution.
+      const fallbackActivityTurnId = resolveActivityFallbackTurnId({
+        activeTurnId,
+        // With a turn start pending, an unattributed frame is at least as
+        // likely to belong to the turn about to open as to the one that just
+        // closed — leave it unattributed rather than folding it into history.
+        recentlySettledTurn: hasPendingTurnStart ? null : yield* getRecentlySettledTurn(),
+        at: now,
+      });
+      const activities = runtimeEventToActivities(event, taskTitle).map((activity) =>
+        activity.turnId === null && fallbackActivityTurnId !== null
+          ? { ...activity, turnId: fallbackActivityTurnId }
+          : activity,
+      );
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

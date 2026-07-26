@@ -818,9 +818,13 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
+  // A lifecycle frame that lost its turn attribution must not strip it from
+  // the collapsed row, or the row escapes its turn's "Worked for …" fold.
+  const turnId = previous.turnId ?? next.turnId;
   return {
     ...previous,
     ...next,
+    ...(turnId ? { turnId } : {}),
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),

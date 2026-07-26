@@ -3343,6 +3343,137 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(false);
   });
 
+  it("attributes a late turn-less item frame to the turn that just completed", async () => {
+    // Plugin tool hooks run on worker threads, so a post_tool_call →
+    // item.completed frame can land after turn.completed and carry no turn id.
+    // Without a fallback the activity projects with turnId null, which the
+    // timeline can never fold behind the turn's "Worked for …" row.
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-late-frame");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-late-frame-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === "turn-late-frame",
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-late-frame-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:10.000Z",
+      turnId,
+      payload: { state: "completed" },
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.activeTurnId === null);
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-late-frame-item"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:10.002Z",
+      itemId: asItemId("item-late-frame"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-late-frame-item",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-late-frame-item",
+    );
+
+    expect(activity?.kind).toBe("tool.completed");
+    expect(activity?.turnId).toBe("turn-late-frame");
+  });
+
+  it("leaves an item frame unattributed when no turn has ever run on the thread", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-orphan-frame-item"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      itemId: asItemId("item-orphan-frame"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-orphan-frame-item",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-orphan-frame-item",
+    );
+
+    expect(activity?.turnId).toBeNull();
+  });
+
+  it("keeps an explicit turn id on a frame naming a turn other than the active one", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-conflict-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-active"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === "turn-active",
+    );
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-conflict-item"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-other"),
+      itemId: asItemId("item-conflict"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-conflict-item",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-conflict-item",
+    );
+
+    expect(activity?.turnId).toBe("turn-other");
+  });
+
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

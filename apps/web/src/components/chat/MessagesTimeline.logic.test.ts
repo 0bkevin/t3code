@@ -855,6 +855,278 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.map((row) => row.id)).toContain("running-work-entry");
   });
 
+  it("folds a late unattributed work entry that lands after a settled turn's answer", () => {
+    // Replay of a settled Hermes turn: user message → commentary → work rows →
+    // terminal assistant message, plus a tool-hook frame that landed after
+    // turn.completed and lost its turn attribution. Every work row belongs
+    // above the final answer, behind the fold.
+    const timelineEntries = [
+      {
+        id: "user-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "user-1" as never,
+          role: "user" as const,
+          text: "check the deploy",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-commentary-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:03Z",
+        message: {
+          id: "assistant-commentary" as never,
+          role: "assistant" as const,
+          text: "Looking at it now.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:03Z",
+          updatedAt: "2026-01-01T00:00:04Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "work-entry-1",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:06Z",
+        entry: {
+          id: "work-1",
+          createdAt: "2026-01-01T00:00:06Z",
+          turnId: "turn-1" as never,
+          label: "Ran command",
+          tone: "tool" as const,
+        },
+      },
+      {
+        id: "assistant-final-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:18Z",
+        message: {
+          id: "assistant-final" as never,
+          role: "assistant" as const,
+          text: "Deploy is green.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:18Z",
+          updatedAt: "2026-01-01T00:00:20Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "late-work-entry",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:21Z",
+        entry: {
+          id: "late-work",
+          createdAt: "2026-01-01T00:00:21Z",
+          turnId: null,
+          label: "Hermes activity is running…",
+          tone: "info" as const,
+        },
+      },
+    ];
+    const latestTurn = {
+      turnId: "turn-1" as never,
+      state: "completed" as const,
+      startedAt: "2026-01-01T00:00:00Z",
+      completedAt: "2026-01-01T00:00:20Z",
+    };
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestTurn,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "assistant-final-entry",
+    ]);
+
+    const terminalIndex = rows.findIndex((row) => row.id === "assistant-final-entry");
+    const trailingWorkRows = rows
+      .slice(terminalIndex + 1)
+      .filter((row) => row.kind === "work" || row.kind === "work-toggle");
+    expect(trailingWorkRows).toEqual([]);
+
+    const expandedRows = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestTurn,
+      expandedTurnIds: new Set(["turn-1" as never]),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    // Expanding the fold still reveals the adopted entry.
+    expect(expandedRows.map((row) => row.id)).toContain("late-work-entry");
+  });
+
+  it("renders an unattributed work entry outside every settled turn's window", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-entry-1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Ran command",
+            tone: "tool" as const,
+          },
+        },
+        {
+          id: "assistant-final-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:10Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant",
+            text: "Done",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:10Z",
+            updatedAt: "2026-01-01T00:00:12Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "orphan-work-entry",
+          kind: "work",
+          // Far past the settled turn's trailing grace window — this is a
+          // standalone notification-style row, not a late turn frame.
+          createdAt: "2026-01-01T00:10:00Z",
+          entry: {
+            id: "orphan-work",
+            createdAt: "2026-01-01T00:10:00Z",
+            turnId: null,
+            label: "Background sync finished",
+            tone: "info" as const,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:12Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "turn-fold:turn-1",
+      "assistant-final-entry",
+      "orphan-work-entry",
+    ]);
+  });
+
+  it("does not adopt an unattributed work entry into a still-running turn", () => {
+    // turn-1 has settled; turn-2 is running. An unattributed entry stamped
+    // inside turn-2's span must stay visible — a running turn has no end, so
+    // adopting into it would hide live work behind a fold that isn't there.
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "settled-work-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "settled-work",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Read files",
+            tone: "tool" as const,
+          },
+        },
+        {
+          id: "assistant-final-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:10Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant",
+            text: "Done",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:10Z",
+            updatedAt: "2026-01-01T00:00:11Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "user-followup-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:01:00Z",
+          message: {
+            id: "user-followup" as never,
+            role: "user",
+            text: "keep going",
+            turnId: null,
+            createdAt: "2026-01-01T00:01:00Z",
+            updatedAt: "2026-01-01T00:01:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "running-work-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:01:05Z",
+          entry: {
+            id: "running-work",
+            createdAt: "2026-01-01T00:01:05Z",
+            turnId: "turn-2" as never,
+            label: "Searched files",
+            tone: "tool" as const,
+          },
+        },
+        {
+          id: "unattributed-work-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:01:07Z",
+          entry: {
+            id: "unattributed-work",
+            createdAt: "2026-01-01T00:01:07Z",
+            turnId: null,
+            label: "Hermes activity is running…",
+            tone: "info" as const,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-2" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:01:00Z",
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:01:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.filter((row) => row.kind === "turn-fold").map((row) => row.turnId)).toEqual([
+      "turn-1",
+    ]);
+    // Neither of turn-2's rows is hidden: they are grouped for overflow, but
+    // both the running-turn entry and the unattributed entry remain rendered.
+    const workRowEntryIds = rows.flatMap((row) =>
+      row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+    );
+    expect(workRowEntryIds).toContain("unattributed-work");
+    expect(rows.some((row) => row.kind === "work-toggle")).toBe(true);
+  });
+
   it("only shows assistant metadata on the terminal assistant message", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
