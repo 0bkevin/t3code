@@ -249,6 +249,31 @@ class T3PlatformAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": f"T3 thread {chat_id}", "type": "dm"}
 
+    def format_tool_event(
+        self, event: Any, *, mode: str = "all", preview_max_len: int = 40
+    ) -> str | None:
+        """Drop Hermes' textual tool-progress chrome.
+
+        The base implementation renders each tool call as an emoji progress
+        line ("📚 skill_view: …") and delivers it through the ordinary reply
+        path. Two things go wrong when that reaches T3:
+
+        1. T3 already renders tool calls as typed `item.started` /
+           `item.completed` activity from the `pre_tool_call` / `post_tool_call`
+           hooks, so the text is a duplicate of a richer surface.
+        2. Worse, it is delivered as a *user-visible reply*, and the gateway
+           marks user-visible replies `notify=True`. `send()` treats `notify`
+           as "this turn is finished" and calls `_complete_turn`, so the first
+           tool call ended the T3 turn while Hermes was still working. Every
+           later send failed with "no active T3 turn" and the answer was lost.
+
+        Returning None is the documented way for an adapter that cannot render
+        this chrome to drop the event, and it is what the base class's own
+        docstring prescribes.
+        """
+        del event, mode, preview_max_len
+        return None
+
     async def send_typing(
         self, chat_id: str, metadata: dict[str, Any] | None = None
     ) -> None:

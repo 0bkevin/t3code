@@ -3555,10 +3555,22 @@ export default function Sidebar() {
   // Agent rows render after the Projects group, so their threads continue the
   // same visible ordering: thread-jump shortcuts and prev/next traversal reach
   // an agent's threads exactly as they reach a project's.
-  const visibleSidebarSections = useMemo(
-    () => [...sortedProjects, ...agentEntries.map((agent) => agent.project)],
-    [agentEntries, sortedProjects],
-  );
+  const visibleSidebarSections = useMemo(() => {
+    // De-duplicate by `projectKey`. Threads are looked up per section via
+    // `threadsByProjectKey`, so a key appearing twice yields the same threads
+    // twice — which surfaces as duplicate React keys in the thread prewarmer
+    // and double-counts every thread in jump/traversal ordering. Grouping can
+    // legitimately collapse an agent row onto the same logical key as a
+    // workspace row, so this cannot be assumed away.
+    const seen = new Set<string>();
+    const sections: SidebarProjectSnapshot[] = [];
+    for (const project of [...sortedProjects, ...agentEntries.map((agent) => agent.project)]) {
+      if (seen.has(project.projectKey)) continue;
+      seen.add(project.projectKey);
+      sections.push(project);
+    }
+    return sections;
+  }, [agentEntries, sortedProjects]);
   const visibleSidebarThreadKeys = useMemo(
     () =>
       visibleSidebarSections.flatMap((project) => {

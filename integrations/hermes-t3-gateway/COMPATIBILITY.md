@@ -15,6 +15,8 @@ Audited surfaces, all present at that commit:
 | `resolve_gateway_approval`               | `tools/approval.py:2073`             |
 | `resolve_gateway_clarify`                | `tools/clarify_gateway.py:160`       |
 | `register_platform` (`**entry_kwargs`)   | `hermes_cli/plugins.py:931`          |
+| `format_tool_event` (override hook)      | `gateway/platforms/base.py:2740`     |
+| Tool-chrome dispatch (`None` == eat)     | `gateway/stream_dispatch.py:108`     |
 | `/steer` active-run handler              | `gateway/run.py:11280`               |
 | Home-channel notice text                 | `gateway/run.py:13780`               |
 | Active-command inline dispatch           | `gateway/platforms/base.py:4926`     |
@@ -151,3 +153,28 @@ older server/plugin pairs are rejected during the handshake.
   `protocol.error` path.
 - Attachments are not accepted. They are the first planned post-stability
   feature; the capability is reserved and fixed to `false` in protocol v2.
+
+## Tool-progress chrome is dropped, not rendered
+
+`BasePlatformAdapter.format_tool_event` renders each tool call as an emoji
+progress line ("📚 skill_view: …") and the gateway delivers it through the
+ordinary reply path. The plugin overrides it to return `None`, which
+`gateway/stream_dispatch.py:108` documents as "adapter chose to eat this event".
+
+Two reasons, the second severe:
+
+1. T3 already renders tool calls as typed `item.started` / `item.completed`
+   activity from the `pre_tool_call` / `post_tool_call` hooks. The text line is
+   a strictly poorer duplicate of a surface T3 already has.
+2. The gateway marks user-visible replies `notify=True`
+   (`_mark_notify_metadata`, `gateway/platforms/base.py:89`), and this plugin's
+   `send()` treats `notify` as "this turn is finished" — it calls
+   `_complete_turn`. So the **first tool call ended the T3 turn while Hermes was
+   still working**: the transcript kept the progress chrome as the assistant's
+   entire answer, and every subsequent send failed with "no active T3 turn"
+   (visible in the gateway log as `Send failed: no active T3 turn — trying
+plain-text fallback`). The real answer never arrived.
+
+If a future Hermes stops routing tool chrome through `format_tool_event`, this
+regresses silently and in exactly that shape: turns that end early, at the first
+tool call, with progress text as the answer.

@@ -296,11 +296,30 @@ export function getVisibleSidebarThreadIds<TThreadId>(
   );
 }
 
+/**
+ * The prewarm slice, de-duplicated.
+ *
+ * Each id becomes a React `key` on a prewarmer element, so a repeat is a
+ * render-time error, not a cosmetic one. Callers should not emit duplicates —
+ * but a section list that collapses two rows onto one logical project key
+ * silently produces them, so this is deduped here as well: the invariant
+ * belongs to the thing that depends on it.
+ *
+ * Dedupe runs before the limit so a duplicate cannot displace a distinct
+ * thread that would otherwise have been prewarmed.
+ */
 export function getSidebarThreadIdsToPrewarm<TThreadId>(
   visibleThreadIds: readonly TThreadId[],
   limit = SIDEBAR_THREAD_PREWARM_LIMIT,
 ): TThreadId[] {
-  return visibleThreadIds.slice(0, Math.max(0, limit));
+  const unique: TThreadId[] = [];
+  const seen = new Set<TThreadId>();
+  for (const threadId of visibleThreadIds) {
+    if (seen.has(threadId)) continue;
+    seen.add(threadId);
+    unique.push(threadId);
+  }
+  return unique.slice(0, Math.max(0, limit));
 }
 
 export function resolveAdjacentThreadId<T>(input: {

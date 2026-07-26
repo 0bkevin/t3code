@@ -1178,6 +1178,27 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             [message["type"] for message in self.connection.messages],
         )
 
+    def test_tool_progress_chrome_is_dropped(self):
+        """Tool chrome must never reach T3 as a user-visible reply.
+
+        The gateway marks user-visible replies `notify=True`, and `send()`
+        treats `notify` as "turn finished". Rendering tool chrome therefore
+        ended the T3 turn on the first tool call, and everything Hermes did
+        afterwards failed with "no active T3 turn". T3 already renders tool
+        calls as typed activity items, so the text is redundant regardless.
+        """
+
+        class _ToolCallChunk:
+            tool_name = "skill_view"
+            preview = "hermes-agent"
+            args = {"name": "hermes-agent"}
+
+        for mode in ("all", "new", "verbose"):
+            with self.subTest(mode=mode):
+                self.assertIsNone(
+                    self.adapter.format_tool_event(_ToolCallChunk(), mode=mode)
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

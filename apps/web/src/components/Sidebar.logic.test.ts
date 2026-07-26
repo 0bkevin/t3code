@@ -326,6 +326,14 @@ describe("getSidebarThreadIdsToPrewarm", () => {
   it("returns no thread ids when the limit is zero", () => {
     expect(getSidebarThreadIdsToPrewarm(["t1", "t2"], 0)).toEqual([]);
   });
+
+  it("drops repeats so every prewarmed id can be a unique React key", () => {
+    expect(getSidebarThreadIdsToPrewarm(["t1", "t2", "t1", "t3"], 10)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("dedupes before applying the limit so a repeat cannot displace a distinct thread", () => {
+    expect(getSidebarThreadIdsToPrewarm(["t1", "t1", "t2"], 2)).toEqual(["t1", "t2"]);
+  });
 });
 
 describe("shouldClearThreadSelectionOnMouseDown", () => {
