@@ -190,7 +190,7 @@ it.effect("upgrades a database already at released main migration 034", () =>
     }>`
       SELECT migration_id, name
       FROM effect_sql_migrations
-      WHERE migration_id BETWEEN 34 AND 44
+      WHERE migration_id BETWEEN 34 AND 45
       ORDER BY migration_id
     `;
     assert.deepStrictEqual(
@@ -207,6 +207,7 @@ it.effect("upgrades a database already at released main migration 034", () =>
         [42, "OrchestrationV2EffectCancellation"],
         [43, "ScheduledTasks"],
         [44, "LegacyV1ImportState"],
+        [45, "OrchestrationV2SubagentObservability"],
       ],
     );
 
