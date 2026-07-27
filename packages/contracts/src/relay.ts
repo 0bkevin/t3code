@@ -441,6 +441,20 @@ export class RelayEnvironmentLinkUnavailableError extends Schema.TaggedErrorClas
   }
 }
 
+export class RelayEnvironmentLinkLimitExceededError extends Schema.TaggedErrorClass<RelayEnvironmentLinkLimitExceededError>()(
+  "RelayEnvironmentLinkLimitExceededError",
+  {
+    code: Schema.Literal("environment_link_limit_exceeded"),
+    maxTunnels: Schema.Number,
+    traceId: TrimmedNonEmptyString,
+  },
+  { httpApiStatus: 403 },
+) {
+  override get message(): string {
+    return `Relay managed tunnel limit reached: this account allows at most ${this.maxTunnels} tunnels`;
+  }
+}
+
 export class RelayAgentActivityPublishProofExpiredError extends Schema.TaggedErrorClass<RelayAgentActivityPublishProofExpiredError>()(
   "RelayAgentActivityPublishProofExpiredError",
   {
@@ -491,6 +505,7 @@ export const RelayProtectedError = Schema.Union([
   RelayEnvironmentEndpointTimedOutError,
   RelayEnvironmentLinkFailedError,
   RelayEnvironmentLinkUnavailableError,
+  RelayEnvironmentLinkLimitExceededError,
   RelayAgentActivityPublishProofExpiredError,
   RelayAgentActivityPublishProofInvalidError,
   RelayInternalError,
@@ -504,6 +519,7 @@ const RelayEnvironmentLinkErrors = [
   RelayEnvironmentLinkProofExpiredError,
   RelayEnvironmentLinkProofInvalidError,
   RelayEnvironmentLinkUnavailableError,
+  RelayEnvironmentLinkLimitExceededError,
   RelayEnvironmentLinkFailedError,
   RelayInternalError,
 ] as const;
@@ -948,6 +964,21 @@ export const RelayClientGroup = HttpApiGroup.make("client")
       success: RelayOkResponse,
       error: RelayAuthAndInternalErrors,
     }).annotate(OpenApi.Summary, "Unlink an environment"),
+    HttpApiEndpoint.delete(
+      "releaseEnvironmentTunnel",
+      "/v1/client/environment-links/:environmentId/tunnel",
+      {
+        headers: RelayBearerRequestHeaders,
+        params: RelayEnvironmentUnlinkParams,
+        success: RelayOkResponse,
+        error: RelayAuthAndInternalErrors,
+      },
+    )
+      .annotate(OpenApi.Summary, "Release an environment's managed tunnel")
+      .annotate(
+        OpenApi.Description,
+        "Deletes the provisioned Cloudflare tunnel while keeping the environment link and its hostname reservation, so a later link re-provisions the tunnel under the same URL. Environments call this when they shut down; Cloudflare bills per provisioned tunnel, so idle tunnels should not outlive their environment.",
+      ),
   )
   .annotate(OpenApi.Description, "Cloud-user environment links and registered devices.")
   .middleware(RelayClientAuth);

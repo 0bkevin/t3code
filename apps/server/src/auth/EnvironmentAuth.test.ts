@@ -10,6 +10,10 @@ import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 
 import * as ServerSecretStore from "./ServerSecretStore.ts";
+import * as SessionStore from "./SessionStore.ts";
+
+/** Pinned so dev-mode cookie tests can assert the port-scoped name. */
+const TEST_SERVER_PORT = 13_773;
 
 const makeServerConfigLayer = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>
   Layer.effect(
@@ -18,8 +22,10 @@ const makeServerConfigLayer = (overrides?: Partial<ServerConfig.ServerConfig["Se
       const config = yield* ServerConfig.ServerConfig;
       return {
         ...config,
-        port: 3773,
         ...overrides,
+        // Keep the test server deterministic even when the default test layer
+        // changes its development port.
+        port: TEST_SERVER_PORT,
       } satisfies ServerConfig.ServerConfig["Service"];
     }),
   ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-server-test-" })));
@@ -32,8 +38,8 @@ const makeEnvironmentAuthLayer = (overrides?: Partial<ServerConfig.ServerConfig[
   );
 
 const makeCookieRequest = (
+  cookieName: string,
   sessionToken: string,
-  cookieName = "t3_session",
 ): Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"]>[0] =>
   ({
     cookies: {
@@ -80,6 +86,7 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
   it.effect("issues standard pairing credentials by default", () =>
     Effect.gen(function* () {
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessions = yield* SessionStore.SessionStore;
 
       const pairingCredential = yield* serverAuth.issuePairingCredential();
       const exchanged = yield* serverAuth.createBrowserSession(
@@ -87,7 +94,7 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
         requestMetadata,
       );
       const verified = yield* serverAuth.authenticateHttpRequest(
-        makeCookieRequest(exchanged.sessionToken),
+        makeCookieRequest(sessions.cookieName, exchanged.sessionToken),
       );
 
       expect(verified.sessionId.length).toBeGreaterThan(0);
@@ -100,39 +107,6 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
       ]);
       expect(verified.subject).toBe("one-time-token");
     }).pipe(Effect.provide(makeEnvironmentAuthLayer())),
-  );
-
-  it.effect("uses the port-specific web cookie when sibling instance cookies are present", () =>
-    Effect.gen(function* () {
-      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-      const pairingCredential = yield* serverAuth.issuePairingCredential();
-      const exchanged = yield* serverAuth.createBrowserSession(
-        pairingCredential.credential,
-        requestMetadata,
-      );
-      const request = {
-        cookies: {
-          t3_session: "session-owned-by-the-canonical-instance",
-          t3_session_7446: exchanged.sessionToken,
-        },
-        headers: {},
-      } as unknown as Parameters<
-        EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"]
-      >[0];
-
-      const verified = yield* serverAuth.authenticateHttpRequest(request);
-
-      expect(verified.sessionId.length).toBeGreaterThan(0);
-      expect(verified.subject).toBe("one-time-token");
-    }).pipe(
-      Effect.provide(
-        makeEnvironmentAuthLayer({
-          mode: "web",
-          port: 13773,
-          authCookiePort: 7446,
-        }),
-      ),
-    ),
   );
 
   it.effect("does not exchange ordinary pairing grants for administrative access tokens", () =>
@@ -186,6 +160,7 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
   it.effect("issues startup pairing URLs that bootstrap administrative sessions", () =>
     Effect.gen(function* () {
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessions = yield* SessionStore.SessionStore;
 
       const pairingUrl = yield* serverAuth.issueStartupPairingUrl("http://127.0.0.1:3773");
       const token = new URLSearchParams(new URL(pairingUrl).hash.slice(1)).get("token");
@@ -199,7 +174,7 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
 
       const exchanged = yield* serverAuth.createBrowserSession(token ?? "", requestMetadata);
       const verified = yield* serverAuth.authenticateHttpRequest(
-        makeCookieRequest(exchanged.sessionToken),
+        makeCookieRequest(sessions.cookieName, exchanged.sessionToken),
       );
 
       expect(verified.scopes).toEqual([
@@ -221,13 +196,14 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
     () =>
       Effect.gen(function* () {
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const sessions = yield* SessionStore.SessionStore;
 
         const administrativeExchange = yield* serverAuth.createBrowserSession(
           "desktop-bootstrap-token",
           requestMetadata,
         );
         const administrativeSession = yield* serverAuth.authenticateHttpRequest(
-          makeCookieRequest(administrativeExchange.sessionToken),
+          makeCookieRequest(sessions.cookieName, administrativeExchange.sessionToken),
         );
         const pairingCredential = yield* serverAuth.issuePairingCredential({
           label: "Julius iPhone",
@@ -244,7 +220,7 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
           },
         );
         const clientSession = yield* serverAuth.authenticateHttpRequest(
-          makeCookieRequest(clientExchange.sessionToken),
+          makeCookieRequest(sessions.cookieName, clientExchange.sessionToken),
         );
         const clientsBeforeRevoke = yield* serverAuth.listClientSessions(
           administrativeSession.sessionId,

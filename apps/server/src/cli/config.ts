@@ -26,13 +26,6 @@ export const portFlag = Flag.integer("port").pipe(
   Flag.withDescription("Port for the HTTP/WebSocket server."),
   Flag.optional,
 );
-export const authCookiePortFlag = Flag.integer("auth-cookie-port").pipe(
-  Flag.withSchema(PortSchema),
-  Flag.withDescription(
-    "Browser-facing port used to namespace auth cookies when a reverse proxy exposes a different port.",
-  ),
-  Flag.optional,
-);
 export const hostFlag = Flag.string("host").pipe(
   Flag.withDescription("Host/interface to bind (for example 127.0.0.1, 0.0.0.0, or a Tailnet IP)."),
   Flag.optional,
@@ -110,13 +103,18 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  authCookiePort: Config.port("T3CODE_AUTH_COOKIE_PORT").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  ),
   host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: Config.string("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  devAllowedOrigins: Config.string("T3CODE_DEV_ALLOWED_ORIGINS").pipe(
+    Config.withDefault(""),
+    Config.map((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+    ),
+  ),
   noBrowser: Config.boolean("T3CODE_NO_BROWSER").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -146,7 +144,6 @@ const EnvServerConfig = Config.all({
 export interface CliServerFlags {
   readonly mode: Option.Option<ServerConfig.RuntimeMode>;
   readonly port: Option.Option<number>;
-  readonly authCookiePort?: Option.Option<number>;
   readonly host: Option.Option<string>;
   readonly baseDir: Option.Option<string>;
   readonly cwd: Option.Option<string>;
@@ -176,7 +173,6 @@ export const projectLocationFlags = {
 export const sharedServerCommandFlags = {
   mode: modeFlag,
   port: portFlag,
-  authCookiePort: authCookiePortFlag,
   host: hostFlag,
   baseDir: baseDirFlag,
   cwd: Argument.string("cwd").pipe(
@@ -227,7 +223,6 @@ export const resolveServerConfig = (
     const normalizedFlags = {
       mode: flags.mode ?? Option.none(),
       port: flags.port ?? Option.none(),
-      authCookiePort: flags.authCookiePort ?? Option.none(),
       host: flags.host ?? Option.none(),
       baseDir: flags.baseDir ?? Option.none(),
       cwd: flags.cwd ?? Option.none(),
@@ -270,12 +265,6 @@ export const resolveServerConfig = (
           return findAvailablePort(ServerConfig.DEFAULT_PORT);
         },
       },
-    );
-    const explicitlyConfiguredAuthCookiePort = Option.getOrUndefined(
-      resolveOptionPrecedence(
-        normalizedFlags.authCookiePort,
-        Option.fromUndefinedOr(env.authCookiePort),
-      ),
     );
     const devUrl = Option.getOrElse(
       resolveOptionPrecedence(normalizedFlags.devUrl, Option.fromUndefinedOr(env.devUrl)),
@@ -346,9 +335,6 @@ export const resolveServerConfig = (
       ),
       () => 443,
     );
-    const authCookiePort =
-      explicitlyConfiguredAuthCookiePort ??
-      (tailscaleServeEnabled ? tailscaleServePort : undefined);
     const staticDir = devUrl ? undefined : yield* ServerConfig.resolveStaticDir();
     const host = Option.getOrElse(
       resolveOptionPrecedence(
@@ -379,7 +365,6 @@ export const resolveServerConfig = (
       otlpServiceName: env.otlpServiceName,
       mode,
       port,
-      ...(authCookiePort !== undefined ? { authCookiePort } : {}),
       cwd,
       baseDir,
       ...derivedPaths,
@@ -387,6 +372,7 @@ export const resolveServerConfig = (
       host,
       staticDir,
       devUrl,
+      devAllowedOrigins: env.devAllowedOrigins,
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,
@@ -407,7 +393,6 @@ export const resolveCliAuthConfig = (
     {
       mode: Option.none(),
       port: Option.none(),
-      authCookiePort: Option.none(),
       host: Option.none(),
       baseDir: flags.baseDir,
       cwd: Option.none(),
