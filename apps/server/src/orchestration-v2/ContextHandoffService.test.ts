@@ -104,4 +104,29 @@ it.layer(TestLayer)("ContextHandoffService legacy import", (it) => {
       assert.include(providerMessage, "User message:\nContinue from there.");
     }),
   );
+
+  it.effect("preserves role attribution when truncating imported history", () =>
+    Effect.gen(function* () {
+      const service = yield* ContextHandoffServiceV2;
+      const handoff = yield* service.prepareLegacyImport({
+        threadId: ThreadId.make("thread:legacy-context"),
+        targetRunId: RunId.make("run:first-v2"),
+        toProviderThreadId: ProviderThreadId.make("provider-thread:first-v2"),
+        toProviderInstanceId: ProviderInstanceId.make("codex"),
+        items: [
+          importedItem({
+            role: "user",
+            id: "long",
+            text: `${"x".repeat(35_000)} retained final words`,
+            ordinal: 1,
+          }),
+        ],
+        createdAt: DateTime.makeUnsafe("2026-01-02T00:00:00.000Z"),
+      });
+
+      assert.isAtMost(handoff.summaryText.length, 32_000);
+      assert.include(handoff.summaryText, "User:\n... retained final words");
+      assert.notMatch(handoff.summaryText, /\n+x+ retained final words/);
+    }),
+  );
 });

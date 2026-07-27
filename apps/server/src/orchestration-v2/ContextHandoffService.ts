@@ -165,9 +165,9 @@ function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>):
   const sections = items.flatMap((item) => {
     switch (item.type) {
       case "user_message":
-        return [`User:\n${item.text}`];
+        return [{ label: "User", body: item.text }];
       case "assistant_message":
-        return [`Assistant:\n${item.text}`];
+        return [{ label: "Assistant", body: item.text }];
       default:
         return [];
     }
@@ -179,8 +179,32 @@ function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>):
   let remaining = maxChars - header.length - 2;
   for (const section of sections.toReversed()) {
     if (remaining <= 0) break;
-    const suffix =
-      section.length <= remaining ? section : section.slice(section.length - remaining);
+    const fullSection = `${section.label}:\n${section.body}`;
+    if (fullSection.length <= remaining) {
+      selected.unshift(fullSection);
+      remaining -= fullSection.length + 2;
+      continue;
+    }
+
+    const prefix = `${section.label}:\n... `;
+    const bodyBudget = remaining - prefix.length;
+    if (bodyBudget <= 0) continue;
+
+    const initialStart = section.body.length - bodyBudget;
+    let bodyStart = Math.max(0, initialStart);
+    if (
+      bodyStart > 0 &&
+      !/\s/.test(section.body[bodyStart - 1] ?? "") &&
+      !/\s/.test(section.body[bodyStart] ?? "")
+    ) {
+      const nextWhitespace = section.body.slice(bodyStart).search(/\s/);
+      if (nextWhitespace === -1) continue;
+      bodyStart += nextWhitespace;
+    }
+    const bodySuffix = section.body.slice(bodyStart).trimStart();
+    if (bodySuffix.length === 0) continue;
+
+    const suffix = `${prefix}${bodySuffix}`;
     selected.unshift(suffix);
     remaining -= suffix.length + 2;
   }
