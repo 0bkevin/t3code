@@ -42,7 +42,12 @@ import { EventSinkV2 } from "./EventSink.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
-import { applyToProjection, emptyProjection, ProjectionStoreV2 } from "./ProjectionStore.ts";
+import {
+  applyToProjection,
+  emptyProjection,
+  isTurnItemAtOrBeforeRun,
+  ProjectionStoreV2,
+} from "./ProjectionStore.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import {
@@ -440,6 +445,18 @@ function visibleDeltaRunOrdinals(
     from: Math.min(...ordinals),
     to: Math.max(...ordinals),
   };
+}
+
+export function shouldPrepareLegacyImportHandoff(input: {
+  readonly hasNativeThreadRef: boolean;
+  readonly historyOrigin: OrchestrationV2AppThread["historyOrigin"];
+  readonly legacyImportItemCount: number;
+}): boolean {
+  return (
+    input.historyOrigin === "v1_import" &&
+    !input.hasNativeThreadRef &&
+    input.legacyImportItemCount > 0
+  );
 }
 
 function rootProviderThreadsForProvider(
@@ -2569,21 +2586,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             driver: adapter.driver,
             nativeThreadId: `pending:${runId}`,
           });
-        const legacyImportHandoff =
-          projection.thread.historyOrigin === "v1_import" &&
-          projection.runs.length === 0 &&
-          legacyImportItems.length > 0
-            ? yield* contextHandoffService
-                .prepareLegacyImport({
-                  threadId: command.threadId,
-                  targetRunId: runId,
-                  toProviderThreadId: providerThreadId,
-                  toProviderInstanceId: modelSelection.instanceId,
-                  items: legacyImportItems,
-                  createdAt: now,
-                })
-                .pipe(mapDispatchError(command))
-            : null;
+        const legacyImportHandoff = shouldPrepareLegacyImportHandoff({
+          historyOrigin: projection.thread.historyOrigin,
+          hasNativeThreadRef:
+            activeProviderThread !== undefined && activeProviderThread.nativeThreadRef !== null,
+          legacyImportItemCount: legacyImportItems.length,
+        })
+          ? yield* contextHandoffService
+              .prepareLegacyImport({
+                threadId: command.threadId,
+                targetRunId: runId,
+                toProviderThreadId: providerThreadId,
+                toProviderInstanceId: modelSelection.instanceId,
+                items: legacyImportItems,
+                createdAt: now,
+              })
+              .pipe(mapDispatchError(command))
+          : null;
         const providerThread: OrchestrationV2ProviderThread =
           activeProviderThread === undefined
             ? {
@@ -3006,18 +3025,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               providerSessionId,
               updatedAt: now,
             };
+      const sourceRunOrdinalById = new Map(
+        (sourceProjection?.runs ?? []).map((run) => [run.id, run.ordinal]),
+      );
       const portableForkItems =
         !requiresPortableFork || sourceProjection === null || sourceRun === null
           ? []
-          : sourceProjection.turnItems.filter((item) => {
-              if (item.runId === null) {
-                return false;
-              }
-              const itemRun = sourceProjection.runs.find(
-                (candidate) => candidate.id === item.runId,
-              );
-              return itemRun !== undefined && itemRun.ordinal <= sourceRun.ordinal;
-            });
+          : sourceProjection.turnItems.filter((item) =>
+              isTurnItemAtOrBeforeRun({
+                historyOrigin: sourceProjection.thread.historyOrigin,
+                itemRunId: item.runId,
+                runOrdinalById: sourceRunOrdinalById,
+                sourceRunOrdinal: sourceRun.ordinal,
+              }),
+            );
       const portableForkHandoff =
         !requiresPortableFork ||
         pendingForkTransfer === undefined ||

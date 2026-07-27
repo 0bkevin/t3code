@@ -647,6 +647,19 @@ function makeForkMarkerTurnItem(input: {
   };
 }
 
+export function isTurnItemAtOrBeforeRun(input: {
+  readonly historyOrigin: OrchestrationV2ThreadProjection["thread"]["historyOrigin"];
+  readonly itemRunId: OrchestrationV2TurnItem["runId"];
+  readonly runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>;
+  readonly sourceRunOrdinal: number;
+}): boolean {
+  if (input.itemRunId === null) {
+    return input.historyOrigin === "v1_import";
+  }
+  const ordinal = input.runOrdinalById.get(input.itemRunId);
+  return ordinal !== undefined && ordinal <= input.sourceRunOrdinal;
+}
+
 function visibleTurnItemsThroughRun(input: {
   readonly sourceProjection: OrchestrationV2ThreadProjection;
   readonly sourceRunId: NonNullable<OrchestrationV2TurnItem["runId"]>;
@@ -678,11 +691,12 @@ function visibleTurnItemsThroughRun(input: {
       ) {
         return false;
       }
-      if (item.runId === null) {
-        return false;
-      }
-      const ordinal = runOrdinalById.get(item.runId);
-      return ordinal !== undefined && ordinal <= sourceRun.ordinal;
+      return isTurnItemAtOrBeforeRun({
+        historyOrigin: input.sourceProjection.thread.historyOrigin,
+        itemRunId: item.runId,
+        runOrdinalById,
+        sourceRunOrdinal: sourceRun.ordinal,
+      });
     }),
   );
 
