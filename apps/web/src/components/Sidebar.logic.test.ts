@@ -15,6 +15,7 @@ import {
   getVisibleThreadsForProject,
   getProjectSortTimestamp,
   hasUnseenCompletion,
+  hasUnseenNotification,
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -249,6 +250,78 @@ describe("hasUnseenCompletion", () => {
         latestTurn: makeLatestTurn(),
         lastVisitedAt: undefined,
         session: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("hasUnseenNotification", () => {
+  const base = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default",
+    // Turnless on purpose: a delivery appends outside the turn machinery, so
+    // `latestTurn` never moves and `hasUnseenCompletion` reports nothing.
+    latestTurn: null,
+    session: null,
+  } as const;
+
+  const notification = (deliveredAt: string) =>
+    ({ kind: "cron", label: "Cron: nightly", deliveredAt }) as never;
+
+  it("flags a delivery that landed after the last visit", () => {
+    expect(
+      hasUnseenNotification({
+        ...base,
+        latestNotification: notification("2026-03-09T10:05:00.000Z"),
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not flag a delivery the user has already seen", () => {
+    expect(
+      hasUnseenNotification({
+        ...base,
+        latestNotification: notification("2026-03-09T10:03:00.000Z"),
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toBe(false);
+  });
+
+  it("flags a lifecycle notice like any other delivery", () => {
+    expect(
+      hasUnseenNotification({
+        ...base,
+        latestNotification: {
+          kind: "lifecycle",
+          label: "Gateway",
+          deliveredAt: "2026-03-09T10:05:00.000Z",
+        } as never,
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  it("reports nothing for a thread that has never received a delivery", () => {
+    expect(
+      hasUnseenNotification({
+        ...base,
+        latestNotification: null,
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toBe(false);
+  });
+
+  it("treats a missing client visit marker as read, matching completions", () => {
+    // Never-visited is "new", not "unseen since seen" — flipping this would
+    // light up every historical thread the first time the field appears.
+    expect(
+      hasUnseenNotification({
+        ...base,
+        latestNotification: notification("2026-03-09T10:05:00.000Z"),
+        lastVisitedAt: undefined,
       }),
     ).toBe(false);
   });

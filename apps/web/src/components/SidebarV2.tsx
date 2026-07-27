@@ -77,7 +77,7 @@ import {
 } from "../logicalProject";
 import {
   buildSidebarProjectSnapshots,
-  selectProjectsOfKind,
+  resolveAgentProjectDriverKind,
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
@@ -106,6 +106,7 @@ import {
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
+  hasUnseenNotification,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
@@ -214,6 +215,7 @@ function SidebarV2ThreadTooltip({
   thread,
   projectTitle,
   projectCwd,
+  agentProjectDriverKind,
   environmentLabel,
   driverKind,
   modelInstanceId,
@@ -223,6 +225,7 @@ function SidebarV2ThreadTooltip({
   thread: SidebarThreadSummary;
   projectTitle: string | null;
   projectCwd: string | null;
+  agentProjectDriverKind: ProviderInstanceEntry["driverKind"] | undefined;
   environmentLabel: string | null;
   driverKind: ProviderInstanceEntry["driverKind"] | null;
   modelInstanceId: string;
@@ -248,6 +251,8 @@ function SidebarV2ThreadTooltip({
                 environmentId={thread.environmentId}
                 cwd={projectCwd ?? ""}
                 className="size-4 shrink-0 stroke-muted-foreground"
+                agentDriverKind={agentProjectDriverKind}
+                agentDisplayName={projectTitle ?? undefined}
               />
               <div className="min-w-0 wrap-break-word text-foreground/90">{projectTitle}</div>
             </div>
@@ -368,6 +373,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   environmentLabel: string | null;
   projectCwd: string | null;
   projectTitle: string | null;
+  /** Set only when this thread's project is an agent's; drives its mark. */
+  agentProjectDriverKind: ProviderInstanceEntry["driverKind"] | undefined;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
@@ -415,6 +422,9 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
+  // Deliveries are turnless, so `hasUnseenCompletion` never fires for them —
+  // a cron result would reorder this row to the top with no badge at all.
+  const hasUnseenDelivery = hasUnseenNotification({ ...thread, lastVisitedAt });
   const status = resolveSidebarV2Status(thread);
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
@@ -434,7 +444,12 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // stands out.
   const isInFlight = status === "working" || status === "approval" || status === "input";
   const shouldRecede =
-    (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
+    (status === "ready" || isInFlight) &&
+    !isUnread &&
+    !hasUnseenDelivery &&
+    !isWoke &&
+    !props.isActive &&
+    !isSelected;
   // Status hues follow the system-wide convention set by sidebar v1 and the
   // mobile Live Activity/widgets (amber approval, indigo input, sky working)
   // so a thread reads the same color everywhere it surfaces.
@@ -476,7 +491,13 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     icon: "done" as const,
                     className: "text-emerald-700 dark:text-emerald-300",
                   }
-                : null;
+                : hasUnseenDelivery
+                  ? {
+                      label: "New",
+                      icon: "done" as const,
+                      className: "text-teal-700 dark:text-teal-300",
+                    }
+                  : null;
 
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const gitStatus = useEnvironmentQuery(
@@ -524,6 +545,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       thread={thread}
       projectTitle={props.projectTitle}
       projectCwd={props.projectCwd}
+      agentProjectDriverKind={props.agentProjectDriverKind}
       environmentLabel={props.environmentLabel}
       driverKind={driverKind}
       modelInstanceId={modelInstanceId}
@@ -683,7 +705,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
         variant === "card"
           ? cn(
               "truncate",
-              isUnread || isWoke
+              isUnread || hasUnseenDelivery || isWoke
                 ? "text-foreground"
                 : shouldRecede
                   ? "text-muted-foreground/80"
@@ -695,7 +717,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               "truncate group-hover/v2-row:text-foreground",
               props.isActive || isWoke
                 ? "text-foreground"
-                : isUnread
+                : isUnread || hasUnseenDelivery
                   ? "text-muted-foreground"
                   : "text-muted-foreground/70",
             ),
@@ -759,6 +781,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 cwd={props.projectCwd ?? ""}
                 className="size-4"
                 fallbackIcon={MessageSquareIcon}
+                agentDriverKind={props.agentProjectDriverKind}
+                agentDisplayName={props.projectTitle ?? undefined}
               />
             </span>
             {title}
@@ -860,6 +884,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 environmentId={thread.environmentId}
                 cwd={props.projectCwd ?? ""}
                 className="size-4 shrink-0"
+                agentDriverKind={props.agentProjectDriverKind}
+                agentDisplayName={props.projectTitle ?? undefined}
               />
               {props.projectTitle ? (
                 <span
@@ -991,11 +1017,6 @@ function latestTurnDiff(
 
 export default function SidebarV2() {
   const projects = useProjects();
-  // Project *groups* are already agent-free (the grouping builder excludes
-  // them by default); this is for the raw-count checks that gate "no projects
-  // yet" and the new-thread button, which must not be satisfied by a
-  // synthetic agent project.
-  const workspaceProjects = useMemo(() => selectProjectsOfKind(projects, "workspace"), [projects]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const router = useRouter();
@@ -1102,9 +1123,37 @@ export default function SidebarV2() {
       sidebarProjectSortOrder,
     ],
   );
-  const projectGroups = useMemo(
+  const workspaceProjectGroups = useMemo(
     () => sortLogicalProjectsForSidebar(unsortedProjectGroups, threads, sidebarProjectSortOrder),
     [sidebarProjectSortOrder, threads, unsortedProjectGroups],
+  );
+  // Built separately and appended, rather than by dropping the `kind` filter
+  // above: agents sort after workspaces regardless of the user's project sort,
+  // and `buildSidebarProjectPickerEntries` still refuses them, so anything
+  // that must stay workspace-only keeps working off `workspaceProjectGroups`.
+  const agentProjectGroups = useMemo(
+    () =>
+      buildSidebarProjectSnapshots({
+        projects,
+        settings: projectGroupingSettings,
+        primaryEnvironmentId,
+        resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
+        kind: "agent",
+      }),
+    [environmentLabelById, primaryEnvironmentId, projectGroupingSettings, projects],
+  );
+  /**
+   * Every project row the sidebar can scope to or start a thread in.
+   *
+   * An agent is a legitimate destination — v1's Agents section starts threads
+   * in one through the same `handleNewThread` a workspace uses — so the scope
+   * menu and the new-thread picker both read this. What stays workspace-only
+   * is the *implicit* default target, which must never silently resolve to a
+   * synthetic project the user never added.
+   */
+  const projectGroups = useMemo(
+    () => [...workspaceProjectGroups, ...agentProjectGroups],
+    [agentProjectGroups, workspaceProjectGroups],
   );
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const providerEntryByInstanceId = useMemo(
@@ -1125,6 +1174,21 @@ export default function SidebarV2() {
         ]),
       ),
     [projects],
+  );
+  // Agent projects only. Keyed like `projectCwdByKey` so a row resolves its
+  // mark by the same `environmentId:projectId` it already uses for the cwd,
+  // and an ordinary project simply misses — falling back to its favicon.
+  const agentProjectDriverKindByKey = useMemo(
+    () =>
+      new Map(
+        projects.flatMap((project) => {
+          const driverKind = resolveAgentProjectDriverKind(project, providerEntryByInstanceId);
+          return driverKind
+            ? [[`${project.environmentId}:${project.id}`, driverKind] as const]
+            : [];
+        }),
+      ),
+    [projects, providerEntryByInstanceId],
   );
   const projectDisplayNameByKey = useMemo(
     () =>
@@ -2192,17 +2256,24 @@ export default function SidebarV2() {
     // One project: nothing to pick, create immediately.
     if (projectGroups.length <= 1) {
       if (isMobile) setOpenMobile(false);
+      // `defaultProjectRef` deliberately resolves to workspaces only, so a
+      // user whose sole project is an agent has none — without this fallback
+      // `startNewThreadFromContext` returns false and the click does nothing.
+      const onlyGroup = projectGroups[0];
+      const fallbackProjectRef =
+        newThreadContext.defaultProjectRef ??
+        (onlyGroup ? scopeProjectRef(onlyGroup.environmentId, onlyGroup.id) : null);
       void startNewThreadFromContext({
         activeDraftThread: newThreadContext.activeDraftThread,
         activeThread: newThreadContext.activeThread ?? undefined,
-        defaultProjectRef: newThreadContext.defaultProjectRef,
+        defaultProjectRef: fallbackProjectRef,
         handleNewThread: newThreadContext.handleNewThread,
       });
       return;
     }
     if (isMobile) setOpenMobile(false);
     openCommandPalette({ open: "new-thread-in" });
-  }, [isMobile, newThreadContext, projectGroups.length, setOpenMobile]);
+  }, [isMobile, newThreadContext, projectGroups, setOpenMobile]);
 
   const commandPaletteShortcutLabel = shortcutLabelForCommand(keybindings, "commandPalette.toggle");
   // Same resolution as v1: prefer the local-thread binding, fall back to
@@ -2246,7 +2317,10 @@ export default function SidebarV2() {
                       type="button"
                       className="relative size-8 justify-center rounded-md border-0 bg-transparent p-0 text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                       onClick={handleNewThreadClick}
-                      disabled={workspaceProjects.length === 0}
+                      // A connected agent is a place you can start a thread,
+                      // so gating on workspaces alone left this dead for a
+                      // user whose only project is their agent.
+                      disabled={projectGroups.length === 0}
                       aria-label="New thread"
                     />
                   }
@@ -2430,6 +2504,9 @@ export default function SidebarV2() {
                           `${thread.environmentId}:${thread.projectId}`,
                         ) ?? null
                       }
+                      agentProjectDriverKind={agentProjectDriverKindByKey.get(
+                        `${thread.environmentId}:${thread.projectId}`,
+                      )}
                       providerEntryByInstanceId={providerEntryByInstanceId}
                       onThreadClick={handleThreadClick}
                       onThreadActivate={navigateToThread}
@@ -2532,7 +2609,7 @@ export default function SidebarV2() {
           </TooltipProvider>
           {activeThreads.length + snoozedThreads.length + settledThreads.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {workspaceProjects.length === 0 ? (
+              {projectGroups.length === 0 ? (
                 <>
                   <span>No projects yet</span>
                   <button

@@ -1,9 +1,10 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
 import { isProjectFaviconFallbackUrl } from "@t3tools/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
 import { useState } from "react";
 import { useAssetUrl } from "../assets/assetUrls";
+import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 
 const loadedProjectFaviconSrcs = new Set<string>();
 
@@ -12,12 +13,36 @@ export function ProjectFavicon(input: {
   cwd: string;
   className?: string | undefined;
   fallbackIcon?: ComponentType<{ className?: string }>;
+  /**
+   * Driver kind when this project is an agent's, which makes it that agent's
+   * mark instead of a directory favicon.
+   *
+   * An agent project has a real `workspaceRoot` — a synthetic directory the
+   * server creates — so the favicon probe would otherwise run against it and
+   * find nothing, or worse, find a stray icon left in that directory and
+   * present an agent as a codebase. The identity that matters on this row is
+   * which agent it is, not what happens to be on disk.
+   */
+  agentDriverKind?: ProviderDriverKind | undefined;
+  /** Display name for the agent mark's accent/initials fallback. */
+  agentDisplayName?: string | undefined;
 }) {
   const src = useAssetUrl(input.environmentId, {
     _tag: "project-favicon",
     cwd: input.cwd,
   });
   const FallbackIcon = input.fallbackIcon ?? FolderIcon;
+
+  if (input.agentDriverKind) {
+    return (
+      <ProviderInstanceIcon
+        driverKind={input.agentDriverKind}
+        displayName={input.agentDisplayName ?? input.agentDriverKind}
+        {...(input.className ? { className: input.className } : {})}
+        iconClassName="size-3.5 shrink-0"
+      />
+    );
+  }
 
   if (!src || isProjectFaviconFallbackUrl(src)) {
     return <ProjectFaviconFallback className={input.className} icon={FallbackIcon} />;

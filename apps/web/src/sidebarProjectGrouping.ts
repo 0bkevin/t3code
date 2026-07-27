@@ -1,5 +1,5 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ScopedProjectRef } from "@t3tools/contracts";
+import type { EnvironmentId, ProviderDriverKind, ScopedProjectRef } from "@t3tools/contracts";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -37,6 +37,25 @@ export type SidebarProjectKind = "workspace" | "agent";
  */
 export function isAgentProject(project: Pick<Project, "agentInstanceId">): boolean {
   return project.agentInstanceId != null;
+}
+
+/**
+ * The driver kind backing an agent project's row icon, or `undefined` for an
+ * ordinary workspace project.
+ *
+ * Resolved through the instance rather than hard-coded to Hermes: Hermes is
+ * the only agent driver today, but the discriminator is `agentInstanceId`, so
+ * a second agent driver gets its own mark here without touching a call site.
+ * `undefined` when the instance has not streamed yet — the row falls back to
+ * the ordinary favicon/folder rather than flashing a wrong provider's mark.
+ */
+export function resolveAgentProjectDriverKind(
+  project: Pick<Project, "agentInstanceId">,
+  providerEntryByInstanceId: ReadonlyMap<string, { readonly driverKind: ProviderDriverKind }>,
+): ProviderDriverKind | undefined {
+  const instanceId = project.agentInstanceId;
+  if (instanceId == null) return undefined;
+  return providerEntryByInstanceId.get(String(instanceId))?.driverKind;
 }
 
 /**

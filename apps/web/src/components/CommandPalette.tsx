@@ -110,7 +110,10 @@ import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons"
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
 import { primaryServerKeybindingsAtom, primaryServerProvidersAtom } from "../state/server";
-import { resolveDefaultProviderModelSelection } from "../providerInstances";
+import {
+  deriveProviderInstanceEntries,
+  resolveDefaultProviderModelSelection,
+} from "../providerInstances";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import {
   Command,
@@ -131,6 +134,7 @@ import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore"
 import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
+  resolveAgentProjectDriverKind,
   selectProjectsOfKind,
 } from "../sidebarProjectGrouping";
 
@@ -528,6 +532,15 @@ function OpenCommandPaletteDialog(props: {
   // add. Id-keyed lookup maps below still read the unfiltered list: they
   // resolve a project the user is already in, they do not offer one.
   const workspaceProjects = useMemo(() => selectProjectsOfKind(projects, "workspace"), [projects]);
+  const providerEntryByInstanceId = useMemo(
+    () =>
+      new Map(
+        deriveProviderInstanceEntries(providers).map(
+          (entry) => [entry.instanceId as string, entry] as const,
+        ),
+      ),
+    [providers],
+  );
   const orderedProjects = useMemo(
     () =>
       orderItemsByPreferredIds({
@@ -567,6 +580,19 @@ function OpenCommandPaletteDialog(props: {
         clientSettings.sidebarProjectSortOrder,
       ),
     [clientSettings.sidebarProjectSortOrder, threads, unsortedProjectGroups],
+  );
+  // Agent rows, kept out of `projectGroups` so every "open a project" surface
+  // below stays workspace-only. Only the new-thread picker consumes these.
+  const agentProjectGroups = useMemo(
+    () =>
+      buildSidebarProjectSnapshots({
+        projects,
+        settings: projectGroupingSettings,
+        primaryEnvironmentId,
+        resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
+        kind: "agent",
+      }),
+    [environmentLabelById, primaryEnvironmentId, projectGroupingSettings, projects],
   );
   const contextualProjectRef = useMemo(
     () =>
@@ -813,11 +839,28 @@ function OpenCommandPaletteDialog(props: {
     [openProjectFromSearch, pickerProjects, projectGroupByTargetKey],
   );
 
+  /**
+   * Destinations for "New thread in…": every workspace, plus each agent.
+   *
+   * Agents are appended here rather than inside `pickerProjects`, which feeds
+   * "open project" too and routes through `buildSidebarProjectPickerEntries` —
+   * a deliberate gate against offering a synthetic project as a workspace.
+   * Starting a thread in an agent is a real action (v1's Agents section does
+   * exactly this, through the same `handleNewThread`); opening one as a
+   * project still is not.
+   */
+  const newThreadProjectTargets = useMemo(
+    () => [
+      ...pickerProjects,
+      ...agentProjectGroups.map((group) => ({ ...group, title: group.displayName })),
+    ],
+    [agentProjectGroups, pickerProjects],
+  );
   const projectThreadItems = useMemo(
     () =>
       enumerateCommandPaletteItems(
         buildProjectActionItems({
-          projects: pickerProjects,
+          projects: newThreadProjectTargets,
           valuePrefix: "new-thread-in",
           searchTerms: (project) => {
             const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
@@ -830,6 +873,8 @@ function OpenCommandPaletteDialog(props: {
               environmentId={project.environmentId}
               cwd={project.workspaceRoot}
               className={ITEM_ICON_CLASS}
+              agentDriverKind={resolveAgentProjectDriverKind(project, providerEntryByInstanceId)}
+              agentDisplayName={project.title}
             />
           ),
           runProject: async (project) => {
@@ -849,7 +894,13 @@ function OpenCommandPaletteDialog(props: {
           },
         }),
       ),
-    [contextualProjectRef, handleNewThread, pickerProjects, projectGroupByTargetKey],
+    [
+      contextualProjectRef,
+      handleNewThread,
+      newThreadProjectTargets,
+      projectGroupByTargetKey,
+      providerEntryByInstanceId,
+    ],
   );
 
   const allThreadItems = useMemo(
@@ -1155,10 +1206,21 @@ function OpenCommandPaletteDialog(props: {
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
-  if (workspaceProjects.length > 0) {
+  // Gate on everything a thread can be started in, not just workspaces: a user
+  // whose only project is an agent could otherwise open the palette and find
+  // no way to start a thread at all — the submenu's items were populated but
+  // the submenu itself never mounted.
+  if (newThreadProjectTargets.length > 0) {
     const activeProjectTitle =
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
       (currentProjectId ? (projectTitleById.get(currentProjectId) ?? null) : null);
+    // Only meaningful when there is exactly one destination; with several,
+    // an absent `defaultProjectRef` means "no obvious target" and the user
+    // should pick from the submenu rather than have one chosen for them.
+    const soleNewThreadProjectRef =
+      newThreadProjectTargets.length === 1 && newThreadProjectTargets[0]
+        ? scopeProjectRef(newThreadProjectTargets[0].environmentId, newThreadProjectTargets[0].id)
+        : null;
 
     if (activeProjectTitle) {
       actionItems.push({
@@ -1176,7 +1238,10 @@ function OpenCommandPaletteDialog(props: {
           await startNewThreadFromContext({
             activeDraftThread,
             activeThread: activeThread ?? undefined,
-            defaultProjectRef,
+            // `defaultProjectRef` resolves to workspaces only by design, so
+            // with an agent as the sole project it is null and this action
+            // would no-op. The title already names a project; fall back to it.
+            defaultProjectRef: defaultProjectRef ?? soleNewThreadProjectRef,
             handleNewThread,
           });
         },

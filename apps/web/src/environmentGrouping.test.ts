@@ -1,4 +1,9 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -13,6 +18,7 @@ import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
   isAgentProject,
+  resolveAgentProjectDriverKind,
   selectProjectsOfKind,
 } from "./sidebarProjectGrouping";
 import { orderItemsByPreferredIds } from "./components/Sidebar.logic";
@@ -403,6 +409,30 @@ describe("agent project exclusion", () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]?.agentInstanceId).toBe(agentInstanceId);
     expect(snapshots[0]?.displayName).toBe("Workstation");
+  });
+
+  it("resolves an agent project's driver kind through its instance", () => {
+    const entries = new Map([
+      [String(agentInstanceId), { driverKind: ProviderDriverKind.make("hermes") }],
+    ]);
+
+    expect(resolveAgentProjectDriverKind(makeAgentProject(), entries)).toBe("hermes");
+  });
+
+  it("leaves an ordinary workspace project without an agent mark", () => {
+    const entries = new Map([
+      [String(agentInstanceId), { driverKind: ProviderDriverKind.make("hermes") }],
+    ]);
+
+    // A workspace project keeps its directory favicon; returning a driver kind
+    // here would stamp a provider mark on a real codebase.
+    expect(resolveAgentProjectDriverKind(makeProject(), entries)).toBeUndefined();
+  });
+
+  it("falls back when the agent's instance has not streamed yet", () => {
+    // Provider snapshots arrive after the sidebar mounts. Guessing a kind here
+    // would flash the wrong provider's mark before the right one lands.
+    expect(resolveAgentProjectDriverKind(makeAgentProject(), new Map())).toBeUndefined();
   });
 
   it("never offers an agent project as a picker entry, even if one reaches the builder", () => {

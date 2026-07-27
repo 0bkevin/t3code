@@ -107,7 +107,8 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Plan Ready";
+    | "Plan Ready"
+    | "New";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -120,6 +121,10 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Connecting: 3,
   "Plan Ready": 2,
   Completed: 1,
+  // Same rank as Completed: both say "something landed here", neither is
+  // blocked on the user. A project rolling up both shows whichever it met
+  // first, which is as meaningful as picking between them.
+  New: 1,
 };
 
 type ThreadStatusInput = Pick<
@@ -128,6 +133,7 @@ type ThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "interactionMode"
+  | "latestNotification"
   | "latestTurn"
   | "session"
 > & {
@@ -226,15 +232,44 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestTurn.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return false;
+/**
+ * Whether `at` landed after the user last looked at the thread.
+ *
+ * Shared by the turn-completion and proactive-delivery checks so the two
+ * cannot drift on the edges that matter: an unparseable timestamp is not a
+ * signal, and a thread the user has never visited is deliberately NOT unread
+ * (it is new, not unseen-since-seen — the row's own novelty carries that).
+ */
+function isUnseenSinceLastVisit(at: string | null | undefined, lastVisitedAt?: string): boolean {
+  if (!at) return false;
+  const atMs = Date.parse(at);
+  if (Number.isNaN(atMs)) return false;
+  if (!lastVisitedAt) return false;
 
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
+  const lastVisitedMs = Date.parse(lastVisitedAt);
+  if (Number.isNaN(lastVisitedMs)) return true;
+  return atMs > lastVisitedMs;
+}
+
+export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
+  return isUnseenSinceLastVisit(thread.latestTurn?.completedAt, thread.lastVisitedAt);
+}
+
+/**
+ * Whether a proactive delivery arrived while the user was looking elsewhere.
+ *
+ * Deliveries bypass the turn machinery on purpose — they append as turnless
+ * messages — so `latestTurn` never moves for them and
+ * {@link hasUnseenCompletion} reports nothing. Without this, a cron result or
+ * an agent-initiated message would reorder the sidebar row and then sit there
+ * with no indication that anything had actually arrived.
+ *
+ * Includes lifecycle notices: they are quieter in the timeline, but the row
+ * badge answers "is there something here I haven't seen?", and a gateway
+ * notice is still something.
+ */
+export function hasUnseenNotification(thread: ThreadStatusInput): boolean {
+  return isUnseenSinceLastVisit(thread.latestNotification?.deliveredAt, thread.lastVisitedAt);
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -623,6 +658,20 @@ export function resolveThreadStatusPill(input: {
       label: "Completed",
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+      pulse: false,
+    };
+  }
+
+  // Checked after completion so a thread that both finished a turn and
+  // received a delivery reports the turn — that is the thing the user was
+  // waiting on.
+  if (hasUnseenNotification(thread)) {
+    return {
+      label: "New",
+      // Deliberately not sky (Working) or emerald (Completed): a delivery is
+      // neither in-flight nor the answer to something you asked for.
+      colorClass: "text-teal-600 dark:text-teal-300/90",
+      dotClass: "bg-teal-500 dark:bg-teal-300/90",
       pulse: false,
     };
   }
