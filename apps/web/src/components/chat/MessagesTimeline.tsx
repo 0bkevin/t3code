@@ -468,10 +468,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
+  // `isFirst` rides along because the list is virtualized: every row is the
+  // sole child of its own absolutely-positioned wrapper, so CSS `:first-child`
+  // matches ALL rows and cannot express "first in the timeline".
   const renderItem = useCallback(
-    ({ item }: { item: MessagesTimelineRow }) => (
+    ({ item, index }: { item: MessagesTimelineRow; index: number }) => (
       <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
-        <TimelineRowContent row={item} />
+        <TimelineRowContent row={item} isFirst={index === 0} />
       </div>
     ),
     [],
@@ -845,7 +848,13 @@ type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
 type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"][number];
 type TimelineRow = MessagesTimelineRow;
 
-const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
+const TimelineRowContent = memo(function TimelineRowContent({
+  row,
+  isFirst,
+}: {
+  row: TimelineRow;
+  isFirst: boolean;
+}) {
   return (
     <div
       className={cn(
@@ -868,7 +877,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
-        <AssistantTimelineRow row={row} />
+        <AssistantTimelineRow row={row} isFirst={isFirst} />
       ) : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
@@ -1076,7 +1085,13 @@ function NotificationHeader({
   );
 }
 
-function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+function AssistantTimelineRow({
+  row,
+  isFirst,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+  isFirst: boolean;
+}) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
   const notificationBadge = resolveNotificationBadge(row.message.notification);
@@ -1089,7 +1104,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           // A delivery interrupts rather than continues, so it gets the same
           // order of separation a user bubble gets from the reply above it —
           // each arrival reads as its own section, not a continuation.
-          notificationBadge ? "mt-14 first:mt-1" : null,
+          // `isFirst` is a prop, not `first:`: the virtualized list renders
+          // every row as the sole child of its own wrapper, so `:first-child`
+          // matched every delivery and suppressed the margin on all of them.
+          notificationBadge ? (isFirst ? "mt-1" : "mt-14") : null,
         )}
       >
         {notificationBadge ? (
