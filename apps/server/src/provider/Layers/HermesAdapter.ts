@@ -499,10 +499,14 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     Effect.gen(function* () {
       const threadId = context.session.threadId;
       const previousTurnId = context.session.activeTurnId;
-      yield* cancelPendingInteractions(
-        context,
-        "the Hermes gateway reconnected and the plugin no longer holds them.",
-      );
+      // Cancellation is deliberately NOT issued here. A connection-generation
+      // change covers two very different events: a plugin restart (its
+      // request dicts are gone, pending interactions are unanswerable) and a
+      // bare socket drop the plugin process survived (it still holds the
+      // requests and the turn is genuinely blocked on an answer). Which one
+      // happened is only knowable from the resume outcome below — cancelling
+      // up front wiped the approval UI while Hermes kept waiting for the
+      // response, hanging the thread with nothing left to click.
       const outcome = yield* broker
         .request(input.instanceId, {
           type: "session.ensure",
@@ -516,7 +520,8 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       // Anything other than a clean session.ready leaves us unable to tell
       // whether Hermes is still generating, with no channel to ask. Leaving the
       // thread "running" would hang it, so it settles with the reason spelled
-      // out instead.
+      // out instead — and its pending interactions are unanswerable, so they
+      // are cancelled too.
       const failure =
         outcome._tag === "Failure"
           ? `Hermes could not resume this thread after reconnecting: ${outcome.failure.detail}`
@@ -526,6 +531,10 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
               ? `Hermes returned '${outcome.success.type}' instead of session.ready while resuming this thread.`
               : undefined;
       if (failure !== undefined) {
+        yield* cancelPendingInteractions(
+          context,
+          "the Hermes gateway reconnected but this thread could not be resumed.",
+        );
         if (previousTurnId) return yield* settleDeadTurn(context, previousTurnId, failure);
         updateSession(context, { status: "error", lastError: failure });
         return;
@@ -534,7 +543,8 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       const ready = outcome.success;
 
       // The session may have been stopped or exited while the request was in
-      // flight; do not resurrect it.
+      // flight; do not resurrect it. Its pending maps go with it — nothing to
+      // cancel on a context no longer routing events.
       if (sessions.get(threadId) !== context) return;
 
       // Hermes owns the session id and a restarted plugin mints a new one.
@@ -549,13 +559,22 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
 
       const activeTurnId = ready.activeTurnId;
       if (activeTurnId !== undefined) {
-        // The turn outlived the socket. Keep streaming into it and emit nothing
-        // disruptive — what follows belongs to the turn the UI already renders.
+        // The turn outlived the socket, and with it the plugin process — its
+        // request dicts are intact and any pending approval/user-input is
+        // still answerable over the replacement connection. Keep streaming
+        // into the turn, keep the requests on screen, emit nothing disruptive.
         updateSession(context, { status: "running", activeTurnId });
         trackTurn(context, activeTurnId);
         return;
       }
 
+      // No active turn on the Hermes side: the plugin restarted (or finished
+      // and forgot). Its request dicts are per-process, so whatever the user
+      // is still looking at can only ever be answered `request-not-found`.
+      yield* cancelPendingInteractions(
+        context,
+        "the Hermes gateway reconnected and the plugin no longer holds them.",
+      );
       if (previousTurnId) {
         yield* settleDeadTurn(
           context,

@@ -924,9 +924,11 @@ it.effect("cancels pending approvals and user input on reconnect without decidin
     yield* drain;
 
     // The plugin restarts and forgets both requests; answering them afterwards
-    // would come back `request-not-found` and park the turn forever.
+    // would come back `request-not-found` and park the turn forever. A
+    // restarted plugin reports no active turn — that absence is exactly how
+    // the adapter knows the requests died with the process.
     yield* harness.disconnect;
-    harness.state.resumeActiveTurnId = started.turnId;
+    harness.state.resumeActiveTurnId = undefined;
     yield* harness.reconnect;
 
     const resolvedApproval = seen.find(
@@ -950,6 +952,61 @@ it.effect("cancels pending approvals and user input on reconnect without decidin
     if (warning?.type === "runtime.warning") {
       assert.include(warning.payload.message, "cancelled");
     }
+
+    yield* Fiber.interrupt(fiber);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps pending interactions when the turn survives the reconnect", () =>
+  Effect.gen(function* () {
+    // A bare socket drop the plugin process survived: its request dicts are
+    // intact and the turn is genuinely blocked on the user's answer. Cancelling
+    // here is the hang Macroscope flagged — the UI loses the request while
+    // Hermes keeps waiting for the response forever.
+    const instanceId = ProviderInstanceId.make("hermes_pending_alive");
+    const threadId = ThreadId.make("thread-pending-alive");
+    const sessionId = HermesGatewaySessionId.make("session-pending-alive");
+    const harness = yield* makeReconnectHarness({
+      instanceId,
+      threadId,
+      initialSessionId: sessionId,
+    });
+
+    yield* harness.adapter.startSession({
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+    const started = yield* harness.adapter.sendTurn({ threadId, input: "needs approval" });
+    const { seen, fiber } = yield* collectEvents(harness.adapter);
+
+    yield* PubSub.publish(harness.brokerEvents, {
+      instanceId,
+      message: {
+        type: "request.opened",
+        protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+        threadId,
+        sessionId,
+        turnId: started.turnId,
+        requestId: HermesGatewayRequestId.make("approval-still-live"),
+        requestType: "command_execution_approval",
+        detail: "Hermes wants to run a command",
+      },
+    });
+    yield* drain;
+
+    yield* harness.disconnect;
+    harness.state.resumeActiveTurnId = started.turnId;
+    yield* harness.reconnect;
+
+    assert.isUndefined(
+      seen.find((event) => event.type === "request.resolved"),
+      "a request the plugin still holds must stay open",
+    );
+    assert.isUndefined(
+      seen.find((event) => event.type === "runtime.warning"),
+      "no cancellation warning may appear for a surviving turn",
+    );
 
     yield* Fiber.interrupt(fiber);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
