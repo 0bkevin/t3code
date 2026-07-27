@@ -11,7 +11,6 @@ from .adapter import (
 )
 from .cli import register_cli, t3_command
 from .home import HOME_CHANNEL_ENV, standalone_send
-from .home import HOME_CHANNEL_ENV, standalone_send
 
 
 def _pre_tool_call(

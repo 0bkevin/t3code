@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import contextlib
 import json
 import pathlib
 import sys

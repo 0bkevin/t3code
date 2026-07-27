@@ -130,12 +130,14 @@ def save_home_thread_id(thread_id: str) -> bool:
 
         save_env_value(HOME_CHANNEL_ENV, value)
         saved = True
-    except Exception:  # noqa: BLE001 - a read-only .env must not break the handshake
+    except Exception as exc:  # noqa: BLE001 - a read-only .env must not break the handshake
+        # No stack trace: outside a Hermes install this is simply
+        # ModuleNotFoundError for hermes_cli, which is expected and noisy.
         logger.warning(
-            "Could not persist %s; T3 home delivery will use the in-process "
-            "value until the next reconnect",
+            "Could not persist %s (%s); T3 home delivery will use the "
+            "in-process value until the next reconnect",
             HOME_CHANNEL_ENV,
-            exc_info=True,
+            exc,
         )
     # Mirror into this process exactly as enrollment does (`cli.py`): the
     # running gateway resolves the home channel from the environment and must

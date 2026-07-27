@@ -80,16 +80,6 @@ def delivery_id() -> str:
     return str(uuid.uuid4())
 
 
-def delivery_id() -> str:
-    """Mint the idempotency key for one home delivery.
-
-    Stable across retries by construction: the id is minted once, when the
-    delivery is created, and the queued copy carries it verbatim through every
-    flush. T3 dedupes on it, which is what makes double-flushing safe.
-    """
-    return str(uuid.uuid4())
-
-
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -372,52 +362,6 @@ def home_deliver(
         text=normalized_text,
         createdAt=created_at or iso_now(),
     )
-
-
-def home_deliver(
-    *,
-    delivery_id_value: str,
-    thread_id: str,
-    kind: str,
-    label: str,
-    text: str,
-    created_at: str | None = None,
-) -> dict[str, Any]:
-    """Build a `home.deliver` frame with every wire bound already applied.
-
-    Like `protocol_error`, this wraps the generic `frame()` helper rather than
-    assembling the envelope itself — but unlike the plain outbound frames the
-    adapter builds inline, a delivery has server-side validation the plugin
-    must not trip: `label` is trimmed non-empty <=200 chars and `text` is
-    1..120000 chars in the T3 contract. Normalizing here rather than at the
-    call sites means a queued delivery is already wire-valid on disk, so a
-    flush after a plugin upgrade cannot resurrect a payload the server will
-    reject — the plugin would purge it only on an ack that never comes.
-
-    An unknown `kind` degrades to `"other"` and an empty label to `"Hermes"`:
-    a misclassified badge is the documented worst case, a dropped delivery is
-    not.
-    """
-    normalized_kind = str(kind or "").strip().lower()
-    if normalized_kind not in HOME_DELIVERY_KINDS:
-        normalized_kind = "other"
-    normalized_label = str(label or "").strip()[:MAX_HOME_DELIVERY_LABEL_CHARS].strip()
-    if not normalized_label:
-        normalized_label = "Hermes"
-    normalized_text = str(text or "")[:MAX_HOME_DELIVERY_TEXT_CHARS]
-    if not normalized_text:
-        normalized_text = " "
-    return frame(
-        "home.deliver",
-        deliveryId=delivery_id_value,
-        threadId=str(thread_id),
-        kind=normalized_kind,
-        label=normalized_label,
-        text=normalized_text,
-        createdAt=created_at or iso_now(),
-    )
-
-
 def protocol_error(
     code: str,
     message: str,

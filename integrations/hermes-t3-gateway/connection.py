@@ -22,7 +22,6 @@ except ImportError:  # pragma: no cover - Hermes currently installs websockets
 MessageHandler = Callable[[dict[str, Any]], Awaitable[None]]
 StateHandler = Callable[[bool, str | None], Awaitable[None] | None]
 AcceptedHandler = Callable[[dict[str, Any]], Awaitable[None]]
-AcceptedHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class ConnectionRejected(RuntimeError):
@@ -331,20 +330,6 @@ class T3GatewayConnection:
                 break
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30.0)
-
-    async def _notify_accepted(self, accepted: dict[str, Any]) -> None:
-        """Hand the `connection.accepted` frame to the adapter, best-effort.
-
-        A failure here — a read-only `.env`, an unwritable queue file — must
-        not tear down a connection that authenticated successfully, so it is
-        logged and swallowed exactly like the state callback.
-        """
-        if self._on_accepted is None:
-            return
-        try:
-            await self._on_accepted(accepted)
-        except Exception:  # noqa: BLE001 - reconciliation must not fail a good handshake
-            logger.warning("T3 connection accepted callback failed", exc_info=True)
 
     async def _notify_accepted(self, accepted: dict[str, Any]) -> None:
         """Hand the `connection.accepted` frame to the adapter, best-effort.
