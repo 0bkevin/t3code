@@ -103,7 +103,12 @@ import {
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
-import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
+import {
+  formatChatTimestampTooltip,
+  formatRelativeTimeLabel,
+  formatShortTimestamp,
+} from "../../timestampFormat";
+import { useNowMinute } from "../../hooks/useNowMinute";
 
 import {
   buildInlineTerminalContextText,
@@ -1027,17 +1032,24 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
  * The timestamp is always visible here, unlike the hover-revealed one on an
  * ordinary assistant message. A reply is dated by the act of asking for it —
  * you were there. A delivery arrives while you are not, so "when" is part of
- * reading it at all.
+ * reading it at all. And because "while you were not there" is the point, the
+ * default rendering is relative ("12m ago") — how stale a delivery is matters
+ * before which wall-clock minute it landed on. The exact date and time live in
+ * the tooltip. `useNowMinute` re-renders the label on minute boundaries so an
+ * open thread doesn't show a frozen "1m ago"; the label's own granularity is
+ * never finer than a minute, so a minute tick is exact, not approximate.
  */
 function NotificationHeader({
   badge,
-  timestamp,
+  deliveredAtIso,
   timestampTooltip,
 }: {
   badge: NotificationBadgePresentation;
-  timestamp: string;
+  deliveredAtIso: string;
   timestampTooltip: string;
 }) {
+  useNowMinute();
+  const relativeLabel = formatRelativeTimeLabel(deliveredAtIso);
   return (
     <div
       className="mb-2 flex items-baseline gap-2 border-b border-border/60 pb-1.5"
@@ -1056,7 +1068,7 @@ function NotificationHeader({
         <TooltipTrigger
           render={<p className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground/80" />}
         >
-          {timestamp}
+          {relativeLabel}
         </TooltipTrigger>
         <TooltipPopup>{timestampTooltip}</TooltipPopup>
       </Tooltip>
@@ -1082,7 +1094,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         {notificationBadge ? (
           <NotificationHeader
             badge={notificationBadge}
-            timestamp={formatShortTimestamp(row.message.updatedAt, ctx.timestampFormat)}
+            deliveredAtIso={row.message.updatedAt}
             timestampTooltip={formatChatTimestampTooltip(
               row.message.updatedAt,
               ctx.timestampFormat,
