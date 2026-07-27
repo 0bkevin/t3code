@@ -1,6 +1,7 @@
 import {
   CommandId,
   EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -11,6 +12,7 @@ import {
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -25,7 +27,7 @@ import {
 } from "../sourceControl/gitHubPullRequestMonitor.ts";
 import * as MonitorRegistry from "./MonitorRegistry.ts";
 import { cursorFromSnapshot } from "./monitorDiff.ts";
-import { make, PullRequestSnapshotFetcher } from "./PullRequestMonitor.ts";
+import { make, PullRequestMonitor, PullRequestSnapshotFetcher } from "./PullRequestMonitor.ts";
 
 const threadId = ThreadId.make("monitor-thread");
 const now = "2026-07-23T00:00:00.000Z";
@@ -92,7 +94,17 @@ const thread = (busy = false): OrchestrationThread => ({
   archivedAt: null,
   settledOverride: null,
   settledAt: null,
-  monitor: null,
+  monitor: {
+    generation: 1,
+    prNumber: 42,
+    status: "monitoring",
+    blockersSummary: "",
+    headSha: "head-1",
+    wakeCount: 0,
+    startedAt: now,
+    endedAt: null,
+    endedReason: null,
+  },
   deletedAt: null,
   messages: [],
   proposedPlans: [],
@@ -110,7 +122,11 @@ const harness = Effect.fn("PullRequestMonitor.testHarness")(function* (input: {
   readonly failFreshFetch?: boolean;
   readonly reconcileFailures?: number;
   readonly reconcileThreadId?: ThreadId;
+  readonly reconcileThreadIds?: ReadonlyArray<ThreadId>;
+  readonly failReconcileThreadId?: ThreadId;
+  readonly releaseWakeOnDispatch?: boolean;
   readonly busy?: { value: boolean };
+  readonly queuedUserTurn?: boolean;
   readonly afterUpdate?: () => void;
   readonly changeGenerationAfterUpdate?: boolean;
 }) {
@@ -125,6 +141,7 @@ const harness = Effect.fn("PullRequestMonitor.testHarness")(function* (input: {
   };
   const commands: OrchestrationCommand[] = [];
   const ordering: string[] = [];
+  let monitorService: PullRequestMonitor["Service"] | undefined;
   const registry = MonitorRegistry.MonitorRegistry.of({
     registerIfAbsent: (next) =>
       Effect.sync(() => {
@@ -202,6 +219,29 @@ const harness = Effect.fn("PullRequestMonitor.testHarness")(function* (input: {
       }
       if (command.type === "thread.turn.start") {
         ordering.push("dispatch");
+        if (input.releaseWakeOnDispatch && monitorService) {
+          return monitorService
+            .handleDomainEvent({
+              sequence: 1,
+              eventId: EventId.make("user-turn"),
+              aggregateKind: "thread",
+              aggregateId: threadId,
+              occurredAt: now,
+              commandId: CommandId.make("user-turn"),
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              type: "thread.turn-start-requested",
+              payload: {
+                threadId,
+                messageId: MessageId.make("user-message"),
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: now,
+              },
+            })
+            .pipe(Effect.as({ sequence: commands.length }));
+        }
         if (input.failWake) {
           return Effect.fail(
             new OrchestrationCommandInvariantError({
@@ -216,6 +256,17 @@ const harness = Effect.fn("PullRequestMonitor.testHarness")(function* (input: {
           new OrchestrationCommandInvariantError({
             commandType: command.type,
             detail: "rejected",
+          }),
+        );
+      }
+      if (
+        command.type === "thread.monitor.end" &&
+        command.threadId === input.failReconcileThreadId
+      ) {
+        return Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "reconcile rejected",
           }),
         );
       }
@@ -258,40 +309,71 @@ const harness = Effect.fn("PullRequestMonitor.testHarness")(function* (input: {
             return Effect.succeed({
               snapshotSequence: 0,
               projects: [],
-              threads: input.reconcileThreadId
-                ? [
-                    {
-                      ...thread(),
-                      id: input.reconcileThreadId,
-                      monitor: {
-                        status: "monitoring" as const,
-                        prNumber: 42,
-                        startedAt: now,
-                        blockersSummary: "",
-                        headSha: "head-1",
-                        wakeCount: 0,
-                        updatedAt: now,
-                        endedAt: null,
-                        endedReason: null,
-                      },
-                      latestUserMessageAt: null,
-                      hasPendingApprovals: false,
-                      hasPendingUserInput: false,
-                      hasActionableProposedPlan: false,
-                    },
-                  ]
-                : [],
+              threads: (
+                input.reconcileThreadIds ??
+                (input.reconcileThreadId ? [input.reconcileThreadId] : [])
+              ).map((id) => ({
+                ...thread(),
+                id,
+                monitor: {
+                  generation: 1,
+                  status: "monitoring" as const,
+                  prNumber: 42,
+                  startedAt: now,
+                  blockersSummary: "",
+                  headSha: "head-1",
+                  wakeCount: 0,
+                  updatedAt: now,
+                  endedAt: null,
+                  endedReason: null,
+                },
+                latestUserMessageAt: null,
+                hasPendingApprovals: false,
+                hasPendingUserInput: false,
+                hasActionableProposedPlan: false,
+              })),
               updatedAt: now,
             });
           },
           getThreadDetailById: () =>
-            Effect.succeed(Option.some(thread(input.busy?.value ?? false))),
+            Effect.map(DateTime.now, (currentDateTime) => {
+              const detail = thread(input.busy?.value ?? false);
+              const currentTime = DateTime.formatIso(currentDateTime);
+              return Option.some(
+                input.queuedUserTurn
+                  ? {
+                      ...detail,
+                      messages: [
+                        {
+                          id: MessageId.make("queued-message"),
+                          role: "user" as const,
+                          text: "user work",
+                          attachments: [],
+                          turnId: null,
+                          streaming: false,
+                          createdAt: currentTime,
+                          updatedAt: currentTime,
+                        },
+                      ],
+                    }
+                  : detail,
+              );
+            }),
         }),
         NodeServices.layer,
       ),
     ),
   );
-  return { monitor, commands, ordering, getRegistration: () => registration };
+  monitorService = monitor;
+  return {
+    monitor,
+    commands,
+    ordering,
+    getRegistration: () => registration,
+    replaceGeneration: (generation: number) => {
+      if (registration) registration = { ...registration, generation };
+    },
+  };
 });
 
 const endReason = (commands: ReadonlyArray<OrchestrationCommand>) =>
@@ -319,7 +401,10 @@ describe("PullRequestMonitor dispatch protocol", () => {
       const ready = snapshot({
         checkRuns: [{ ...snapshot().checkRuns[0]!, status: "completed", conclusion: "success" }],
       });
-      const h = yield* harness({ initial: snapshot(), current: { value: ready } });
+      const h = yield* harness({
+        initial: snapshot(),
+        current: { value: ready },
+      });
       yield* h.monitor.pollOnce;
       assert.deepStrictEqual(
         h.commands.map((command) => command.type),
@@ -333,12 +418,16 @@ describe("PullRequestMonitor dispatch protocol", () => {
       const oldComment = {
         ...comment("old"),
         createdAt: "2026-07-22T00:00:00.000Z",
+        updatedAt: "2026-07-22T00:00:00.000Z",
       };
       const ready = snapshot({
         reviewThreads: [oldComment],
         checkRuns: [{ ...snapshot().checkRuns[0]!, status: "completed", conclusion: "success" }],
       });
-      const h = yield* harness({ initial: snapshot(), current: { value: ready } });
+      const h = yield* harness({
+        initial: snapshot({ reviewThreads: [oldComment] }),
+        current: { value: ready },
+      });
       yield* h.monitor.pollOnce;
       assert.strictEqual(endReason(h.commands)?.type, "thread.monitor.end");
     }),
@@ -356,6 +445,31 @@ describe("PullRequestMonitor dispatch protocol", () => {
     }),
   );
 
+  it.effect("ready defers to an actionable diff", () =>
+    Effect.gen(function* () {
+      const h = yield* harness({
+        initial: snapshot(),
+        current: {
+          value: snapshot({
+            reviewThreads: [comment("one")],
+            checkRuns: [
+              { ...snapshot().checkRuns[0]!, status: "completed", conclusion: "success" },
+            ],
+          }),
+        },
+      });
+      yield* h.monitor.pollOnce;
+      assert.strictEqual(
+        h.commands.some((command) => command.type === "thread.turn.start"),
+        true,
+      );
+      assert.strictEqual(
+        h.commands.some((command) => command.type === "thread.monitor.end"),
+        false,
+      );
+    }),
+  );
+
   it.effect("failed-dispatch-preserves-cursor", () =>
     Effect.gen(function* () {
       const initial = snapshot();
@@ -367,6 +481,19 @@ describe("PullRequestMonitor dispatch protocol", () => {
       yield* h.monitor.pollOnce;
       assert.deepStrictEqual(h.getRegistration()?.cursor, cursorFromSnapshot(initial));
       assert.strictEqual(h.getRegistration()?.wakeCount, 0);
+    }),
+  );
+
+  it.effect("conditional ack preserves a user-turn release", () =>
+    Effect.gen(function* () {
+      const initial = snapshot();
+      const h = yield* harness({
+        initial,
+        current: { value: snapshot({ reviewThreads: [comment("one")] }) },
+        releaseWakeOnDispatch: true,
+      });
+      yield* h.monitor.pollOnce;
+      assert.deepStrictEqual(h.getRegistration()?.cursor, cursorFromSnapshot(initial));
     }),
   );
 
@@ -463,6 +590,21 @@ describe("PullRequestMonitor dispatch protocol", () => {
     }),
   );
 
+  it.effect("queued user turn blocks a monitor wake", () =>
+    Effect.gen(function* () {
+      const h = yield* harness({
+        initial: snapshot(),
+        current: { value: snapshot({ reviewThreads: [comment("one")] }) },
+        queuedUserTurn: true,
+      });
+      yield* h.monitor.pollOnce;
+      assert.strictEqual(
+        h.commands.some((command) => command.type === "thread.turn.start"),
+        false,
+      );
+    }),
+  );
+
   it.effect("coalesces events while a wake is in flight", () =>
     Effect.gen(function* () {
       const current = { value: snapshot({ reviewThreads: [comment("one")] }) };
@@ -521,49 +663,30 @@ describe("PullRequestMonitor dispatch protocol", () => {
     }),
   );
 
-  it.effect("archives by projecting stopped before removing the registration", () =>
+  it.effect("delayed ended event preserves a newer generation", () =>
     Effect.gen(function* () {
       const h = yield* harness({ initial: snapshot(), current: { value: snapshot() } });
+      h.replaceGeneration(2);
       yield* h.monitor.handleDomainEvent({
         sequence: 1,
-        eventId: EventId.make("archived"),
+        eventId: EventId.make("ended"),
         aggregateKind: "thread",
         aggregateId: threadId,
         occurredAt: now,
-        commandId: CommandId.make("archived"),
+        commandId: CommandId.make("ended"),
         causationEventId: null,
         correlationId: null,
         metadata: {},
-        type: "thread.archived",
-        payload: { threadId, archivedAt: now, updatedAt: now },
+        type: "thread.monitor-ended",
+        payload: {
+          threadId,
+          generation: 1,
+          reason: "stopped",
+          blockersSummary: "",
+          endedAt: now,
+        },
       });
-      const ended = endReason(h.commands);
-      assert.strictEqual(ended?.type === "thread.monitor.end" && ended.reason, "stopped");
-      assert.strictEqual(h.getRegistration(), undefined);
-    }),
-  );
-
-  it.effect("removes an archived registration when projecting monitor end fails", () =>
-    Effect.gen(function* () {
-      const h = yield* harness({
-        initial: snapshot(),
-        current: { value: snapshot() },
-        failEnd: true,
-      });
-      yield* h.monitor.handleDomainEvent({
-        sequence: 1,
-        eventId: EventId.make("archived"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: now,
-        commandId: CommandId.make("archived"),
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.archived",
-        payload: { threadId, archivedAt: now, updatedAt: now },
-      });
-      assert.strictEqual(h.getRegistration(), undefined);
+      assert.strictEqual(h.getRegistration()?.generation, 2);
     }),
   );
 
@@ -589,6 +712,26 @@ describe("PullRequestMonitor dispatch protocol", () => {
       assert.strictEqual(
         h.commands.some(
           (command) => command.type === "thread.monitor.end" && command.threadId === orphanThreadId,
+        ),
+        true,
+      );
+    }),
+  );
+
+  it.effect("boot reconcile continues past a per-thread failure", () =>
+    Effect.gen(function* () {
+      const failing = ThreadId.make("failing-orphan");
+      const succeeding = ThreadId.make("succeeding-orphan");
+      const h = yield* harness({
+        initial: snapshot(),
+        current: { value: snapshot() },
+        reconcileThreadIds: [failing, succeeding],
+        failReconcileThreadId: failing,
+      });
+      yield* h.monitor.pollOnce;
+      assert.strictEqual(
+        h.commands.some(
+          (command) => command.type === "thread.monitor.end" && command.threadId === succeeding,
         ),
         true,
       );

@@ -18,7 +18,11 @@ export interface PullRequestMonitorCursor {
 
 export type PullRequestMonitorActionableEvent =
   | { readonly kind: "new-review-comment"; readonly threadId: string; readonly edited: boolean }
-  | { readonly kind: "changes-requested-review"; readonly reviewId: string }
+  | {
+      readonly kind: "changes-requested-review";
+      readonly reviewId: string;
+      readonly body: string;
+    }
   | { readonly kind: "check-failed"; readonly checkRunId: string; readonly checkName: string }
   | { readonly kind: "behind-base" };
 
@@ -69,11 +73,12 @@ export function diffPullRequestMonitorSnapshot(
   const actionableEvents: PullRequestMonitorActionableEvent[] = [];
   for (const thread of snapshot.reviewThreads) {
     const previous = previousCursor.threadVersions[thread.id];
-    if (
+    const reopened = previous?.resolved === true && !thread.resolved;
+    const changedComment =
       !thread.latestCommentByViewer &&
       !thread.resolved &&
-      (!previous || previous.resolved || previous.updatedAt !== thread.updatedAt)
-    ) {
+      (!previous || previous.updatedAt !== thread.updatedAt);
+    if (reopened || changedComment) {
       actionableEvents.push({
         kind: "new-review-comment",
         threadId: thread.id,
@@ -97,7 +102,11 @@ export function diffPullRequestMonitorSnapshot(
       review.state === "changes-requested" &&
       previousCursor.reviewStates[review.id] !== "changes-requested"
     ) {
-      actionableEvents.push({ kind: "changes-requested-review", reviewId: review.id });
+      actionableEvents.push({
+        kind: "changes-requested-review",
+        reviewId: review.id,
+        body: review.body.slice(0, 500),
+      });
     }
   }
   for (const check of snapshot.checkRuns.filter((item) => item.headSha === snapshot.headSha)) {

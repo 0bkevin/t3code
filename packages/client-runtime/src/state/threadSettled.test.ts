@@ -72,6 +72,7 @@ function makeShell(input: {
       input.monitorStatus === undefined
         ? null
         : {
+            generation: 1,
             prNumber: 4412,
             status: input.monitorStatus,
             blockersSummary: "2 checks pending · waiting on Bugbot",

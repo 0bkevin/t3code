@@ -401,13 +401,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      const archivedEvent: PlannedOrchestrationEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -421,6 +421,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
+      if (thread.monitor?.status !== "monitoring") return archivedEvent;
+      return [
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.monitor-ended",
+          payload: {
+            threadId: command.threadId,
+            generation: thread.monitor.generation,
+            reason: "stopped",
+            blockersSummary: thread.monitor.blockersSummary,
+            endedAt: occurredAt,
+          },
+        },
+        archivedEvent,
+      ];
     }
 
     case "thread.unarchive": {
@@ -516,6 +536,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           type: "thread.monitor-ended",
           payload: {
             threadId: command.threadId,
+            generation: thread.monitor.generation,
             reason: "stopped",
             blockersSummary: thread.monitor.blockersSummary,
             endedAt: occurredAt,
@@ -547,6 +568,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.monitor-started",
         payload: {
           threadId: command.threadId,
+          generation: command.generation,
           prNumber: command.prNumber,
           blockersSummary:
             thread.monitor?.status === "monitoring"
@@ -596,6 +618,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `thread ${command.threadId} has no active monitor`,
         });
       }
+      if (command.generation !== undefined && command.generation !== thread.monitor.generation) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} monitor generation does not match`,
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -606,6 +634,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.monitor-snapshot-updated",
         payload: {
           threadId: command.threadId,
+          generation: thread.monitor.generation,
           blockersSummary: command.blockersSummary,
           headSha: command.headSha,
           wakeCount: command.wakeCount,
@@ -626,6 +655,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `thread ${command.threadId} has no active monitor`,
         });
       }
+      const generation = command.generation ?? thread.monitor.generation;
+      if (generation !== thread.monitor.generation) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} monitor generation does not match`,
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -636,6 +672,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.monitor-ended",
         payload: {
           threadId: command.threadId,
+          generation,
           reason: command.reason,
           blockersSummary: command.blockersSummary,
           endedAt: command.endedAt,

@@ -100,6 +100,10 @@ export interface ThreadStatusPill {
     | "Connecting"
     | "Completed"
     | "Monitoring"
+    | "Ready to merge"
+    | "No known blockers"
+    | "Needs attention"
+    | "Failed"
     | "Pending Approval"
     | "Awaiting Input"
     | "Plan Ready";
@@ -109,15 +113,19 @@ export interface ThreadStatusPill {
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 6,
-  "Awaiting Input": 5,
+  "Pending Approval": 8,
+  "Awaiting Input": 7,
+  Failed: 6,
+  "Needs attention": 5,
   // Monitoring outranks Working/Completed so the pill stays steady through
-  // wake-turn fixes (decision D6), but sits below approval/input so a
-  // blocked state is never swallowed (invariant I4).
+  // wake-turn fixes (decision D6), but sits below blocked/failed states so an
+  // actionable state is never swallowed (invariant I4).
   Monitoring: 4,
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
+  "Ready to merge": 1,
+  "No known blockers": 1,
   Completed: 1,
 };
 
@@ -138,7 +146,7 @@ type ThreadStatusInput = Pick<
 // The steady sidebar-facing distillation of a thread's PR monitor. Cyan
 // while monitoring, emerald at the payoff, a subtle zinc marker for a dead
 // babysitter — everything else hands back to the normal status treatment.
-export type MonitorSidebarState = "monitoring" | "ready" | "stopped";
+export type MonitorSidebarState = "monitoring" | "ready" | "needs-attention" | "stopped";
 
 export function resolveMonitorSidebarState(
   monitor: SidebarThreadSummary["monitor"],
@@ -146,10 +154,11 @@ export function resolveMonitorSidebarState(
   if (monitor == null) return null;
   if (monitor.status === "monitoring") return "monitoring";
   if (monitor.status === "ready") return "ready";
+  if (monitor.status === "needs-attention") return "needs-attention";
   // D2 floor: a session-scoped monitor whose session died gets a visible
   // "Monitoring stopped" marker so a dead babysitter is distinguishable from
-  // a quiet, live one. Other terminal reasons (terminal/stopped-by-user/
-  // needs-attention) defer to the normal settled/status treatment.
+  // a quiet, live one. Other terminal reasons defer to the normal
+  // settled/status treatment.
   if (monitor.status === "stopped" && monitor.endedReason === "session-ended") return "stopped";
   return null;
 }
@@ -264,6 +273,17 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
   return completedAt > lastVisitedAt;
+}
+
+function hasUnseenMonitorEnd(thread: ThreadStatusInput): boolean {
+  if (!thread.monitor?.endedAt) return false;
+  const endedAt = Date.parse(thread.monitor.endedAt);
+  if (Number.isNaN(endedAt)) return false;
+  if (!thread.lastVisitedAt) return false;
+
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  if (Number.isNaN(lastVisitedAt)) return true;
+  return endedAt > lastVisitedAt;
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -596,15 +616,42 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  if (thread.session?.status === "error") {
+    return {
+      label: "Failed",
+      colorClass: "text-red-600 dark:text-red-300/90",
+      dotClass: "bg-red-500 dark:bg-red-300/90",
+      pulse: false,
+    };
+  }
+
+  if (thread.monitor?.status === "needs-attention") {
+    return {
+      label: "Needs attention",
+      colorClass: "text-amber-700 dark:text-amber-300",
+      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      pulse: false,
+    };
+  }
+
   // An active PR monitor keeps a steady "Monitoring" pill for the whole mode,
   // including through wake-turn fixes — it outranks Working/Completed but,
-  // being placed after approval/input above, never swallows a blocked state
-  // (D6, invariant I4). The PR number and blockers ride in the sub-line.
-  if (thread.monitor != null && thread.monitor.status === "monitoring") {
+  // being placed after actionable states above, never swallows a blocked or
+  // failed state (D6, invariant I4). The PR number and blockers ride in the sub-line.
+  if (thread.monitor?.status === "monitoring") {
     return {
       label: "Monitoring",
       colorClass: "text-cyan-600 dark:text-cyan-300/90",
       dotClass: "bg-cyan-500 dark:bg-cyan-300/90",
+      pulse: false,
+    };
+  }
+
+  if (thread.monitor?.status === "ready" && hasUnseenMonitorEnd(thread)) {
+    return {
+      label: resolveMonitorReadyLabel(thread.monitor.blockersSummary),
+      colorClass: "text-emerald-600 dark:text-emerald-300/90",
+      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
       pulse: false,
     };
   }

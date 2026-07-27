@@ -18,6 +18,9 @@ export interface PullRequestMonitorReadiness {
 
 export function computeReadiness(
   snapshot: PullRequestMonitorSnapshot,
+  previousThreadVersions: Readonly<
+    Record<string, { readonly updatedAt: string; readonly resolved: boolean }>
+  > = {},
 ): PullRequestMonitorReadiness {
   const blockers: PullRequestMonitorBlocker[] = [];
   if (snapshot.state !== "open") blockers.push({ kind: "terminal", state: snapshot.state });
@@ -38,7 +41,15 @@ export function computeReadiness(
       blockers.push({ kind: "check-failed", checkName: check.name });
     }
   }
+  const latestOpinionatedReviews = new Map<string, (typeof snapshot.reviews)[number]>();
   for (const review of snapshot.reviews) {
+    if (review.state !== "changes-requested" && review.state !== "approved") continue;
+    const previous = latestOpinionatedReviews.get(review.author.login);
+    if (previous === undefined || (review.submittedAt ?? "") > (previous.submittedAt ?? "")) {
+      latestOpinionatedReviews.set(review.author.login, review);
+    }
+  }
+  for (const review of latestOpinionatedReviews.values()) {
     // Stale approvals must not count toward green, but a changes-requested
     // review blocks regardless of which commit it reviewed — GitHub keeps it
     // active until dismissed or superseded by a re-review.
@@ -47,10 +58,12 @@ export function computeReadiness(
     }
   }
   for (const thread of snapshot.reviewThreads) {
-    if (
-      !thread.resolved &&
-      (!snapshot.monitoringStartedAt || thread.createdAt >= snapshot.monitoringStartedAt)
-    ) {
+    const previous = previousThreadVersions[thread.id];
+    const changedSinceStart =
+      snapshot.monitoringStartedAt === undefined ||
+      thread.updatedAt > snapshot.monitoringStartedAt ||
+      (previous?.resolved === true && !thread.resolved);
+    if (!thread.resolved && changedSinceStart) {
       blockers.push({ kind: "unresolved-thread", threadId: thread.id });
     }
   }

@@ -156,6 +156,7 @@ export const endActiveMonitorForSession = (threadId: ThreadId): Effect.Effect<vo
       type: "thread.monitor.end",
       commandId,
       threadId,
+      generation: registration.value.generation,
       reason: "session-ended",
       blockersSummary: "",
       endedAt,

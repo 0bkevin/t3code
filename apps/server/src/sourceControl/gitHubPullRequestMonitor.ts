@@ -17,6 +17,7 @@ export interface PullRequestMonitorReview {
   readonly state: "approved" | "changes-requested" | "commented" | "dismissed" | "pending";
   readonly submittedAt: string | null;
   readonly commitSha: string | null;
+  readonly body: string;
 }
 
 export interface PullRequestMonitorReviewThread {
@@ -82,6 +83,7 @@ const ReviewSchema = Schema.Struct({
   state: Schema.String,
   submittedAt: Schema.NullOr(Schema.String),
   commit: Schema.NullOr(Schema.Struct({ oid: Schema.String })),
+  body: Schema.String,
 });
 const ThreadSchema = Schema.Struct({
   id: Schema.String,
@@ -152,6 +154,19 @@ const CheckRunsSchema = Schema.Struct({
       head_sha: Schema.String,
     }),
   ),
+});
+const FinalPullRequestStateSchema = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.Struct({
+      pullRequest: Schema.NullOr(
+        Schema.Struct({
+          state: Schema.String,
+          merged: Schema.Boolean,
+          headRefOid: Schema.String,
+        }),
+      ),
+    }),
+  }),
 });
 
 export class GitHubPullRequestMonitorDecodeError extends Schema.TaggedErrorClass<GitHubPullRequestMonitorDecodeError>()(
@@ -230,6 +245,7 @@ export const getPullRequestMonitorSnapshot = Effect.fn("getPullRequestMonitorSna
   function* (input: {
     readonly cwd: string;
     readonly pullRequestNumber: number;
+    readonly refetchAttempt?: number;
   }): Effect.fn.Return<
     PullRequestMonitorSnapshot,
     GitHubPullRequestMonitorError,
@@ -270,7 +286,7 @@ export const getPullRequestMonitorSnapshot = Effect.fn("getPullRequestMonitorSna
         >
       | undefined;
     do {
-      const query = `query($owner:String!,$name:String!,$number:Int!,$reviews:String,$threads:String){viewer{login} repository(owner:$owner,name:$name){pullRequest(number:$number){state isDraft merged mergeable headRefOid baseRefName reviews(first:100,after:$reviews){nodes{id author{login __typename} state submittedAt commit{oid}} pageInfo{hasNextPage endCursor}} reviewThreads(first:100,after:$threads){nodes{id isResolved comments(last:1){nodes{author{login __typename} body path line createdAt updatedAt}}} pageInfo{hasNextPage endCursor}}}}}`;
+      const query = `query($owner:String!,$name:String!,$number:Int!,$reviews:String,$threads:String){viewer{login} repository(owner:$owner,name:$name){pullRequest(number:$number){state isDraft merged mergeable headRefOid baseRefName reviews(first:100,after:$reviews){nodes{id author{login __typename} state submittedAt commit{oid} body} pageInfo{hasNextPage endCursor}} reviewThreads(first:100,after:$threads){nodes{id isResolved comments(last:10){nodes{author{login __typename} body path line createdAt updatedAt}}} pageInfo{hasNextPage endCursor}}}}}`;
       const result: VcsProcess.VcsProcessOutput = yield* github.execute({
         cwd: input.cwd,
         args: [
@@ -326,6 +342,7 @@ export const getPullRequestMonitorSnapshot = Effect.fn("getPullRequestMonitorSna
             state: normalizeReviewState(review.state),
             submittedAt: review.submittedAt,
             commitSha: review.commit?.oid ?? null,
+            body: review.body,
           });
         }
         reviewsComplete = !pr.reviews.pageInfo.hasNextPage;
@@ -333,7 +350,13 @@ export const getPullRequestMonitorSnapshot = Effect.fn("getPullRequestMonitorSna
       }
       if (!threadsComplete) {
         for (const thread of pr.reviewThreads.nodes) {
-          const comment = thread.comments.nodes[0];
+          const comment = thread.comments.nodes.reduce<
+            (typeof thread.comments.nodes)[number] | undefined
+          >(
+            (latest, candidate) =>
+              latest === undefined || candidate.updatedAt > latest.updatedAt ? candidate : latest,
+            undefined,
+          );
           if (comment) {
             reviewThreads.set(thread.id, {
               id: thread.id,
@@ -425,6 +448,53 @@ export const getPullRequestMonitorSnapshot = Effect.fn("getPullRequestMonitorSna
         })),
       );
       if (response.check_runs.length < 100) break;
+    }
+
+    const finalQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state merged headRefOid}}}`;
+    const finalResult = yield* github.execute({
+      cwd: input.cwd,
+      args: [
+        "api",
+        "graphql",
+        "-f",
+        `query=${finalQuery}`,
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `number=${input.pullRequestNumber}`,
+      ],
+    });
+    const finalPage = yield* decode(
+      FinalPullRequestStateSchema,
+      finalResult.stdout,
+      input.cwd,
+      "GitHub GraphQL returned invalid final pull request state JSON.",
+    );
+    const finalPr = finalPage.data.repository.pullRequest;
+    if (finalPr === null) {
+      return yield* new GitHubPullRequestMonitorDecodeError({
+        command: "gh",
+        cwd: input.cwd,
+        detail: "GitHub pull request disappeared during monitor fetch.",
+        cause: input.pullRequestNumber,
+      });
+    }
+    const finalState: PullRequestMonitorSnapshot["state"] = finalPr.merged
+      ? "merged"
+      : finalPr.state === "CLOSED"
+        ? "closed"
+        : "open";
+    if (finalState !== "open") metadata = { ...metadata, state: finalState };
+    if (finalState === "open" && finalPr.headRefOid !== metadata.headSha) {
+      if ((input.refetchAttempt ?? 0) === 0) {
+        return yield* getPullRequestMonitorSnapshot({
+          ...input,
+          refetchAttempt: 1,
+        });
+      }
+      metadata = { ...metadata, headSha: finalPr.headRefOid };
     }
 
     return {

@@ -86,6 +86,7 @@ const monitorStart = Effect.fn("MonitorToolkit.monitorStart")(function* ({
         type: "thread.monitor.start",
         commandId,
         threadId: invocation.threadId,
+        generation,
         prNumber,
         blockersSummary: warning ?? "",
         headSha: snapshot.headSha,

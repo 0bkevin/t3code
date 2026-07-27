@@ -46,6 +46,7 @@ const makeReadModel = (monitor: OrchestrationThread["monitor"] = null): Orchestr
 });
 
 const activeMonitor: NonNullable<OrchestrationThread["monitor"]> = {
+  generation: 1,
   prNumber: 42,
   status: "monitoring",
   blockersSummary: "waiting",
@@ -66,6 +67,7 @@ it.layer(NodeServices.layer)("monitor decider", (it) => {
         type: "thread.monitor.start" as const,
         commandId: commandId("start"),
         threadId,
+        generation: 1,
         prNumber: 42,
         blockersSummary: "",
         headSha: "abc",
@@ -100,6 +102,7 @@ it.layer(NodeServices.layer)("monitor decider", (it) => {
           type: "thread.monitor.start",
           commandId: commandId("different"),
           threadId,
+          generation: 2,
           prNumber: 43,
           blockersSummary: "",
           headSha: "def",
@@ -114,6 +117,7 @@ it.layer(NodeServices.layer)("monitor decider", (it) => {
           type: "thread.monitor.update",
           commandId: commandId("update"),
           threadId,
+          generation: 1,
           blockersSummary: "CI",
           headSha: "def",
           wakeCount: 1,
@@ -129,6 +133,7 @@ it.layer(NodeServices.layer)("monitor decider", (it) => {
           type: "thread.monitor.end",
           commandId: commandId("end"),
           threadId,
+          generation: 1,
           reason: "ready",
           blockersSummary: "",
           endedAt: NOW,
@@ -146,6 +151,7 @@ it.layer(NodeServices.layer)("monitor decider", (it) => {
           type: "thread.monitor.update" as const,
           commandId: commandId("bad-update"),
           threadId,
+          generation: 1,
           blockersSummary: "",
           headSha: "abc",
           wakeCount: 0,
@@ -155,6 +161,7 @@ it.layer(NodeServices.layer)("monitor decider", (it) => {
           type: "thread.monitor.end" as const,
           commandId: commandId("bad-end"),
           threadId,
+          generation: 1,
           reason: "stopped" as const,
           blockersSummary: "",
           endedAt: NOW,
@@ -174,6 +181,22 @@ it.layer(NodeServices.layer)("monitor decider", (it) => {
         "thread.monitor-ended",
         "thread.settled",
       ]);
+    }),
+  );
+
+  it.effect("archive emits monitor-ended before archived", () =>
+    Effect.gen(function* () {
+      const archived = yield* decideOrchestrationCommand({
+        command: { type: "thread.archive", commandId: commandId("archive"), threadId },
+        readModel: makeReadModel(activeMonitor),
+      });
+      expect(Array.isArray(archived) ? archived.map((event) => event.type) : []).toEqual([
+        "thread.monitor-ended",
+        "thread.archived",
+      ]);
+      if (Array.isArray(archived) && archived[0]?.type === "thread.monitor-ended") {
+        expect(archived[0].payload.generation).toBe(1);
+      }
     }),
   );
 });

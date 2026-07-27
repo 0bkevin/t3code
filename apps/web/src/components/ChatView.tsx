@@ -2337,12 +2337,17 @@ function ChatViewContent(props: ChatViewProps) {
   // ready-state "View PR"/"Merge…" affordances, and a stop handler that ends
   // the monitor via the same command path the server drives.
   const openPrLink = useOpenPrLink();
+  const checkoutPr = resolveThreadPr({
+    threadBranch: activeThread?.branch ?? null,
+    gitStatus: gitStatusQuery.data ?? null,
+    hasDedicatedWorktree: activeThread?.worktreePath != null,
+  });
+  // Monitoring can target a PR other than the checkout's current PR, so never
+  // let the ready actions open a differently numbered pull request.
   const monitorPrUrl =
-    resolveThreadPr({
-      threadBranch: activeThread?.branch ?? null,
-      gitStatus: gitStatusQuery.data ?? null,
-      hasDedicatedWorktree: activeThread?.worktreePath != null,
-    })?.url ?? null;
+    checkoutPr !== null && checkoutPr.number === activeThread?.monitor?.prNumber
+      ? checkoutPr.url
+      : null;
   const handleStopMonitoring = useCallback(() => {
     if (activeThread == null || activeThread.monitor == null) return;
     void endThreadMonitor({

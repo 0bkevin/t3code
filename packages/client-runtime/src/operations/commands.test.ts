@@ -24,6 +24,7 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
   archiveThread,
   createProject,
+  endThreadMonitor,
   settleThread,
   stopThreadSession,
   unsettleThread,
@@ -167,6 +168,31 @@ describe("environment commands", () => {
           commandId: "unsettle-command",
           threadId: "thread-1",
           reason: "user",
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("preserves a caller-provided monitor end timestamp", () =>
+    Effect.gen(function* () {
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const supervisor = yield* makeSupervisor(dispatched);
+
+      yield* endThreadMonitor({
+        commandId: CommandId.make("end-monitor-command"),
+        threadId: ThreadId.make("thread-1"),
+        blockersSummary: "Waiting on review",
+        endedAt: "2026-06-06T00:02:00.000Z",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(dispatched).toEqual([
+        {
+          type: "thread.monitor.end",
+          commandId: "end-monitor-command",
+          threadId: "thread-1",
+          reason: "stopped",
+          blockersSummary: "Waiting on review",
+          endedAt: "2026-06-06T00:02:00.000Z",
         },
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),

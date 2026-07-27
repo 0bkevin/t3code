@@ -52,7 +52,8 @@ function formatEvent(
     }
     case "changes-requested-review": {
       const review = snapshot.reviews.find((item) => item.id === event.reviewId);
-      return `- ${review?.author.login ?? "Reviewer"} requested changes`;
+      const detail = excerpt(event.body);
+      return `- ${review?.author.login ?? "Reviewer"} requested changes${detail ? `: ${detail}` : ""}`;
     }
     case "check-failed": {
       const check = snapshot.checkRuns.find((item) => item.id === event.checkRunId);

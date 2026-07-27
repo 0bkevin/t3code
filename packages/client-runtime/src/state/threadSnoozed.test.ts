@@ -21,6 +21,15 @@ function makeShell(input: {
   readonly sessionStatus?: "starting" | "running" | "ready" | "error";
   readonly pending?: "approval" | "user-input";
   readonly turnCompletedAt?: string | null;
+  readonly monitorStatus?: "monitoring" | "ready" | "stopped" | "needs-attention";
+  readonly monitorEndedAt?: string | null;
+  readonly monitorEndedReason?:
+    | "ready"
+    | "stopped"
+    | "terminal"
+    | "session-ended"
+    | "needs-attention"
+    | null;
 }): ThreadSnoozeShell {
   const threadId = ThreadId.make("thread-1");
   return {
@@ -50,6 +59,20 @@ function makeShell(input: {
             startedAt: null,
             completedAt: input.turnCompletedAt,
             assistantMessageId: null,
+          },
+    monitor:
+      input.monitorStatus === undefined
+        ? null
+        : {
+            generation: 1,
+            prNumber: 4412,
+            status: input.monitorStatus,
+            blockersSummary: "Waiting on review",
+            headSha: "a41c2f9",
+            wakeCount: 0,
+            startedAt: "2026-04-10T08:00:00.000Z",
+            endedAt: input.monitorEndedAt ?? null,
+            endedReason: input.monitorEndedReason ?? null,
           },
   };
 }
@@ -128,6 +151,58 @@ describe("effectiveSnoozed", () => {
     expect(
       effectiveSnoozed(
         makeShell({ snoozedUntil: FUTURE_WAKE, turnCompletedAt: "2026-04-10T08:00:00.000Z" }),
+        { now: NOW },
+      ),
+    ).toBe(true);
+  });
+
+  it("wakes early for monitor payoff, escalation, and session teardown after the snooze", () => {
+    const endedAt = "2026-04-10T11:30:00.000Z";
+    expect(
+      effectiveSnoozed(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          monitorStatus: "ready",
+          monitorEndedAt: endedAt,
+          monitorEndedReason: "ready",
+        }),
+        { now: NOW },
+      ),
+    ).toBe(false);
+    expect(
+      effectiveSnoozed(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          monitorStatus: "needs-attention",
+          monitorEndedAt: endedAt,
+          monitorEndedReason: "needs-attention",
+        }),
+        { now: NOW },
+      ),
+    ).toBe(false);
+    expect(
+      effectiveSnoozed(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          monitorStatus: "stopped",
+          monitorEndedAt: endedAt,
+          monitorEndedReason: "session-ended",
+        }),
+        { now: NOW },
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps a monitor result snoozed when it predates the snooze", () => {
+    expect(
+      effectiveSnoozed(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          snoozedAt: "2026-04-10T11:30:00.000Z",
+          monitorStatus: "ready",
+          monitorEndedAt: "2026-04-10T11:00:00.000Z",
+          monitorEndedReason: "ready",
+        }),
         { now: NOW },
       ),
     ).toBe(true);
@@ -220,6 +295,20 @@ describe("threadWokeAt", () => {
         now: NOW,
       }),
     ).toBe("2026-04-10T11:00:00.000Z");
+  });
+
+  it("reports monitor.endedAt for an early monitor-result wake", () => {
+    expect(
+      threadWokeAt(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          monitorStatus: "needs-attention",
+          monitorEndedAt: "2026-04-10T11:30:00.000Z",
+          monitorEndedReason: "needs-attention",
+        }),
+        { now: NOW },
+      ),
+    ).toBe("2026-04-10T11:30:00.000Z");
   });
 
   it("keeps the early wake authoritative after the scheduled time passes", () => {

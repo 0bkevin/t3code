@@ -343,6 +343,7 @@ export const OrchestrationLatestTurn = Schema.Struct({
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
 export const OrchestrationThreadMonitor = Schema.Struct({
+  generation: NonNegativeInt,
   prNumber: NonNegativeInt,
   status: Schema.Literals(["monitoring", "ready", "stopped", "needs-attention"]),
   blockersSummary: Schema.String,
@@ -636,6 +637,7 @@ const ThreadMonitorStartCommand = Schema.Struct({
   type: Schema.Literal("thread.monitor.start"),
   commandId: CommandId,
   threadId: ThreadId,
+  generation: NonNegativeInt,
   prNumber: NonNegativeInt,
   blockersSummary: Schema.String,
   headSha: Schema.String,
@@ -646,6 +648,7 @@ const ThreadMonitorUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.monitor.update"),
   commandId: CommandId,
   threadId: ThreadId,
+  generation: NonNegativeInt,
   blockersSummary: Schema.String,
   headSha: Schema.String,
   wakeCount: NonNegativeInt,
@@ -656,6 +659,7 @@ const ThreadMonitorEndCommand = Schema.Struct({
   type: Schema.Literal("thread.monitor.end"),
   commandId: CommandId,
   threadId: ThreadId,
+  generation: NonNegativeInt,
   reason: Schema.Literals(["ready", "stopped", "terminal", "session-ended", "needs-attention"]),
   blockersSummary: Schema.String,
   endedAt: IsoDateTime,
@@ -667,6 +671,7 @@ const ThreadMonitorEndCommand = Schema.Struct({
 // forge them, mirroring how ThreadUnsettleCommand only carries "user".
 const ClientThreadMonitorEndCommand = Schema.Struct({
   ...ThreadMonitorEndCommand.fields,
+  generation: Schema.optional(NonNegativeInt),
   reason: Schema.Literal("stopped"),
 });
 
@@ -1065,6 +1070,7 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 
 export const ThreadMonitorStartedPayload = Schema.Struct({
   threadId: ThreadId,
+  generation: NonNegativeInt,
   prNumber: NonNegativeInt,
   blockersSummary: Schema.String,
   headSha: Schema.String,
@@ -1074,6 +1080,7 @@ export const ThreadMonitorStartedPayload = Schema.Struct({
 
 export const ThreadMonitorSnapshotUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
+  generation: NonNegativeInt,
   blockersSummary: Schema.String,
   headSha: Schema.String,
   wakeCount: NonNegativeInt,
@@ -1082,6 +1089,7 @@ export const ThreadMonitorSnapshotUpdatedPayload = Schema.Struct({
 
 export const ThreadMonitorEndedPayload = Schema.Struct({
   threadId: ThreadId,
+  generation: NonNegativeInt,
   reason: Schema.Literals(["ready", "stopped", "terminal", "session-ended", "needs-attention"]),
   blockersSummary: Schema.String,
   endedAt: IsoDateTime,

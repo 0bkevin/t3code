@@ -104,13 +104,31 @@ export type ThreadSnoozeShell = Pick<
   | "hasPendingUserInput"
   | "session"
   | "latestTurn"
+  | "monitor"
 >;
+
+function monitorRaisedHandAt(shell: ThreadSnoozeShell): string | null {
+  const monitor = shell.monitor;
+  if (monitor?.endedAt == null) return null;
+  if (
+    monitor.status !== "ready" &&
+    monitor.status !== "needs-attention" &&
+    monitor.endedReason !== "session-ended"
+  ) {
+    return null;
+  }
+  if (shell.snoozedAt != null && Date.parse(monitor.endedAt) <= Date.parse(shell.snoozedAt)) {
+    return null;
+  }
+  return monitor.endedAt;
+}
 
 /**
  * A snoozed thread "raises its hand" when something happens that outranks
  * the user's snooze: the agent is blocked on them (approval / user input),
- * the session failed, or a run completed after the snooze was set — the
- * v1 taste of event-based snooze ("something happened" wakes early).
+ * the session failed, a run completed, or monitoring reached its payoff or
+ * escalation after the snooze was set — the v1 taste of event-based snooze
+ * ("something happened" wakes early).
  * Raising a hand never clears the server-side snooze fields; it only stops
  * the thread from CLASSIFYING as snoozed, exactly like blocked work and
  * effectiveSettled.
@@ -135,7 +153,7 @@ export function threadRaisedHandWhileSnoozed(shell: ThreadSnoozeShell): boolean 
   ) {
     return true;
   }
-  return false;
+  return monitorRaisedHandAt(shell) !== null;
 }
 
 /**
@@ -200,15 +218,18 @@ export function threadWokeAt(
   // indicator the user already cleared by visiting (snoozedUntil is newer
   // than that visit's lastVisitedAt).
   if (threadRaisedHandWhileSnoozed(shell)) {
-    if (
+    const monitorAt = monitorRaisedHandAt(shell);
+    const completedAt =
       shell.snoozedAt != null &&
       shell.latestTurn?.state === "completed" &&
       shell.latestTurn.completedAt != null &&
       Date.parse(shell.latestTurn.completedAt) > Date.parse(shell.snoozedAt)
-    ) {
-      return shell.latestTurn.completedAt;
+        ? shell.latestTurn.completedAt
+        : null;
+    if (monitorAt !== null && completedAt !== null) {
+      return Date.parse(monitorAt) > Date.parse(completedAt) ? monitorAt : completedAt;
     }
-    return shell.session?.updatedAt ?? shell.snoozedAt ?? null;
+    return monitorAt ?? completedAt ?? shell.session?.updatedAt ?? shell.snoozedAt ?? null;
   }
   // No raised hand: woke iff the timer elapsed (still-snoozed → null).
   return wakeAtMs <= Date.parse(options.now) ? shell.snoozedUntil : null;

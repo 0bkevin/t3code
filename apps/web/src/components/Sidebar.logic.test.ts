@@ -920,6 +920,7 @@ describe("resolveThreadStatusPill", () => {
   });
 
   const activeMonitor = {
+    generation: 1,
     prNumber: 4412,
     status: "monitoring" as const,
     blockersSummary: "2 checks pending · waiting on Bugbot",
@@ -938,7 +939,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Monitoring", pulse: false });
   });
 
-  it("never lets Monitoring swallow a blocked state (I4)", () => {
+  it("never lets Monitoring swallow a blocked or failed state (I4)", () => {
     expect(
       resolveThreadStatusPill({
         thread: { ...baseThread, monitor: activeMonitor, hasPendingApprovals: true },
@@ -949,6 +950,63 @@ describe("resolveThreadStatusPill", () => {
         thread: { ...baseThread, monitor: activeMonitor, hasPendingUserInput: true },
       }),
     ).toMatchObject({ label: "Awaiting Input" });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          monitor: activeMonitor,
+          session: { ...baseThread.session, status: "error", lastError: "boom" },
+        },
+      }),
+    ).toMatchObject({ label: "Failed" });
+  });
+
+  it("shows a prominent Needs attention pill for monitor escalation", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          monitor: {
+            ...activeMonitor,
+            status: "needs-attention",
+            endedAt: "2026-03-09T10:05:00.000Z",
+            endedReason: "needs-attention",
+          },
+          session: { ...baseThread.session, status: "ready", activeTurnId: null },
+        },
+      }),
+    ).toMatchObject({ label: "Needs attention", pulse: false });
+  });
+
+  it("shows a ready monitor payoff until its end has been visited", () => {
+    const readyMonitor = {
+      ...activeMonitor,
+      status: "ready" as const,
+      endedAt: "2026-03-09T10:05:00.000Z",
+      endedReason: "ready" as const,
+    };
+    const idleSession = { ...baseThread.session, status: "ready" as const, activeTurnId: null };
+
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          monitor: readyMonitor,
+          lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          session: idleSession,
+        },
+      }),
+    ).toMatchObject({ label: "Ready to merge", pulse: false });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          monitor: readyMonitor,
+          lastVisitedAt: "2026-03-09T10:06:00.000Z",
+          session: idleSession,
+        },
+      }),
+    ).toBeNull();
   });
 
   it("suppresses the Completed pill for wake-turn completions while monitoring", () => {
@@ -985,6 +1043,7 @@ describe("resolveThreadStatusPill", () => {
 
 describe("resolveMonitorSidebarState", () => {
   const monitor = {
+    generation: 1,
     prNumber: 4412,
     status: "monitoring" as const,
     blockersSummary: "",
@@ -1007,7 +1066,7 @@ describe("resolveMonitorSidebarState", () => {
     );
   });
 
-  it("marks only a session-ended stop, deferring other terminal reasons", () => {
+  it("maps needs-attention and only marks session-ended stops", () => {
     expect(
       resolveMonitorSidebarState({
         ...monitor,
@@ -1024,7 +1083,7 @@ describe("resolveMonitorSidebarState", () => {
         status: "needs-attention",
         endedReason: "needs-attention",
       }),
-    ).toBeNull();
+    ).toBe("needs-attention");
   });
 });
 

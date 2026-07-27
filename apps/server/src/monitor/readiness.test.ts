@@ -42,6 +42,7 @@ describe("pull request monitor readiness", () => {
             state: "changes-requested",
             submittedAt: "2026-01-01T00:00:00Z",
             commitSha: "head-1",
+            body: "",
           },
         ],
       }),
@@ -62,6 +63,7 @@ describe("pull request monitor readiness", () => {
             state: "changes-requested",
             submittedAt: "2026-01-01T00:00:00Z",
             commitSha: "head-2",
+            body: "",
           },
         ],
       }),
@@ -81,11 +83,38 @@ describe("pull request monitor readiness", () => {
             state: "approved",
             submittedAt: "2026-01-01T00:00:00Z",
             commitSha: "head-1",
+            body: "",
           },
         ],
       }),
     );
     // A stale approval neither blocks nor counts as fresh green evidence.
+    assert.strictEqual(result.ready, true);
+  });
+
+  it("unblocks a changes request superseded by the same reviewer's approval", () => {
+    const result = computeReadiness(
+      snapshot({
+        reviews: [
+          {
+            id: "changes",
+            author: { login: "reviewer", type: "user" },
+            state: "changes-requested",
+            submittedAt: "2026-01-01T00:00:00Z",
+            commitSha: "head-1",
+            body: "Please fix this",
+          },
+          {
+            id: "approval",
+            author: { login: "reviewer", type: "user" },
+            state: "approved",
+            submittedAt: "2026-01-02T00:00:00Z",
+            commitSha: "head-2",
+            body: "",
+          },
+        ],
+      }),
+    );
     assert.strictEqual(result.ready, true);
   });
 

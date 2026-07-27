@@ -218,7 +218,7 @@ export const endThreadMonitor: (input: EndThreadMonitorInput) => CommandEffect =
     threadId: input.threadId,
     reason: "stopped",
     blockersSummary: input.blockersSummary,
-    endedAt: metadata.createdAt,
+    endedAt: input.endedAt ?? metadata.createdAt,
   });
 });
 

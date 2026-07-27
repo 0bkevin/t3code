@@ -426,19 +426,24 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const monitorState = resolveMonitorSidebarState(thread.monitor);
   const isMonitoring = monitorState === "monitoring";
   const isMonitorReady = monitorState === "ready";
+  const isMonitorNeedsAttention = monitorState === "needs-attention";
   const isMonitorStopped = monitorState === "stopped";
   // What the PR is waiting on, in place of the branch on the sub-line — the
   // legibility that answers "Are you still going?" (mock 4a). No counter.
   const monitorBlockers = thread.monitor?.blockersSummary?.trim() ?? "";
   const monitorSubLine =
-    (isMonitoring || isMonitorReady) && monitorBlockers !== "" ? monitorBlockers : null;
+    (isMonitoring || isMonitorReady || isMonitorNeedsAttention) && monitorBlockers !== ""
+      ? monitorBlockers
+      : null;
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread. A ready PR is
   // the payoff moment — treat it as unread-prominent — while an actively
   // monitoring thread suppresses the success-shaped unread from its quiet
   // wake-turn completions (never a blocked state — that surfaces via status).
   const isUnread =
-    isMonitorReady || (!isMonitoring && hasUnseenCompletion({ ...thread, lastVisitedAt }));
+    isMonitorReady ||
+    isMonitorNeedsAttention ||
+    (!isMonitoring && hasUnseenCompletion({ ...thread, lastVisitedAt }));
   const status = resolveSidebarV2Status(thread);
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
@@ -503,34 +508,41 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     className: "text-emerald-700 dark:text-emerald-300",
                   }
                 : null;
-  // Monitoring wraps the base status: a ready PR is the emerald payoff, an
-  // active monitor is one steady cyan pill through fixes (D6), a dead-session
-  // monitor gets the subtle zinc floor marker (D2). A genuinely blocked wake
-  // turn (approval/input/failed) is never swallowed — those keep the base
-  // pill (invariant I4). A freshly woken snoozed thread also keeps its explicit
+  // Monitoring wraps the base status: a ready PR is the emerald payoff,
+  // needs-attention is the prominent amber escalation, an active monitor is one
+  // steady cyan pill through fixes (D6), and a dead-session monitor gets the
+  // subtle zinc floor marker (D2). A genuinely blocked wake turn
+  // (approval/input/failed) is never swallowed — those keep the base pill
+  // (invariant I4). A freshly woken snoozed thread also keeps its explicit
   // user-action pill instead of being swallowed by monitor state.
   const isBlockedOrFailed = status === "approval" || status === "input" || status === "failed";
   const topStatus = isWoke
     ? baseTopStatus
-    : isMonitorReady && !isBlockedOrFailed
+    : isMonitorNeedsAttention && !isBlockedOrFailed
       ? {
-          label: resolveMonitorReadyLabel(thread.monitor?.blockersSummary ?? ""),
-          icon: "done" as const,
-          className: "text-emerald-700 dark:text-emerald-300",
+          label: "Needs attention",
+          icon: null,
+          className: "text-amber-700 dark:text-amber-300",
         }
-      : isMonitoring && !isBlockedOrFailed
+      : isMonitorReady && !isBlockedOrFailed
         ? {
-            label: "Monitoring",
-            icon: null,
-            className: "text-cyan-700 dark:text-cyan-300",
+            label: resolveMonitorReadyLabel(thread.monitor?.blockersSummary ?? ""),
+            icon: "done" as const,
+            className: "text-emerald-700 dark:text-emerald-300",
           }
-        : isMonitorStopped && !isBlockedOrFailed
+        : isMonitoring && !isBlockedOrFailed
           ? {
-              label: "Monitoring stopped",
+              label: "Monitoring",
               icon: null,
-              className: "text-muted-foreground/80",
+              className: "text-cyan-700 dark:text-cyan-300",
             }
-          : baseTopStatus;
+          : isMonitorStopped && !isBlockedOrFailed
+            ? {
+                label: "Monitoring stopped",
+                icon: null,
+                className: "text-muted-foreground/80",
+              }
+            : baseTopStatus;
 
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const gitStatus = useEnvironmentQuery(

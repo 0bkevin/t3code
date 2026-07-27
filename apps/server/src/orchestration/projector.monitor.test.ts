@@ -32,6 +32,7 @@ it.effect("projects the monitor lifecycle without changing settledOverride", () 
       createEmptyReadModel(NOW),
       event(1, "thread.created", {
         threadId: ThreadId.make("thread-1"),
+        generation: 1,
         projectId: ProjectId.make("project-1"),
         title: "Thread",
         modelSelection: { provider: "codex", model: "gpt-5.4" },
@@ -47,6 +48,7 @@ it.effect("projects the monitor lifecycle without changing settledOverride", () 
       model,
       event(2, "thread.monitor-started", {
         threadId: ThreadId.make("thread-1"),
+        generation: 1,
         prNumber: 42,
         blockersSummary: "draft",
         headSha: "abc",
@@ -60,6 +62,7 @@ it.effect("projects the monitor lifecycle without changing settledOverride", () 
       model,
       event(3, "thread.monitor-snapshot-updated", {
         threadId: ThreadId.make("thread-1"),
+        generation: 1,
         blockersSummary: "CI",
         headSha: "def",
         wakeCount: 2,
@@ -71,6 +74,7 @@ it.effect("projects the monitor lifecycle without changing settledOverride", () 
       model,
       event(4, "thread.monitor-ended", {
         threadId: ThreadId.make("thread-1"),
+        generation: 1,
         reason: "ready",
         blockersSummary: "",
         endedAt: NOW,

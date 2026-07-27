@@ -403,6 +403,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             monitor: {
+              generation: payload.generation,
               prNumber: payload.prNumber,
               status: "monitoring",
               blockersSummary: payload.blockersSummary,
@@ -427,7 +428,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: nextBase.threads.map((thread) =>
-            thread.id === payload.threadId && thread.monitor != null
+            thread.id === payload.threadId && thread.monitor?.generation === payload.generation
               ? {
                   ...thread,
                   monitor: {
@@ -448,7 +449,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: nextBase.threads.map((thread) =>
-            thread.id === payload.threadId && thread.monitor != null
+            thread.id === payload.threadId && thread.monitor?.generation === payload.generation
               ? {
                   ...thread,
                   monitor: {

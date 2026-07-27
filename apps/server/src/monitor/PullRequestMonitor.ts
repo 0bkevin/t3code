@@ -24,6 +24,7 @@ import { buildWakePrompt, formatBlockersSummary } from "./wakePrompt.ts";
 
 const POLL_INTERVAL = Duration.seconds(30);
 const MAX_BACKOFF = Duration.minutes(5);
+const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 
 interface WakeClaim {
   readonly generation: number;
@@ -123,6 +124,7 @@ export const make = Effect.gen(function* () {
 
   const dispatchUpdate = Effect.fn("PullRequestMonitor.dispatchUpdate")(function* (
     threadId: ThreadId,
+    generation: number,
     blockersSummary: string,
     headSha: string,
     wakeCount: number,
@@ -132,6 +134,7 @@ export const make = Effect.gen(function* () {
       type: "thread.monitor.update",
       commandId: CommandId.make(yield* crypto.randomUUIDv4),
       threadId,
+      generation,
       blockersSummary,
       headSha,
       wakeCount,
@@ -156,6 +159,7 @@ export const make = Effect.gen(function* () {
       type: "thread.monitor.end",
       commandId: CommandId.make(yield* crypto.randomUUIDv4),
       threadId,
+      generation: expectedGeneration,
       reason,
       blockersSummary,
       endedAt,
@@ -185,7 +189,6 @@ export const make = Effect.gen(function* () {
     });
     if (!claimed) return;
 
-    const current = yield* registry.get(registration.threadId);
     // Fresh terminal read at the send boundary (I1): the poll's snapshot is
     // seconds stale by now, and a merge in that window must veto the wake —
     // the cached `latestStates` alone cannot see it.
@@ -202,11 +205,42 @@ export const make = Effect.gen(function* () {
       return;
     }
     const state = freshState.value;
+    const current = yield* registry.get(registration.threadId);
     const thread = yield* snapshots.getThreadDetailById(registration.threadId);
     const validRegistration =
-      Option.isSome(current) && current.value.generation === registration.generation;
+      Option.isSome(current) &&
+      current.value.generation === registration.generation &&
+      Option.isSome(thread) &&
+      thread.value.archivedAt === null &&
+      thread.value.monitor?.status === "monitoring" &&
+      thread.value.monitor.generation === registration.generation;
+    const latestUserMessageAt = Option.isSome(thread)
+      ? thread.value.messages.reduce(
+          (latest, message) =>
+            message.role === "user" ? Math.max(latest, Date.parse(message.createdAt)) : latest,
+          Number.NEGATIVE_INFINITY,
+        )
+      : Number.NEGATIVE_INFINITY;
+    const latestTurnAt =
+      Option.isSome(thread) && thread.value.latestTurn !== null
+        ? Math.max(
+            ...[
+              thread.value.latestTurn.requestedAt,
+              thread.value.latestTurn.startedAt,
+              thread.value.latestTurn.completedAt,
+            ].map((value) => (value === null ? Number.NEGATIVE_INFINITY : Date.parse(value))),
+          )
+        : Number.NEGATIVE_INFINITY;
+    const createdAt = DateTime.formatIso(yield* DateTime.now);
+    const queuedUserTurn =
+      Option.isSome(thread) &&
+      thread.value.session?.status !== "error" &&
+      Number.isFinite(latestUserMessageAt) &&
+      latestUserMessageAt > latestTurnAt &&
+      Math.abs(Date.parse(createdAt) - latestUserMessageAt) <= QUEUED_TURN_START_GRACE_MS;
     const busy =
       Option.isNone(thread) ||
+      queuedUserTurn ||
       thread.value.latestTurn?.state === "running" ||
       (thread.value.session?.activeTurnId !== null &&
         thread.value.session?.activeTurnId !== undefined) ||
@@ -221,7 +255,6 @@ export const make = Effect.gen(function* () {
       return;
     }
 
-    const createdAt = DateTime.formatIso(yield* DateTime.now);
     yield* engine
       .dispatch({
         type: "thread.turn.start",
@@ -253,7 +286,13 @@ export const make = Effect.gen(function* () {
           ),
         ),
         Effect.tap(() =>
-          registry.updateCursor(registration.threadId, nextCursor, registration.generation),
+          Ref.get(claims).pipe(
+            Effect.flatMap((currentClaims) =>
+              currentClaims.get(registration.threadId)?.commandId === commandId
+                ? registry.updateCursor(registration.threadId, nextCursor, registration.generation)
+                : Effect.void,
+            ),
+          ),
         ),
         Effect.tapError(() =>
           mutateClaim(registration.threadId, (claim) =>
@@ -264,6 +303,7 @@ export const make = Effect.gen(function* () {
     const wakeCount = yield* registry.incrementWake(registration.threadId, registration.generation);
     yield* dispatchUpdate(
       registration.threadId,
+      registration.generation,
       formatBlockersSummary(computeReadiness(snapshot)),
       snapshot.headSha,
       wakeCount,
@@ -281,16 +321,18 @@ export const make = Effect.gen(function* () {
       ...fetchedSnapshot,
       monitoringStartedAt: registration.startedAt,
     };
-    const readiness = computeReadiness(snapshot);
+    const readiness = computeReadiness(snapshot, registration.cursor.threadVersions);
     const summary = formatBlockersSummary(readiness);
+    const diff = diffPullRequestMonitorSnapshot(registration.cursor, snapshot);
 
     if (snapshot.state !== "open") {
       yield* end(registration.threadId, "terminal", summary, registration.generation);
       return;
     }
-    if (readiness.ready) {
+    if (readiness.ready && diff.actionableEvents.length === 0) {
       yield* dispatchUpdate(
         registration.threadId,
+        registration.generation,
         summary,
         snapshot.headSha,
         registration.wakeCount,
@@ -299,9 +341,17 @@ export const make = Effect.gen(function* () {
       return;
     }
 
-    const diff = diffPullRequestMonitorSnapshot(registration.cursor, snapshot);
-    yield* dispatchUpdate(registration.threadId, summary, snapshot.headSha, registration.wakeCount);
-    if (diff.actionableEvents.length === 0) return;
+    yield* dispatchUpdate(
+      registration.threadId,
+      registration.generation,
+      summary,
+      snapshot.headSha,
+      registration.wakeCount,
+    );
+    if (diff.actionableEvents.length === 0) {
+      yield* registry.updateCursor(registration.threadId, diff.nextCursor, registration.generation);
+      return;
+    }
     if (registration.wakeCount >= 10) {
       yield* end(registration.threadId, "needs-attention", summary, registration.generation);
       return;
@@ -335,12 +385,19 @@ export const make = Effect.gen(function* () {
                 type: "thread.monitor.end",
                 commandId: CommandId.make(`monitor-boot-reconcile:${thread.id}:${endedAt}`),
                 threadId: thread.id,
+                generation: thread.monitor!.generation,
                 reason: "session-ended",
                 blockersSummary: "",
                 endedAt,
               });
             });
           }),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("pull request monitor orphan reconcile failed", {
+              threadId: thread.id,
+              cause,
+            }),
+          ),
         ),
       { discard: true },
     );
@@ -378,41 +435,61 @@ export const make = Effect.gen(function* () {
   const onEvent = (event: OrchestrationEvent) => {
     const threadId = threadIdOf(event);
     if (threadId === undefined) return Effect.void;
-    if (event.type === "thread.archived") {
-      return registry.get(threadId).pipe(
-        Effect.flatMap((registration) =>
-          Option.isNone(registration)
-            ? Effect.void
-            : end(threadId, "stopped", "", registration.value.generation).pipe(
-                Effect.catch((error) =>
-                  Effect.logWarning(
-                    "pull request monitor archive projection stuck; removing registration",
-                    {
-                      threadId,
-                      error,
-                    },
-                  ).pipe(
-                    Effect.andThen(registry.remove(threadId, registration.value.generation)),
+    if (event.type === "thread.monitor-ended") {
+      return registry
+        .remove(threadId, event.payload.generation)
+        .pipe(
+          Effect.andThen(
+            mutateClaim(threadId, (claim) =>
+              claim?.generation === event.payload.generation ? undefined : claim,
+            ),
+          ),
+          Effect.asVoid,
+        );
+    }
+    if (event.type === "thread.settled") {
+      return Effect.all([registry.get(threadId), snapshots.getThreadDetailById(threadId)]).pipe(
+        Effect.flatMap(([registration, thread]) => {
+          if (
+            Option.isNone(registration) ||
+            Option.isNone(thread) ||
+            thread.value.monitor?.generation !== registration.value.generation
+          )
+            return Effect.void;
+          return registry
+            .remove(threadId, registration.value.generation)
+            .pipe(
+              Effect.andThen(
+                mutateClaim(threadId, (claim) =>
+                  claim?.generation === registration.value.generation ? undefined : claim,
+                ),
+              ),
+            );
+        }),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("pull request monitor settled cleanup failed", { threadId, cause }),
+        ),
+        Effect.asVoid,
+      );
+    }
+    if (event.type === "thread.deleted") {
+      return registry
+        .get(threadId)
+        .pipe(
+          Effect.flatMap((registration) =>
+            Option.isNone(registration)
+              ? Effect.void
+              : registry
+                  .remove(threadId, registration.value.generation)
+                  .pipe(
                     Effect.andThen(
                       mutateClaim(threadId, (claim) =>
                         claim?.generation === registration.value.generation ? undefined : claim,
                       ),
                     ),
-                    Effect.asVoid,
                   ),
-                ),
-              ),
-        ),
-      );
-    }
-    if (
-      event.type === "thread.deleted" ||
-      event.type === "thread.settled" ||
-      event.type === "thread.monitor-ended"
-    ) {
-      return registry
-        .remove(threadId)
-        .pipe(Effect.andThen(mutateClaim(threadId, () => undefined)), Effect.asVoid);
+          ),
+        );
     }
     if (event.type === "thread.turn-start-requested") {
       // A turn we didn't start won the thread. Drop our claim — and if our

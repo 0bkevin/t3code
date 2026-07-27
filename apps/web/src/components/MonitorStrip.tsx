@@ -1,6 +1,6 @@
 import type { OrchestrationThreadMonitor } from "@t3tools/contracts";
 import { ExternalLinkIcon, GitMergeIcon } from "lucide-react";
-import { type MouseEvent, useState } from "react";
+import { type MouseEvent, useEffect, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { resolveMonitorReadyLabel, resolveMonitorSidebarState } from "./Sidebar.logic";
@@ -42,9 +42,13 @@ export function MonitorStrip({
 }) {
   const [mergeConfirmOpen, setMergeConfirmOpen] = useState(false);
   const state = resolveMonitorSidebarState(monitor);
+  useEffect(() => {
+    setMergeConfirmOpen(false);
+  }, [monitor.prNumber, monitor.status]);
   // Only the meaningful, live-ish states get a strip: an actively monitoring
-  // PR, the ready payoff, or a dead-session floor marker. Terminal/user-stop/
-  // needs-attention monitors hand off to the normal settled/status treatment.
+  // PR, the ready payoff, the needs-attention escalation, or a dead-session
+  // floor marker. Other terminal/user-stop monitors hand off to the normal
+  // settled/status treatment.
   if (state === null) return null;
 
   const blockers = monitor.blockersSummary.trim();
@@ -60,6 +64,22 @@ export function MonitorStrip({
           <span className="text-xs text-muted-foreground/70">
             PR #{monitor.prNumber} · session ended
           </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === "needs-attention") {
+    return (
+      <div className="px-3 pt-2 sm:px-5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
+            <span className="size-1.5 rounded-full bg-amber-500 dark:bg-amber-400" aria-hidden />
+            Monitoring paused — needs your attention
+          </span>
+          {blockers !== "" ? (
+            <span className="min-w-0 truncate text-xs text-muted-foreground">{blockers}</span>
+          ) : null}
         </div>
       </div>
     );
@@ -145,8 +165,9 @@ export function MonitorStrip({
                 rather than inventing a new server mutation (out of P3 scope). */}
             <Button
               variant="default"
-              disabled={prUrl === null}
+              disabled={!isReady || prUrl === null}
               onClick={(event) => {
+                if (!isReady || prUrl === null) return;
                 setMergeConfirmOpen(false);
                 handleOpenPr(event);
               }}

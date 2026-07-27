@@ -722,6 +722,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             monitor: {
+              generation: event.payload.generation,
               prNumber: event.payload.prNumber,
               status: "monitoring",
               blockersSummary: event.payload.blockersSummary,
@@ -740,7 +741,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
-          if (Option.isNone(existingRow) || existingRow.value.monitor === null) return;
+          if (
+            Option.isNone(existingRow) ||
+            existingRow.value.monitor?.generation !== event.payload.generation
+          )
+            return;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             monitor: {
@@ -758,7 +763,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
-          if (Option.isNone(existingRow) || existingRow.value.monitor === null) return;
+          if (
+            Option.isNone(existingRow) ||
+            existingRow.value.monitor?.generation !== event.payload.generation
+          )
+            return;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             monitor: {
