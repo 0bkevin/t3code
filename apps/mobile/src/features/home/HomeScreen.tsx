@@ -628,7 +628,7 @@ export function HomeScreen(props: HomeScreenProps) {
           snoozed={item.snoozed}
           snoozeWakeLabelText={
             item.snoozed && item.thread.snoozedUntil != null
-              ? snoozeWakeLabel(item.thread.snoozedUntil, new Date(`${nowMinute}:00.000Z`))
+              ? snoozeWakeLabel(item.thread.snoozedUntil, { now: `${nowMinute}:00.000Z` })
               : undefined
           }
           project={

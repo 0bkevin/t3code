@@ -93,19 +93,8 @@ export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
   return presets;
 }
 
-/**
- * Compact "wakes in" label for snoozed rows: "2h", "18h", "3d". Minutes
- * round up so a snooze never reads "0m" while still hidden.
- */
-export function snoozeWakeLabel(snoozedUntil: string, now: Date): string {
-  const wake = parseTimestampDate(snoozedUntil);
-  if (wake === null) return "now";
-  const remainingMs = wake.getTime() - now.getTime();
-  if (remainingMs <= 0) return "now";
-  if (remainingMs < HOUR_MS) return `${Math.max(1, Math.ceil(remainingMs / 60_000))}m`;
-  if (remainingMs < DAY_MS) return `${Math.ceil(remainingMs / HOUR_MS)}h`;
-  return `${Math.ceil(remainingMs / DAY_MS)}d`;
-}
+/** Shared with mobile so a wake time never reads differently per platform. */
+export { snoozeWakeLabel } from "@t3tools/client-runtime/state/thread-settled";
 
 /**
  * Human wake time for menus and toasts: "tomorrow 9:00", "Mon 9:00",

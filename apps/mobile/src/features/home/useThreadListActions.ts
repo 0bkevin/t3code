@@ -229,9 +229,13 @@ export function useThreadListActions(): {
         return false;
       }
       if (!canSnooze(thread, { now: new Date().toISOString() })) {
+        // canSnooze refuses for two unrelated reasons; naming the wrong one
+        // sends the user looking for a request that isn't there.
         Alert.alert(
           "Could not snooze thread",
-          "This thread is waiting on you. Respond to the pending request before snoozing it.",
+          thread.hasPendingApprovals || thread.hasPendingUserInput
+            ? "This thread is waiting on you. Respond to the pending request before snoozing it."
+            : "This thread is still starting a turn. Try again once it's running.",
         );
         return false;
       }

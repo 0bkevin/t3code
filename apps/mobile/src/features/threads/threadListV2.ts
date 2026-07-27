@@ -4,6 +4,10 @@ import {
   hasQueuedTurnStart,
   QUEUED_TURN_START_GRACE_MS,
 } from "@t3tools/client-runtime/state/thread-settled";
+
+// Wake labels live with the rest of the snooze model so web and mobile can
+// never drift; re-exported here because this module is the list's one stop.
+export { snoozeWakeLabel } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 
@@ -43,25 +47,6 @@ export function resolveThreadListV2SwipeActions(input: {
     primary,
     secondary: input.snoozeSupported && input.snoozable ? "snooze" : null,
   };
-}
-
-const HOUR_MS = 60 * 60 * 1_000;
-const DAY_MS = 24 * HOUR_MS;
-
-/**
- * Compact "wakes in" label for snoozed rows: "2h", "18h", "3d". Minutes
- * round up so a snooze never reads "0m" while still hidden. Ported from
- * web's snoozeWakeLabel (apps/web/src/components/Sidebar.snooze.ts) so both
- * platforms describe a wake time identically.
- */
-export function snoozeWakeLabel(snoozedUntil: string, now: Date): string {
-  const wakeMs = Date.parse(snoozedUntil);
-  if (Number.isNaN(wakeMs)) return "now";
-  const remainingMs = wakeMs - now.getTime();
-  if (remainingMs <= 0) return "now";
-  if (remainingMs < HOUR_MS) return `${Math.max(1, Math.ceil(remainingMs / 60_000))}m`;
-  if (remainingMs < DAY_MS) return `${Math.ceil(remainingMs / HOUR_MS)}h`;
-  return `${Math.ceil(remainingMs / DAY_MS)}d`;
 }
 
 /**

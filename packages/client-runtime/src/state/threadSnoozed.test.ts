@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   canSnooze,
   effectiveSnoozed,
+  snoozeWakeLabel,
   threadRaisedHandWhileSnoozed,
   threadWokeAt,
   type ThreadSnoozeShell,
@@ -233,5 +234,22 @@ describe("threadWokeAt", () => {
         { now: NOW },
       ),
     ).toBe("2026-04-10T09:30:00.000Z");
+  });
+});
+
+describe("snoozeWakeLabel", () => {
+  const now = "2026-06-02T00:00:00.000Z";
+
+  it("formats remaining time coarsely, rounding up", () => {
+    expect(snoozeWakeLabel("2026-06-02T00:30:00.000Z", { now })).toBe("30m");
+    expect(snoozeWakeLabel("2026-06-02T01:30:00.000Z", { now })).toBe("2h");
+    expect(snoozeWakeLabel("2026-06-03T02:00:00.000Z", { now })).toBe("2d");
+  });
+
+  it("never reads zero or negative while still snoozed", () => {
+    expect(snoozeWakeLabel("2026-06-02T00:00:30.000Z", { now })).toBe("1m");
+    expect(snoozeWakeLabel("2026-06-01T23:59:59.000Z", { now })).toBe("now");
+    expect(snoozeWakeLabel("not-a-date", { now })).toBe("now");
+    expect(snoozeWakeLabel("2026-06-02T09:00:00.000Z", { now: "bad" })).toBe("now");
   });
 });

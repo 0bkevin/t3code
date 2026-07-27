@@ -535,14 +535,14 @@ function ThreadNavigationSidebarPane(
       pendingTask,
       isLast: index === v2PendingTasks.length - 1,
     }));
-    const snoozeLabelNow = new Date(`${nowMinute}:00.000Z`);
+    const snoozeLabelNow = `${nowMinute}:00.000Z`;
     const threadRows: SidebarListItem[] = threadListV2Layout.items.map((item) => ({
       type: "v2-thread" as const,
       key: scopedThreadKey(item.thread.environmentId, item.thread.id),
       item,
       snoozeWakeLabelText:
         item.snoozed && item.thread.snoozedUntil != null
-          ? snoozeWakeLabel(item.thread.snoozedUntil, snoozeLabelNow)
+          ? snoozeWakeLabel(item.thread.snoozedUntil, { now: snoozeLabelNow })
           : undefined,
     }));
     // The shelf header is a row of its own: collapsed, it IS the shelf, so
