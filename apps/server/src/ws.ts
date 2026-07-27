@@ -637,6 +637,16 @@ const makeWsRpcLayer = (
           yield* Effect.annotateCurrentSpan({
             "orchestration_v2.thread_id": input.threadId,
           });
+          yield* threadManagement.ensureLegacyTranscript(input.threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationV2GetThreadProjectionError({
+                  threadId: input.threadId,
+                  message: `Failed to hydrate migrated thread ${input.threadId}`,
+                  cause,
+                }),
+            ),
+          );
 
           const eventStreamFrom = (afterSequence: number) =>
             threadManagement
