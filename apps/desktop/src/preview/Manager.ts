@@ -522,14 +522,29 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   /**
    * capturePage for one-shot captures (snapshots, screenshots), retrying the
    * transient compositor warm-up failure instead of surfacing it to callers.
+   *
+   * Retries stop as soon as the tab no longer points at this guest, so a
+   * webview swap during the retry window surfaces the original failure instead
+   * of capturing from a detached web contents.
    */
-  const capturePageWithRetry = (errorContext: PreviewOperationContext, wc: Electron.WebContents) =>
-    attemptPromise(errorContext, () => wc.capturePage()).pipe(
+  const capturePageWithRetry = (
+    errorContext: PreviewOperationContext,
+    tabId: string,
+    wc: Electron.WebContents,
+  ) => {
+    const guestIsCurrent = Effect.gen(function* () {
+      if (wc.isDestroyed()) return false;
+      const tabs = yield* SynchronizedRef.get(tabsRef);
+      return tabs.get(tabId)?.webContentsId === wc.id;
+    });
+    return attemptPromise(errorContext, () => wc.capturePage()).pipe(
       Effect.retry({
         times: CAPTURE_PAGE_RETRY_ATTEMPTS - 1,
         schedule: Schedule.spaced(CAPTURE_PAGE_RETRY_DELAY_MS),
+        while: () => guestIsCurrent,
       }),
     );
+  };
   const currentIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const currentMillis = Clock.currentTimeMillis;
   const encodeJson = (errorContext: PreviewOperationContext, value: unknown) =>
@@ -1973,6 +1988,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           tabId,
           webContentsId: wc.id,
         },
+        tabId,
         wc,
       ),
     ]);
@@ -2647,6 +2663,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             tabId,
             webContentsId: wc.id,
           },
+          tabId,
           wc,
         ),
         Ref.get(diagnosticsRef),
