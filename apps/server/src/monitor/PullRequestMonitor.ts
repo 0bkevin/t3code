@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 
@@ -100,25 +101,55 @@ export const make = Effect.gen(function* () {
       return next;
     });
 
+  // Claim transitions and the registry mutations they authorize must be one
+  // critical section: reading the claim and then mutating the cursor leaves a
+  // window where a concurrent release rewinds and the stale ack re-advances,
+  // losing the superseded wake's events (I5).
+  const claimLock = yield* Semaphore.make(1);
+
   // Drop a claim matching `shouldRelease`; if its wake had already advanced
   // the cursor, rewind to the pre-wake cursor so those events re-diff (I5).
   const releaseClaim = (threadId: ThreadId, shouldRelease: (claim: WakeClaim) => boolean) =>
-    Ref.modify(claims, (current) => {
-      const claim = current.get(threadId);
-      if (claim === undefined || !shouldRelease(claim)) {
-        return [undefined, current] as const;
-      }
-      const next = new Map(current);
-      next.delete(threadId);
-      return [claim, next] as const;
-    }).pipe(
-      Effect.flatMap((released) =>
-        released === undefined || released.phase !== "in-flight"
-          ? Effect.void
-          : Effect.all([
-              registry.updateCursor(threadId, released.previousCursor, released.generation),
-              registry.setWakeCount(threadId, released.previousWakeCount, released.generation),
-            ]).pipe(Effect.asVoid),
+    claimLock.withPermits(1)(
+      Ref.modify(claims, (current) => {
+        const claim = current.get(threadId);
+        if (claim === undefined || !shouldRelease(claim)) {
+          return [undefined, current] as const;
+        }
+        const next = new Map(current);
+        next.delete(threadId);
+        return [claim, next] as const;
+      }).pipe(
+        Effect.flatMap((released) =>
+          released === undefined || released.phase !== "in-flight"
+            ? Effect.void
+            : Effect.all([
+                registry.updateCursor(threadId, released.previousCursor, released.generation),
+                registry.setWakeCount(threadId, released.previousWakeCount, released.generation),
+              ]).pipe(Effect.asVoid),
+        ),
+      ),
+    );
+
+  // Acknowledge a dispatched wake: advance the cursor and count the wake only
+  // while this wake still owns the claim. Runs under `claimLock` so a release
+  // arriving mid-ack either fully precedes it (claim gone → no ack) or fully
+  // follows it (rewinds both cursor and wake count).
+  const ackWake = (
+    threadId: ThreadId,
+    commandId: CommandId,
+    generation: number,
+    nextCursor: PullRequestMonitorCursor,
+  ) =>
+    claimLock.withPermits(1)(
+      Ref.get(claims).pipe(
+        Effect.flatMap((current) =>
+          current.get(threadId)?.commandId === commandId
+            ? registry
+                .updateCursor(threadId, nextCursor, generation)
+                .pipe(Effect.andThen(registry.incrementWake(threadId, generation)))
+            : Effect.succeed(0),
+        ),
       ),
     );
 
@@ -285,22 +316,21 @@ export const make = Effect.gen(function* () {
               : claim,
           ),
         ),
-        Effect.tap(() =>
-          Ref.get(claims).pipe(
-            Effect.flatMap((currentClaims) =>
-              currentClaims.get(registration.threadId)?.commandId === commandId
-                ? registry.updateCursor(registration.threadId, nextCursor, registration.generation)
-                : Effect.void,
-            ),
-          ),
-        ),
         Effect.tapError(() =>
           mutateClaim(registration.threadId, (claim) =>
             claim?.commandId === commandId ? undefined : claim,
           ),
         ),
       );
-    const wakeCount = yield* registry.incrementWake(registration.threadId, registration.generation);
+    // Cursor ack + wake count are one atomic step with the claim check: a
+    // release that lands between them would otherwise be undone.
+    const wakeCount = yield* ackWake(
+      registration.threadId,
+      commandId,
+      registration.generation,
+      nextCursor,
+    );
+    if (wakeCount === 0) return;
     yield* dispatchUpdate(
       registration.threadId,
       registration.generation,
@@ -373,7 +403,11 @@ export const make = Effect.gen(function* () {
   const reconcile = Effect.fn("PullRequestMonitor.reconcile")(function* () {
     if (yield* Ref.get(reconciled)) return;
     const shell = yield* snapshots.getShellSnapshot();
-    yield* Effect.forEach(
+    // Per-thread failures are isolated so one bad orphan can't abort the
+    // sweep, but any failure leaves `reconciled` unset so the next poll
+    // retries the stragglers — otherwise they stay projected as monitoring
+    // with nothing polling them, forever.
+    const outcomes = yield* Effect.forEach(
       shell.threads.filter((thread) => thread.monitor?.status === "monitoring"),
       (thread) =>
         registry.get(thread.id).pipe(
@@ -392,16 +426,16 @@ export const make = Effect.gen(function* () {
               });
             });
           }),
+          Effect.as(true),
           Effect.catchCause((cause) =>
             Effect.logWarning("pull request monitor orphan reconcile failed", {
               threadId: thread.id,
               cause,
-            }),
+            }).pipe(Effect.as(false)),
           ),
         ),
-      { discard: true },
     );
-    yield* Ref.set(reconciled, true);
+    if (outcomes.every(Boolean)) yield* Ref.set(reconciled, true);
   });
 
   const pollOnce = Ref.set(lastPollFailed, false).pipe(
@@ -513,6 +547,14 @@ export const make = Effect.gen(function* () {
     }
     if (event.type === "thread.session-set") {
       const status = event.payload.session.status;
+      // A provider failure surfaces as session-set(error) BEFORE
+      // provider.turn.start.failed, so dropping the claim here would leave
+      // that later handler nothing to rewind and the acked events would never
+      // re-diff (I5). Rewind on error; a clean finish (ready/idle/stopped)
+      // just frees the claim — its events were genuinely delivered.
+      if (status === "error") {
+        return releaseClaim(threadId, (claim) => claim.phase === "in-flight");
+      }
       if (status !== "starting" && status !== "running") {
         return mutateClaim(threadId, (claim) => (claim?.phase === "in-flight" ? undefined : claim));
       }

@@ -149,7 +149,16 @@ export const layer = Layer.effect(
 export const endActiveMonitorForSession = (threadId: ThreadId): Effect.Effect<void> =>
   Effect.gen(function* () {
     const registration = yield* make.get(threadId);
-    if (Option.isNone(registration) || activeEngine === undefined) return;
+    if (Option.isNone(registration)) return;
+    if (activeEngine === undefined) {
+      // The poller hasn't bound an engine yet, so the monitor end can't be
+      // projected — but leaving the registration would let the poller wake a
+      // thread whose session is already gone. Drop it and log the projection
+      // gap; boot reconcile ends the orphaned "monitoring" projection.
+      yield* make.remove(threadId, registration.value.generation);
+      yield* Effect.logWarning("monitor registration dropped before engine bind", { threadId });
+      return;
+    }
     const endedAt = DateTime.formatIso(yield* DateTime.now);
     const commandId = CommandId.make(`monitor-session-ended:${threadId}:${endedAt}`);
     yield* activeEngine.dispatch({

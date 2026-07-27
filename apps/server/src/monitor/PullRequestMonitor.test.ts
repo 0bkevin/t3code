@@ -484,6 +484,47 @@ describe("PullRequestMonitor dispatch protocol", () => {
     }),
   );
 
+  it.effect("session error rewinds the acked wake cursor", () =>
+    Effect.gen(function* () {
+      // The provider reactor emits session-set(error) BEFORE
+      // provider.turn.start.failed, so this handler must rewind rather than
+      // silently drop the claim — otherwise the acked events never re-diff.
+      const initial = snapshot();
+      const h = yield* harness({
+        initial,
+        current: { value: snapshot({ reviewThreads: [comment("one")] }) },
+      });
+      yield* h.monitor.pollOnce;
+      assert.strictEqual(h.getRegistration()?.wakeCount, 1);
+      yield* h.monitor.handleDomainEvent({
+        sequence: 2,
+        eventId: EventId.make("session-error"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("session-error"),
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.session-set",
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "error",
+            providerName: "claude",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: "boom",
+            updatedAt: now,
+          },
+        },
+      });
+      assert.deepStrictEqual(h.getRegistration()?.cursor, cursorFromSnapshot(initial));
+      assert.strictEqual(h.getRegistration()?.wakeCount, 0);
+    }),
+  );
+
   it.effect("conditional ack preserves a user-turn release", () =>
     Effect.gen(function* () {
       const initial = snapshot();
