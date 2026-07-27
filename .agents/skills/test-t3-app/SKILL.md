@@ -13,7 +13,7 @@ Use this skill for the web client. For iOS Simulator, Android Emulator, or physi
 2. Choose a base directory that belongs only to the current worktree or test:
    - Use the repository's ignored `.t3` directory for reusable worktree-local state.
    - Use `mktemp -d /tmp/t3code-test.XXXXXX` for disposable state and retain the printed absolute path.
-3. Start the full web stack with `vp run dev`. Add `--share` when the user needs to open it from another tailnet device. In a linked worktree it defaults to that worktree's gitignored `.t3`; pass `--home-dir <base-dir>` only when the test needs a different isolated directory.
+3. Start the full web stack with `bun run dev`. Use `bun run dev:share` when the user needs to open it from another tailnet device. In a linked worktree it defaults to that worktree's gitignored `.t3`; pass `--home-dir <base-dir>` only when the test needs a different isolated directory.
 4. Keep the terminal session alive and read the selected server port, web port, base directory, and pairing URL from its output.
 
 Treat a base directory as disposable only when it was created or deliberately selected for the current test. Never delete or directly seed the shared `~/.t3` directory. Prefer starting with a new temporary base directory over clearing state of uncertain ownership.

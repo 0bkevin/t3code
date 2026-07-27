@@ -71,6 +71,29 @@ describe("findLiveServerRuntimeState", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("prefers a legacy dev state without a dev URL", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const config = yield* makeBaseDir();
+      yield* writeRuntimeState({
+        baseDir: config.baseDir,
+        stateDir: "userdata",
+        pid: process.pid,
+        port: 16_601,
+      });
+      yield* writeRuntimeState({
+        baseDir: config.baseDir,
+        stateDir: "dev",
+        pid: process.pid,
+        port: 16_602,
+      });
+
+      const live = Option.getOrThrow(yield* findLiveServerRuntimeState(config));
+      assert.equal(live.stateDir, path.join(config.baseDir, "dev"));
+      assert.equal(live.state.port, 16_602);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("falls back to a live non-dev server when no dev server is running", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;

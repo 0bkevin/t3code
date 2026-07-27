@@ -23,6 +23,21 @@ import { findRunningServerPid, findRunningServerPidSync } from "./lib/server-run
 const DEFAULT_THREAD_LIMIT = 25;
 const DEFAULT_ACTIVITY_LIMIT = 200;
 
+const resolveSharedHome = (path: Path.Path): string => {
+  const configured = process.env.T3CODE_HOME?.trim();
+  if (!configured) {
+    return path.join(NodeOS.homedir(), ".t3");
+  }
+  if (configured === "~") {
+    return NodeOS.homedir();
+  }
+  return path.resolve(
+    configured.startsWith("~/") || configured.startsWith("~\\")
+      ? path.join(NodeOS.homedir(), configured.slice(2))
+      : configured,
+  );
+};
+
 class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
   "DevSeedTargetError",
   {
@@ -156,10 +171,6 @@ const copyAttachments = Effect.fn("devSeed.copyAttachments")(function* (input: {
   const entries = yield* fileSystem
     .readDirectory(input.sourceDir)
     .pipe(Effect.orElseSucceed(() => [] as Array<string>));
-  if (entries.length === 0) {
-    return 0;
-  }
-
   const wanted = new Set(input.attachmentIds);
   const matches = entries.filter((entry) => wanted.has(path.parse(entry).name));
   if (matches.length === 0) {
@@ -188,7 +199,7 @@ const copyAttachments = Effect.fn("devSeed.copyAttachments")(function* (input: {
 const devSeedCli = Command.make("dev-seed", {
   from: Flag.string("from").pipe(
     Flag.withDescription(
-      "Base directory to copy from (default: the shared T3 Code home, ~/.t3). Read-only.",
+      "Base directory to copy from (default: T3CODE_HOME, or ~/.t3). Read-only.",
     ),
     Flag.optional,
     Flag.map(Option.getOrUndefined),
@@ -229,7 +240,7 @@ const devSeedCli = Command.make("dev-seed", {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
 
-      const sharedHome = path.join(NodeOS.homedir(), ".t3");
+      const sharedHome = resolveSharedHome(path);
       const sourceBaseDir = input.from ? path.resolve(input.from) : sharedHome;
 
       const defaultTarget = yield* resolveWorktreeT3Home(process.cwd());

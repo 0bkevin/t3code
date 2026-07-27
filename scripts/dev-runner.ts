@@ -730,12 +730,6 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
         // with creating it. An interrupt landing in between would otherwise
         // leave a mapping pointing at a port nothing is listening on.
         //
-        // Deliberately no ownership tracking beyond that: if a second runner
-        // takes this port during a fast restart, the first's exit can briefly
-        // tear down the new mapping — visible (the URL stops working) and fixed
-        // by re-running --share. A lease protocol closing that window existed
-        // and was removed as more machinery than a dev convenience warrants.
-        //
         // A tailnet that isn't up shouldn't stop the dev server from starting —
         // warn, and carry on serving locally.
         const shared = yield* Effect.gen(function* () {

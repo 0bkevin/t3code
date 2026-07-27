@@ -192,6 +192,40 @@ describe("shareDevServer", () => {
 });
 
 it.layer(NodeServices.layer)("dev share cleanup ownership", (it) => {
+  it.effect("claims ownership via an atomic rename", () =>
+    Effect.gen(function* () {
+      const leasePath = "/leases/5788.owner";
+      const tempDirectory = "/leases/5788.owner.temp";
+      const writes: Array<readonly [path: string, contents: string]> = [];
+      const renames: Array<readonly [from: string, to: string]> = [];
+
+      yield* claimDevShareLease({ leasePath, ownerId: "new-runner", webPort: 5788 }).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          FileSystem.makeNoop({
+            makeDirectory: () => Effect.void,
+            makeTempDirectoryScoped: (options) => {
+              assert.equal(options?.directory, "/leases");
+              assert.equal(options?.prefix, "5788.owner.");
+              return Effect.succeed(tempDirectory);
+            },
+            writeFileString: (path, contents) => {
+              writes.push([path, contents]);
+              return Effect.void;
+            },
+            rename: (from, to) => {
+              renames.push([from, to]);
+              return Effect.void;
+            },
+          }),
+        ),
+      );
+
+      assert.deepEqual(writes, [[`${tempDirectory}/owner.tmp`, "new-runner"]]);
+      assert.deepEqual(renames, [[`${tempDirectory}/owner.tmp`, leasePath]]);
+    }),
+  );
+
   it.effect("keeps the prior owner when clearing its mapping fails", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

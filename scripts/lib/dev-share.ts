@@ -199,8 +199,19 @@ export const claimDevShareLease = Effect.fn("devShare.claimDevShareLease")(funct
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  yield* fileSystem.makeDirectory(path.dirname(lease.leasePath), { recursive: true }).pipe(
-    Effect.andThen(fileSystem.writeFileString(lease.leasePath, lease.ownerId)),
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const leaseDirectory = path.dirname(lease.leasePath);
+      yield* fileSystem.makeDirectory(leaseDirectory, { recursive: true });
+      const tempDirectory = yield* fileSystem.makeTempDirectoryScoped({
+        directory: leaseDirectory,
+        prefix: `${path.basename(lease.leasePath)}.`,
+      });
+      const tempPath = path.join(tempDirectory, "owner.tmp");
+      yield* fileSystem.writeFileString(tempPath, lease.ownerId);
+      yield* fileSystem.rename(tempPath, lease.leasePath);
+    }),
+  ).pipe(
     Effect.mapError((cause) => new DevShareLeaseClaimError({ leasePath: lease.leasePath, cause })),
   );
   return lease;

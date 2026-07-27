@@ -171,11 +171,14 @@ export const findLiveServerRuntimeState = Effect.fn("auth.findLiveServerRuntimeS
 
   // `devUrl` is only recorded by a server fronted by a web dev server, so it
   // distinguishes the dev instance from a production-style one when both are
-  // running under the same base directory. This command is about dev, so a dev
-  // server wins regardless of which state directory the flags happened to
-  // resolve to.
+  // running under the same base directory. Older runtime-state files predate
+  // that field, but an implicit dev server still lives in `<base>/dev`, which is
+  // enough to prefer it over a production-style `<base>/userdata` server.
+  const devStateDir = path.join(config.baseDir, "dev");
   return Option.fromNullishOr(
-    live.find((candidate) => candidate.state.devUrl !== undefined) ?? live[0],
+    live.find((candidate) => candidate.state.devUrl !== undefined) ??
+      live.find((candidate) => candidate.stateDir === devStateDir) ??
+      live[0],
   );
 });
 

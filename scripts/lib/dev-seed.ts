@@ -232,7 +232,7 @@ function copyRows(input: {
     // at the limit instead of ranking every row.
     const statement = input.source.prepare(
       `SELECT ${selectList} FROM ${input.table} WHERE "${input.keyColumn}" = ?
-       ORDER BY ${input.perKeyLimit.orderBy} DESC LIMIT ?`,
+       ORDER BY ${input.perKeyLimit.orderBy} LIMIT ?`,
     );
     for (const key of input.keys) {
       insertFrom(statement.iterate(key, input.perKeyLimit.limit));
@@ -590,8 +590,8 @@ export function seedDevDatabase(options: DevSeedOptions): DevSeedSummary {
         // back to the timestamp — same drift tolerance as the rest of the copy.
         perKeyLimit: {
           orderBy: hasColumn(source, "projection_thread_activities", "sequence")
-            ? `"sequence" DESC, "created_at" DESC, "activity_id"`
-            : `"created_at" DESC, "activity_id"`,
+            ? `"sequence" DESC, "created_at" DESC, "activity_id" DESC`
+            : `"created_at" DESC, "activity_id" DESC`,
           limit: options.activityLimit,
         },
       }),
