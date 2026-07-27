@@ -1021,25 +1021,45 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 }
 
 /**
- * Provenance chip above a proactive agent delivery.
+ * Header for a proactive agent delivery: provenance on the left, arrival time
+ * on the right, a hairline rule under both.
  *
- * Deliberately not a status pill: it is inline, unpadded on the left, and
- * sits in the message's own column so the body below reads as the same
- * assistant message it would have been without it.
+ * The timestamp is always visible here, unlike the hover-revealed one on an
+ * ordinary assistant message. A reply is dated by the act of asking for it —
+ * you were there. A delivery arrives while you are not, so "when" is part of
+ * reading it at all.
  */
-function NotificationBadge({ badge }: { badge: NotificationBadgePresentation }) {
+function NotificationHeader({
+  badge,
+  timestamp,
+  timestampTooltip,
+}: {
+  badge: NotificationBadgePresentation;
+  timestamp: string;
+  timestampTooltip: string;
+}) {
   return (
     <div
-      className={cn(
-        "mb-1 inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
-        badge.muted
-          ? "bg-muted/50 text-muted-foreground/80"
-          : "bg-accent/60 text-accent-foreground",
-      )}
+      className="mb-2 flex items-baseline gap-2 border-b border-border/60 pb-1.5"
       data-notification-badge
     >
-      <BellIcon className="size-3 opacity-70" />
-      <span className="min-w-0 truncate normal-case tracking-normal">{badge.label}</span>
+      <span
+        className={cn(
+          "flex min-w-0 items-center gap-1.5 text-sm font-semibold",
+          badge.muted ? "text-muted-foreground" : "text-foreground",
+        )}
+      >
+        <BellIcon className="size-3.5 shrink-0 self-center opacity-70" />
+        <span className="min-w-0 truncate">{badge.label}</span>
+      </span>
+      <Tooltip>
+        <TooltipTrigger
+          render={<p className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground/80" />}
+        >
+          {timestamp}
+        </TooltipTrigger>
+        <TooltipPopup>{timestampTooltip}</TooltipPopup>
+      </Tooltip>
     </div>
   );
 }
@@ -1051,14 +1071,35 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
 
   return (
     <>
-      <div className="relative min-w-0 px-1 py-0.5">
-        {notificationBadge ? <NotificationBadge badge={notificationBadge} /> : null}
+      <div
+        className={cn(
+          "relative min-w-0 px-1 py-0.5",
+          // A delivery interrupts rather than continues, so it gets room to
+          // read as its own arrival instead of running into the message above.
+          notificationBadge ? "mt-5 first:mt-1" : null,
+        )}
+      >
+        {notificationBadge ? (
+          <NotificationHeader
+            badge={notificationBadge}
+            timestamp={formatShortTimestamp(row.message.updatedAt, ctx.timestampFormat)}
+            timestampTooltip={formatChatTimestampTooltip(
+              row.message.updatedAt,
+              ctx.timestampFormat,
+            )}
+          />
+        ) : null}
         <ChatMarkdown
           text={messageText}
           cwd={ctx.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
           isStreaming={Boolean(row.message.streaming)}
           skills={ctx.skills}
+          // The delivery's own header is the heading. Agent-authored bodies
+          // routinely open with an H1 restating it ("Cronjob Response: …"),
+          // which would otherwise out-shout the real one; demoting the scale
+          // keeps that text intact but subordinate.
+          {...(notificationBadge ? { className: "chat-markdown-notification-body" } : {})}
         />
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
@@ -1069,7 +1110,8 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         {row.showAssistantMeta ? (
           <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
             <AssistantCopyButton row={row} />
-            {!row.message.streaming && (
+            {/* A delivery's header already carries the time, permanently. */}
+            {!row.message.streaming && !notificationBadge && (
               <Tooltip>
                 <TooltipTrigger
                   render={<p className="text-muted-foreground text-xs tabular-nums" />}

@@ -35,6 +35,15 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   activeProviderIconClassName?: string;
   compact?: boolean;
   disabled?: boolean;
+  /**
+   * Render the trigger as a plain label — no caret, no popover, not focusable.
+   *
+   * For threads whose instance and model are fixed at creation and cannot be
+   * reassigned (a Hermes Home channel). `disabled` is the wrong control here:
+   * it styles the chip as a broken affordance, when the truth is there is no
+   * choice to offer.
+   */
+  staticLabel?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
@@ -132,6 +141,48 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     setIsMenuOpen(false);
   };
 
+  const triggerContents = (
+    <span className="flex min-w-0 flex-1 items-center gap-2">
+      {activeEntry ? (
+        <ProviderInstanceIcon
+          driverKind={activeEntry.driverKind}
+          displayName={activeEntry.displayName}
+          accentColor={activeEntry.accentColor}
+          showBadge={showInstanceBadge}
+          className={showInstanceBadge ? "size-5" : "size-4"}
+          iconClassName={cn("size-4", props.activeProviderIconClassName)}
+          indicatorBackground="var(--input)"
+          badgeClassName={cn(
+            "right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3",
+            "px-0.5 text-[7px]",
+          )}
+        />
+      ) : null}
+      <Tooltip>
+        <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
+          {triggerTitle}
+        </TooltipTrigger>
+        <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+      </Tooltip>
+    </span>
+  );
+
+  if (props.staticLabel) {
+    return (
+      <span
+        data-chat-provider-model-picker="true"
+        data-static="true"
+        className={cn(
+          "flex h-8 min-w-0 items-center whitespace-nowrap px-2 text-sm text-muted-foreground/70",
+          props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
+          props.triggerClassName,
+        )}
+      >
+        {triggerContents}
+      </span>
+    );
+  }
+
   return (
     <Popover
       open={isMenuOpen}
@@ -158,29 +209,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           />
         }
       >
-        <span className="flex min-w-0 flex-1 items-center gap-2">
-          {activeEntry ? (
-            <ProviderInstanceIcon
-              driverKind={activeEntry.driverKind}
-              displayName={activeEntry.displayName}
-              accentColor={activeEntry.accentColor}
-              showBadge={showInstanceBadge}
-              className={showInstanceBadge ? "size-5" : "size-4"}
-              iconClassName={cn("size-4", props.activeProviderIconClassName)}
-              indicatorBackground="var(--input)"
-              badgeClassName={cn(
-                "right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3",
-                "px-0.5 text-[7px]",
-              )}
-            />
-          ) : null}
-          <Tooltip>
-            <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
-              {triggerTitle}
-            </TooltipTrigger>
-            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
-          </Tooltip>
-        </span>
+        {triggerContents}
         <span aria-hidden="true" className="flex items-center">
           <ChevronDownIcon aria-hidden="true" className="!ms-0 !-me-1 size-3 shrink-0 opacity-60" />
         </span>

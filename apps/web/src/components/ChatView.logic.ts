@@ -342,15 +342,19 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
 //
 // `selectedProvider` takes the same open-string shape because the composer
 // now tracks the picker selection as a `ProviderInstanceId` (e.g.
-// `codex_personal`). Custom instance ids that don't directly match a
-// registered driver resolve to `null` here, which matches the existing
-// "unknown driver -> unlocked" semantics. Callers that want the lock to track
-// a custom instance's underlying driver kind should resolve the instance id
-// upstream and pass the correlated kind.
+// `codex_personal`). Such an id is not itself a driver-kind slug, so
+// `providers` is consulted to map it back to its owning kind; without that
+// lookup a thread bound to a user-authored instance reads as unlocked.
 export function deriveLockedProvider(input: {
   thread: Thread | null | undefined;
   selectedProvider: string | null;
   threadProvider: string | null;
+  /**
+   * Instance snapshots used to resolve a `ProviderInstanceId` to its driver
+   * kind. Optional so callers that already hold a kind can omit it; absent (or
+   * not yet streamed) it degrades to the previous slug-only matching.
+   */
+  providers?: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
 }): ProviderDriverKind | null {
   if (!threadHasStarted(input.thread)) {
     return null;
@@ -359,15 +363,24 @@ export function deriveLockedProvider(input: {
   if (sessionProvider && isProviderDriverKind(sessionProvider)) {
     return sessionProvider;
   }
-  const narrowedThreadProvider =
-    input.threadProvider && isProviderDriverKind(input.threadProvider)
-      ? input.threadProvider
-      : null;
-  const narrowedSelectedProvider =
-    input.selectedProvider && isProviderDriverKind(input.selectedProvider)
-      ? input.selectedProvider
-      : null;
-  return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
+  // A Hermes home thread never opens a session (deliveries bypass the turn
+  // machinery), so `providerName` is absent and the only binding left is the
+  // instance id on `modelSelection`. Resolving it through the snapshots is
+  // what keeps the composer on the thread's own instance instead of falling
+  // through to the unknown-instance defaults, which show a workspace runtime
+  // mode selector and a plan toggle that Hermes explicitly opts out of.
+  //
+  // The registry lookup must come FIRST. `isProviderDriverKind` validates slug
+  // *shape*, not membership, so an instance id like `hermes-siva-local-c9cc`
+  // satisfies it and would otherwise be returned as a driver kind that matches
+  // no driver — locking the thread to a provider that does not exist.
+  const narrow = (candidate: string | null): ProviderDriverKind | null => {
+    if (!candidate) return null;
+    const resolved = input.providers?.find((entry) => entry.instanceId === candidate)?.driver;
+    if (resolved) return resolved;
+    return isProviderDriverKind(candidate) ? candidate : null;
+  };
+  return narrow(input.threadProvider) ?? narrow(input.selectedProvider) ?? null;
 }
 
 export function getStartedThreadModelChangeBlockReason(input: {

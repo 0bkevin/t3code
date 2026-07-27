@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -17,6 +18,7 @@ import {
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveLockedProvider,
   dismissBranchMismatchForSession,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
@@ -597,5 +599,101 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
+  });
+});
+
+describe("deriveLockedProvider", () => {
+  const hermesInstanceId = ProviderInstanceId.make("hermes-siva-local-c9cc");
+  const providers = [
+    { instanceId: hermesInstanceId, driver: ProviderDriverKind.make("hermes") },
+    { instanceId: ProviderInstanceId.make("codex"), driver: ProviderDriverKind.make("codex") },
+  ];
+
+  it("leaves an unstarted thread unlocked", () => {
+    expect(
+      deriveLockedProvider({
+        thread: makeThread(),
+        selectedProvider: null,
+        threadProvider: "codex",
+        providers,
+      }),
+    ).toBe(null);
+  });
+
+  it("follows the open session's driver kind when there is one", () => {
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({ session: readySession }),
+        selectedProvider: null,
+        threadProvider: null,
+        providers,
+      }),
+    ).toBe("codex");
+  });
+
+  it("resolves a sessionless thread's instance id back to its driver kind", () => {
+    // A Hermes home thread never opens a session — deliveries bypass the turn
+    // machinery — so `modelSelection.instanceId` is the only binding left.
+    // Before this resolved, the composer fell through to the unknown-instance
+    // defaults and showed a runtime mode selector Hermes opts out of.
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({
+          session: null,
+          messages: [
+            {
+              id: MessageId.make("message-1"),
+              role: "assistant",
+              text: "Gateway online",
+              turnId: null,
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          modelSelection: { instanceId: hermesInstanceId, model: "hermes" },
+        }),
+        selectedProvider: null,
+        threadProvider: hermesInstanceId,
+        providers,
+      }),
+    ).toBe("hermes");
+  });
+
+  it("prefers the registry over the slug shape for an instance id", () => {
+    // `isProviderDriverKind` validates slug *shape*, not membership, so an
+    // instance id passes it. Checking shape first would hand back
+    // `hermes-siva-local-c9cc` as a driver kind matching no driver — which is
+    // exactly how a home thread ended up with another provider's composer
+    // controls.
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({ latestTurn: completedTurn }),
+        selectedProvider: null,
+        threadProvider: hermesInstanceId,
+        providers,
+      }),
+    ).toBe("hermes");
+  });
+
+  it("stays unlocked when the thread carries no usable binding", () => {
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({ latestTurn: completedTurn }),
+        selectedProvider: null,
+        threadProvider: null,
+        providers,
+      }),
+    ).toBe(null);
+  });
+
+  it("degrades to slug-only matching when no snapshots are supplied", () => {
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({ latestTurn: completedTurn }),
+        selectedProvider: null,
+        threadProvider: "codex",
+      }),
+    ).toBe("codex");
   });
 });

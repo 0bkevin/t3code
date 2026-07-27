@@ -187,6 +187,7 @@ import {
   sortProviderInstanceEntries,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
+import { homeThreadComposerPlaceholder, isHomeThreadId } from "../../homeThreads";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
@@ -401,7 +402,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
           render={
             <Button
               variant="ghost"
-              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80"
               size="sm"
               type="button"
               onClick={props.onOpenAgent}
@@ -409,8 +410,10 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             />
           }
         >
+          {/* The mark alone. `aria-label` on the trigger and the tooltip below
+              both still say "Open agent details", so dropping the visible
+              word costs nothing to a screen reader. */}
           <HermesIcon />
-          <span className="sr-only sm:not-sr-only">Agent</span>
         </TooltipTrigger>
         <TooltipPopup side="top">Open agent details</TooltipPopup>
       </Tooltip>
@@ -901,6 +904,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProvider: ProviderDriverKind =
     selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const allowHermesSteering = phase === "running" && selectedProvider === "hermes";
+
+  // A Home thread is permanently bound to one instance and one model slug —
+  // `thread.create` fixes both, and Hermes sets
+  // `requiresNewThreadForModelChange`. A picker there would offer a choice
+  // that cannot be taken, so the chip renders as a static label instead.
+  const isHomeThread = useMemo(
+    () => isHomeThreadId(providerStatuses, activeThread?.id),
+    [activeThread?.id, providerStatuses],
+  );
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,
@@ -2699,7 +2711,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             ? providerUnavailableMessage
                             : phase === "disconnected"
                               ? "Ask for follow-up changes or attach images"
-                              : "Ask anything, @tag files/folders, $use skills, or / for commands"
+                              : isHomeThread
+                                ? homeThreadComposerPlaceholder(selectedProviderEntry?.displayName)
+                                : "Ask anything, @tag files/folders, $use skills, or / for commands"
                 }
                 disabled={isConnecting || isComposerApprovalState || projectSelectionRequired}
               />
@@ -2771,6 +2785,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     compact={isComposerFooterCompact}
                     activeInstanceId={selectedInstanceId}
                     model={selectedModelForPickerWithCustomFallback}
+                    staticLabel={isHomeThread}
                     lockedProvider={lockedProvider}
                     lockedContinuationGroupKey={lockedContinuationGroupKey}
                     instanceEntries={providerInstanceEntries}

@@ -1130,6 +1130,35 @@ label:has(> select#reasoning-effort) select {
   color: var(--muted-foreground);
 }
 
+/*
+ * Body of a proactive delivery (cron result, agent-initiated message).
+ *
+ * The delivery renders its own header — source and arrival time — and agent
+ * authored bodies routinely open with an H1 restating it. Demoting the whole
+ * heading scale by one step keeps that text and its internal hierarchy intact
+ * while leaving the real heading the largest thing in the block. The first
+ * heading also loses its top margin, since the header rule above it is
+ * already the separation.
+ */
+.chat-markdown-notification-body h1 {
+  font-size: 1.0625rem;
+}
+
+.chat-markdown-notification-body h2 {
+  font-size: 1rem;
+}
+
+.chat-markdown-notification-body h3,
+.chat-markdown-notification-body h4,
+.chat-markdown-notification-body h5,
+.chat-markdown-notification-body h6 {
+  font-size: 0.875rem;
+}
+
+.chat-markdown-notification-body > :first-child {
+  margin-top: 0;
+}
+
 .chat-markdown ul {
   padding-left: 1.25rem;
   list-style-type: disc;
