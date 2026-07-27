@@ -1086,9 +1086,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
       <div
         className={cn(
           "relative min-w-0 px-1 py-0.5",
-          // A delivery interrupts rather than continues, so it gets room to
-          // read as its own arrival instead of running into the message above.
-          notificationBadge ? "mt-9 first:mt-1" : null,
+          // A delivery interrupts rather than continues, so it gets the same
+          // order of separation a user bubble gets from the reply above it —
+          // each arrival reads as its own section, not a continuation.
+          notificationBadge ? "mt-14 first:mt-1" : null,
         )}
       >
         {notificationBadge ? (
