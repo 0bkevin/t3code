@@ -162,6 +162,40 @@ const statIsFile = (path: string) =>
     Effect.orElseSucceed(() => false),
   );
 
+/**
+ * Resolve a browser artifact to its canonical path, rejecting anything that
+ * escapes the artifacts directory. Names are validated before and after
+ * `realPath` so a symlink with an allowed media name cannot redirect to an
+ * arbitrary (or non-media) server-readable file.
+ */
+const resolveCanonicalBrowserArtifact = Effect.fn("AssetAccess.resolveCanonicalBrowserArtifact")(
+  function* (fileName: string) {
+    const normalized = normalizeBrowserArtifactFileName(fileName);
+    if (!normalized) return null;
+
+    const config = yield* ServerConfig.ServerConfig;
+    const path = yield* Path.Path;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const [canonicalDir, canonicalFile] = yield* Effect.all([
+      optionOnNotFound(fileSystem.realPath(config.browserArtifactsDir)),
+      optionOnNotFound(fileSystem.realPath(path.join(config.browserArtifactsDir, normalized))),
+    ]).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to resolve the browser artifact path.", { fileName, cause }),
+      ),
+      Effect.orElseSucceed(() => [Option.none<string>(), Option.none<string>()] as const),
+    );
+    if (Option.isNone(canonicalDir) || Option.isNone(canonicalFile)) return null;
+
+    // Artifacts are stored flat, so the canonical parent must be the
+    // canonical artifacts directory itself.
+    if (path.dirname(canonicalFile.value) !== canonicalDir.value) return null;
+    if (!normalizeBrowserArtifactFileName(path.basename(canonicalFile.value))) return null;
+
+    return (yield* statIsFile(canonicalFile.value)) ? canonicalFile.value : null;
+  },
+);
+
 const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWorkspaceFile")(
   function* (input: { readonly workspaceRoot: string; readonly relativePath: string }) {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -318,12 +352,8 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       break;
     }
     case "browser-artifact": {
-      const config = yield* ServerConfig.ServerConfig;
       const artifactFileName = normalizeBrowserArtifactFileName(input.resource.fileName);
-      const artifactPath = artifactFileName
-        ? path.join(config.browserArtifactsDir, artifactFileName)
-        : null;
-      if (!artifactFileName || !artifactPath || !(yield* statIsFile(artifactPath))) {
+      if (!artifactFileName || !(yield* resolveCanonicalBrowserArtifact(artifactFileName))) {
         return yield* new AssetBrowserArtifactNotFoundError({
           resource: input.resource,
         });
@@ -372,7 +402,14 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             }),
         ),
       );
-      if (Option.isNone(info) || info.value.type !== "File") {
+      // The extension check above ran on the pre-realPath input; re-check the
+      // canonical target so a symlink named `*.png` cannot smuggle out an
+      // arbitrary non-image file.
+      if (
+        Option.isNone(info) ||
+        info.value.type !== "File" ||
+        !isWorkspaceImagePreviewPath(canonicalPath.value)
+      ) {
         return yield* new AssetThreadImageNotFoundError({
           resource: input.resource,
         });
@@ -503,22 +540,32 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   }
 
   if (claims.kind === "browser-artifact") {
-    const config = yield* ServerConfig.ServerConfig;
-    const artifactFileName = normalizeBrowserArtifactFileName(claims.fileName);
-    if (!artifactFileName) return null;
-    const path = yield* Path.Path;
-    const artifactPath = path.join(config.browserArtifactsDir, artifactFileName);
-    return (yield* statIsFile(artifactPath))
-      ? ({ kind: "file", path: artifactPath } satisfies ResolvedAsset)
-      : null;
+    // Re-resolved on every request: a signed token must not keep serving a
+    // path that was replaced by a symlink after issuance.
+    const artifactPath = yield* resolveCanonicalBrowserArtifact(claims.fileName);
+    return artifactPath ? ({ kind: "file", path: artifactPath } satisfies ResolvedAsset) : null;
   }
 
   if (claims.kind === "thread-image") {
     const decodedPath = decodeRelativePath(relativePath);
     const path = yield* Path.Path;
     if (decodedPath !== path.basename(claims.path)) return null;
+    if (!isWorkspaceImagePreviewPath(claims.path)) return null;
     const fileSystem = yield* FileSystem.FileSystem;
-    const info = yield* optionOnNotFound(fileSystem.stat(claims.path)).pipe(
+    // The claim stores the path that was canonical at issuance. Re-canonicalize
+    // on every request so a file later replaced by a symlink cannot redirect
+    // this token to somewhere else on disk.
+    const canonicalPath = yield* optionOnNotFound(fileSystem.realPath(claims.path)).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to resolve image view asset.", {
+          path: claims.path,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    if (Option.isNone(canonicalPath) || canonicalPath.value !== claims.path) return null;
+    const info = yield* optionOnNotFound(fileSystem.stat(canonicalPath.value)).pipe(
       Effect.tapError((cause) =>
         Effect.logError("Failed to inspect image view asset.", {
           path: claims.path,
@@ -528,7 +575,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       Effect.orElseSucceed(() => Option.none()),
     );
     return Option.isSome(info) && info.value.type === "File"
-      ? ({ kind: "file", path: claims.path } satisfies ResolvedAsset)
+      ? ({ kind: "file", path: canonicalPath.value } satisfies ResolvedAsset)
       : null;
   }
 

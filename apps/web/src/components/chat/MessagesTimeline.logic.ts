@@ -277,7 +277,9 @@ function appendImageOutputRows(input: {
     if (entry.itemType !== "image_view" || !entry.imagePath) {
       continue;
     }
-    if (entry.turnId === input.unsettledTurnId) {
+    // Only skip images that belong to the in-flight turn; an unscoped entry
+    // (null turnId) must still render when no turn is unsettled.
+    if (input.unsettledTurnId !== null && entry.turnId === input.unsettledTurnId) {
       continue;
     }
     const turnId = entry.turnId ?? null;

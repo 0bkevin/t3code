@@ -261,6 +261,61 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("renders unscoped image output when no turn is unsettled", () => {
+    const timelineEntries = [
+      {
+        id: "unscoped-image-entry",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:10Z",
+        entry: {
+          id: "unscoped-image-activity",
+          createdAt: "2026-01-01T00:00:10Z",
+          turnId: null,
+          label: "Image view",
+          tone: "tool" as const,
+          itemType: "image_view" as const,
+          imagePath: "/tmp/unscoped.png",
+          toolLifecycleStatus: "completed" as const,
+        },
+      },
+      {
+        id: "assistant-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:20Z",
+        message: {
+          id: "assistant-message" as never,
+          role: "assistant" as const,
+          text: "Here is the image.",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:20Z",
+          updatedAt: "2026-01-01T00:00:21Z",
+          streaming: false,
+        },
+      },
+    ];
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      expandedTurnIds: new Set(),
+    });
+
+    const imageOutputRow = rows.find((row) => row.kind === "image-output");
+    expect(imageOutputRow).toMatchObject({
+      kind: "image-output",
+      id: "image-output:unscoped",
+      images: [
+        {
+          entry: { id: "unscoped-image-activity" },
+          imagePath: "/tmp/unscoped.png",
+        },
+      ],
+    });
+  });
+
   it("deduplicates and groups image output after the terminal assistant message", () => {
     const timelineEntries = [
       {

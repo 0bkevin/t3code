@@ -70,6 +70,12 @@ export interface WorkLogEntry {
   rawCommand?: string;
   changedFiles?: ReadonlyArray<string>;
   imagePath?: string;
+  /**
+   * Activity that carried `imagePath`. Collapsing can merge a later activity's
+   * `id` onto an earlier activity's `imagePath`, and the asset lookup resolves
+   * the path from this activity's payload — so it must stay paired with it.
+   */
+  imageActivityId?: string;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   toolData?: unknown;
@@ -752,6 +758,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           : null;
     if (imagePath) {
       entry.imagePath = imagePath;
+      entry.imageActivityId = entry.id;
     }
   }
   if (itemType) {
@@ -825,7 +832,11 @@ function mergeDerivedWorkLogEntries(
   const detail = next.detail ?? previous.detail;
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
+  // Keep the owning activity id paired with the path it came from.
   const imagePath = next.imagePath ?? previous.imagePath;
+  const imageActivityId = next.imagePath
+    ? (next.imageActivityId ?? next.id)
+    : (previous.imageActivityId ?? previous.id);
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
@@ -839,7 +850,7 @@ function mergeDerivedWorkLogEntries(
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
-    ...(imagePath ? { imagePath } : {}),
+    ...(imagePath ? { imagePath, imageActivityId } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
