@@ -1975,7 +1975,7 @@ function ImageOutputThumbnail({
   const assetUrl = useAssetUrlState(activeThreadEnvironmentId, {
     _tag: "thread-image",
     threadId: threadRef.threadId,
-    activityId: EventId.make(image.entry.id),
+    activityId: EventId.make(image.entry.imageActivityId ?? image.entry.id),
   });
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const loadedUrl = assetUrl._tag === "Success" && assetUrl.url !== failedUrl ? assetUrl.url : null;

@@ -1057,6 +1057,49 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("keeps the image activity id paired with the path when collapsing entries", () => {
+    const imagePath = "/tmp/codex-preview.png";
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "image-view-with-path",
+        kind: "tool.updated",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          status: "in_progress",
+          title: "Image view",
+          data: {
+            toolCallId: "call-image-1",
+            item: { id: "call-image-1", path: imagePath, type: "imageView" },
+          },
+        },
+      }),
+      // The completion for the same tool call carries no path; collapsing
+      // adopts its id, so the path's owning activity id must be retained.
+      makeActivity({
+        id: "image-view-without-path",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          status: "completed",
+          title: "Image view",
+          data: {
+            toolCallId: "call-image-1",
+            item: { id: "call-image-1", type: "imageView" },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "image-view-without-path",
+      imagePath,
+      imageActivityId: "image-view-with-path",
+    });
+  });
+
   it("unwraps PowerShell command wrappers for displayed command text", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

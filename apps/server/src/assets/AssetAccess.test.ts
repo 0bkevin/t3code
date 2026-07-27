@@ -111,6 +111,7 @@ describe("AssetAccess", () => {
       yield* fileSystem.makeDirectory(config.browserArtifactsDir, { recursive: true });
       const artifactPath = path.join(config.browserArtifactsDir, "browser-recording-demo.webm");
       yield* fileSystem.writeFileString(artifactPath, "webm-bytes");
+      const canonicalArtifactPath = yield* fileSystem.realPath(artifactPath);
       yield* fileSystem.writeFileString(
         path.join(config.browserArtifactsDir, "notes.txt"),
         "not media",
@@ -123,7 +124,7 @@ describe("AssetAccess", () => {
       const token = suffix.slice(0, suffix.indexOf("/"));
       expect(yield* resolveAsset(token, "browser-recording-demo.webm")).toEqual({
         kind: "file",
-        path: artifactPath,
+        path: canonicalArtifactPath,
       });
 
       // Non-media files and traversal-style names are not issuable.
@@ -332,6 +333,107 @@ describe("AssetAccess", () => {
         threadImagePath: path.join(directory, "missing.png"),
       }).pipe(Effect.flip);
       expect(missingError._tag).toBe("AssetThreadImageNotFoundError");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects image view symlinks that escape to non-image files", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-image-view-symlink-",
+      });
+      const secretPath = path.join(directory, "secret.env");
+      yield* fileSystem.writeFileString(secretPath, "SECRET=value");
+      const disguisedPath = path.join(directory, "disguised.png");
+      yield* fileSystem.symlink(secretPath, disguisedPath);
+      const resource = {
+        _tag: "thread-image" as const,
+        threadId: ThreadId.make("thread-1"),
+        activityId: EventId.make("activity-1"),
+      };
+
+      const error = yield* issueAssetUrl({
+        resource,
+        threadImagePath: disguisedPath,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("AssetThreadImageNotFoundError");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("re-resolves image view claims so post-issuance swaps are rejected", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-image-view-swap-",
+      });
+      const imagePath = path.join(directory, "tool-output.png");
+      yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
+      const outsidePath = path.join(directory, "secret.png");
+      yield* fileSystem.writeFileString(outsidePath, "SECRET");
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "thread-image" as const,
+          threadId: ThreadId.make("thread-1"),
+          activityId: EventId.make("activity-1"),
+        },
+        threadImagePath: imagePath,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+
+      // Swap the issued file for a symlink pointing elsewhere.
+      yield* fileSystem.remove(imagePath);
+      yield* fileSystem.symlink(outsidePath, imagePath);
+      expect(yield* resolveAsset(token, "tool-output.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects browser artifact symlinks that escape the artifacts directory", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      yield* fileSystem.makeDirectory(config.browserArtifactsDir, { recursive: true });
+      const outsideDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-artifact-outside-",
+      });
+      const secretPath = path.join(outsideDir, "secret.png");
+      yield* fileSystem.writeFileString(secretPath, "SECRET=value");
+      yield* fileSystem.symlink(secretPath, path.join(config.browserArtifactsDir, "escape.png"));
+
+      const error = yield* issueAssetUrl({
+        resource: { _tag: "browser-artifact", fileName: "escape.png" },
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("AssetBrowserArtifactNotFoundError");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("re-resolves browser artifact claims so post-issuance swaps are rejected", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      yield* fileSystem.makeDirectory(config.browserArtifactsDir, { recursive: true });
+      const outsideDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-artifact-swap-",
+      });
+      const secretPath = path.join(outsideDir, "secret.png");
+      yield* fileSystem.writeFileString(secretPath, "SECRET=value");
+      const artifactPath = path.join(config.browserArtifactsDir, "swapped.png");
+      yield* fileSystem.writeFile(artifactPath, new Uint8Array([137, 80, 78, 71]));
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "browser-artifact", fileName: "swapped.png" },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+
+      yield* fileSystem.remove(artifactPath);
+      yield* fileSystem.symlink(secretPath, artifactPath);
+      expect(yield* resolveAsset(token, "swapped.png")).toBeNull();
     }).pipe(Effect.provide(testLayer)),
   );
 
