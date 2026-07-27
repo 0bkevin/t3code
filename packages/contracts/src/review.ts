@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { GitCommandError, TextGenerationError } from "./git.ts";
+import { ModelSelection } from "./orchestration.ts";
 import { VcsError } from "./vcs.ts";
 
 export const ReviewDiffPreviewInput = Schema.Struct({
@@ -41,6 +42,9 @@ export const ReviewThreadSummaryInput = Schema.Struct({
       pending approvals, or pending user input). The server never recommends
       settling when this is false, regardless of what the model says. */
   canSettleNow: Schema.Boolean,
+  /** Model to run the review with. Defaults to the server's
+      textGenerationModelSelection when omitted (older clients). */
+  modelSelection: Schema.optionalKey(ModelSelection),
 });
 export type ReviewThreadSummaryInput = typeof ReviewThreadSummaryInput.Type;
 

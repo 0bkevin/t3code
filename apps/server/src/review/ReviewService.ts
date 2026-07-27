@@ -368,7 +368,10 @@ export const make = Effect.gen(function* () {
     const canSettleNow = input.canSettleNow && !serverSideActive;
     const isActive = !canSettleNow;
 
-    const { textGenerationModelSelection: modelSelection } = yield* serverSettings.getSettings.pipe(
+    // The client picks the model (defaulting to the user's last-used model
+    // from the composer picker); the server's text-generation setting is
+    // only the fallback for older clients that don't send one.
+    const settings = yield* serverSettings.getSettings.pipe(
       Effect.mapError(
         (cause) =>
           new TextGenerationError({
@@ -378,6 +381,7 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
+    const modelSelection = input.modelSelection ?? settings.textGenerationModelSelection;
 
     // Deeper investigation: live PR state + recent comments, when the
     // thread has a branch. Failures degrade to "no PR context".

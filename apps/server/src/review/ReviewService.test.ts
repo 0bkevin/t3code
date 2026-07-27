@@ -644,6 +644,51 @@ describe("ReviewService", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("summarizeThread uses the client's model selection when provided", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      const reviewCalls: Array<TextGeneration.ThreadReviewGenerationInput> = [];
+      const thread = makeThread({});
+      const clientModel = {
+        instanceId: "claudeAgent",
+        model: "claude-opus-5",
+        options: [],
+      } as unknown as NonNullable<TextGeneration.ThreadReviewGenerationInput["modelSelection"]>;
+
+      yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        return yield* review.summarizeThread({
+          threadId: thread.id,
+          canSettleNow: true,
+          modelSelection: clientModel,
+        });
+      }).pipe(Effect.provide(makeLayer({ workspaceRoot, baseDir, thread, reviewCalls })));
+
+      assert.strictEqual(reviewCalls[0]?.modelSelection.model, "claude-opus-5");
+      assert.strictEqual(reviewCalls[0]?.modelSelection.instanceId, "claudeAgent");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("summarizeThread falls back to the server text-gen model", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      const reviewCalls: Array<TextGeneration.ThreadReviewGenerationInput> = [];
+      const thread = makeThread({});
+
+      yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        return yield* review.summarizeThread({ threadId: thread.id, canSettleNow: true });
+      }).pipe(Effect.provide(makeLayer({ workspaceRoot, baseDir, thread, reviewCalls })));
+
+      // No client model → whatever the server settings carry.
+      assert.ok((reviewCalls[0]?.modelSelection.model.length ?? 0) > 0);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("summarizeThread treats a queued turn start as active", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

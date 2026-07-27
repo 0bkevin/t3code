@@ -11,6 +11,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type EnvironmentId,
+  type ModelSelection,
   type ProjectId,
   type ReviewThreadSummaryResult,
   type ScopedThreadRef,
@@ -18,6 +19,7 @@ import {
 import { create } from "zustand";
 
 import { stackedThreadToast, toastManager } from "./components/ui/toast";
+import { useComposerDraftStore } from "./composerDraftStore";
 import { getClientSettings } from "./hooks/useSettings";
 import { newMessageId } from "~/lib/utils";
 import { appAtomRegistry } from "./rpc/atomRegistry";
@@ -49,6 +51,29 @@ export function publishSweepChangeRequestStates(
   // Bump the store version so the pre-run summary recomputes its candidate
   // count as PR states stream in from the sidebar rows.
   useReviewSweepStore.getState().bumpCandidateVersion();
+}
+
+/** Model the next run will use. Defaults to the composer's last-used
+    (sticky) selection so reviews run on the model the user actually picks
+    for work, not the server's commit-message text-gen default. Overridable
+    in the launch modal. */
+let sweepModelSelection: ModelSelection | null = null;
+
+export function readSweepModelSelection(): ModelSelection | null {
+  return sweepModelSelection ?? readStickyComposerModelSelection();
+}
+
+export function setSweepModelSelection(selection: ModelSelection | null): void {
+  sweepModelSelection = selection;
+  useReviewSweepStore.getState().bumpCandidateVersion();
+}
+
+/** The composer picker's last-used model, if any. */
+function readStickyComposerModelSelection(): ModelSelection | null {
+  const store = useComposerDraftStore.getState();
+  const activeProvider = store.stickyActiveProvider;
+  if (activeProvider === null) return null;
+  return store.stickyModelSelectionByProvider[activeProvider] ?? null;
 }
 
 const SWEEP_CONCURRENCY = 3;
@@ -204,12 +229,17 @@ async function reviewOne(runId: number, item: SweepItem): Promise<void> {
 
   const shell = readThreadShell(item.ref);
   const canSettleNow = shell !== null && canSettle(shell, { now: new Date().toISOString() });
+  const modelSelection = readSweepModelSelection();
   const result = await runAtomCommand(
     appAtomRegistry,
     reviewEnvironment.summarizeThread,
     {
       environmentId: item.ref.environmentId,
-      input: { threadId: item.ref.threadId, canSettleNow },
+      input: {
+        threadId: item.ref.threadId,
+        canSettleNow,
+        ...(modelSelection !== null ? { modelSelection } : {}),
+      },
     },
     { reportFailure: false, reportDefect: false },
   );

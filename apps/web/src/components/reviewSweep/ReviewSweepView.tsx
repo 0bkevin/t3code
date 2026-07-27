@@ -3,7 +3,9 @@ import {
   scopedThreadKey,
   scopeProjectRef,
 } from "@t3tools/client-runtime/environment";
+import { useAtomValue } from "@effect/atom-react";
 import { hasQueuedTurnStart } from "@t3tools/client-runtime/state/thread-settled";
+import { createModelSelection } from "@t3tools/shared/model";
 import { Link } from "@tanstack/react-router";
 import {
   ArchiveIcon,
@@ -21,7 +23,15 @@ import { useMemo, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
-import { useClientSettings } from "../../hooks/useSettings";
+import { useClientSettings, usePrimarySettings } from "../../hooks/useSettings";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+} from "../../providerInstances";
+import { primaryServerProvidersAtom } from "../../state/server";
+import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import {
   applyAllSweepRecommendations,
   applySweepSettle,
@@ -29,7 +39,9 @@ import {
   dismissSweepItem,
   isSweepCandidate,
   mergeSweepItem,
+  readSweepModelSelection,
   retrySweepItem,
+  setSweepModelSelection,
   runMergeQueue,
   sortSweepCandidates,
   startReviewSweep,
@@ -403,6 +415,32 @@ export function SweepPreRunSummary({ onStarted }: { onStarted?: () => void } = {
   // auto-settle changes which threads count as unsettled.
   const candidateVersion = useReviewSweepStore((state) => state.candidateVersion);
 
+  // Review model: defaults to the composer's last-used pick, overridable
+  // here. Re-read on candidateVersion so the trigger reflects changes.
+  const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const settings = usePrimarySettings();
+  const selectedModel = useMemo(
+    () => readSweepModelSelection(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- module-level source
+    [candidateVersion],
+  );
+  const instanceEntries = useMemo(
+    () =>
+      sortProviderInstanceEntries(
+        applyProviderInstanceSettings(deriveProviderInstanceEntries(serverProviders), settings),
+      ),
+    [serverProviders, settings],
+  );
+  const activeInstanceId = selectedModel?.instanceId ?? instanceEntries[0]?.instanceId ?? null;
+  const activeModel = selectedModel?.model ?? instanceEntries[0]?.models[0]?.slug ?? "";
+  const modelOptionsByInstance = useMemo(
+    () =>
+      activeInstanceId === null
+        ? new Map()
+        : getCustomModelOptionsByInstance(settings, serverProviders, activeInstanceId, activeModel),
+    [activeInstanceId, activeModel, serverProviders, settings],
+  );
+
   const { candidateCount, reviewedCount, modelsByEnvironment } = useMemo(() => {
     const now = sweepNowIso();
     const candidates = sortSweepCandidates(
@@ -471,20 +509,41 @@ export function SweepPreRunSummary({ onStarted }: { onStarted?: () => void } = {
             ? ` (${candidateCount - SWEEP_MAX_THREADS} least-recently-active skipped)`
             : ""}
         </div>
-        {modelsByEnvironment.map((entry) => (
-          <div key={entry.environmentId} className="truncate">
-            {entry.label}: <span className="text-foreground">{entry.model}</span> · {entry.threads}{" "}
-            {entry.threads === 1 ? "thread" : "threads"}
+        {modelsByEnvironment.length > 1 ? (
+          <div className="truncate">
+            Across{" "}
+            {modelsByEnvironment.map((entry, index) => (
+              <span key={entry.environmentId}>
+                {index > 0 ? ", " : ""}
+                {entry.label} ({entry.threads})
+              </span>
+            ))}
           </div>
-        ))}
+        ) : null}
+        <div className="flex items-center gap-2 pt-0.5">
+          <span className="shrink-0">Review with</span>
+          {activeInstanceId !== null ? (
+            <ProviderModelPicker
+              activeInstanceId={activeInstanceId}
+              model={activeModel}
+              lockedProvider={null}
+              instanceEntries={instanceEntries}
+              modelOptionsByInstance={modelOptionsByInstance}
+              triggerVariant="outline"
+              triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+              onInstanceModelChange={(instanceId, model) => {
+                setSweepModelSelection(createModelSelection(instanceId, model));
+              }}
+            />
+          ) : (
+            <span className="text-foreground">server default</span>
+          )}
+        </div>
         {reviewedCount >= SWEEP_COST_NOTE_THRESHOLD ? (
           <div className="text-warning-foreground">
             Heads up: {reviewedCount} model calls may take a few minutes and use noticeable credits.
-            You can change the model under Settings → Models.
           </div>
-        ) : (
-          <div>Model is configurable under Settings → Models (text generation).</div>
-        )}
+        ) : null}
       </div>
       <Button
         size="sm"
