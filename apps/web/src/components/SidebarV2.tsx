@@ -133,7 +133,6 @@ import { getTriggerDisplayModelLabel } from "./chat/providerIconUtils";
 import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
 import { primaryServerProvidersAtom } from "../state/server";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { CommandDialogTrigger } from "./ui/command";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -2218,16 +2217,13 @@ export default function SidebarV2() {
         <SidebarGroup className="px-2 pb-2 pt-3">
           <div className="flex items-center gap-1">
             <div className="min-w-0 flex-1">
-              <CommandDialogTrigger
-                render={
-                  <SidebarMenuButton
-                    size="sm"
-                    type="button"
-                    aria-label="Search threads and commands"
-                    className="h-8 gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                    data-testid="command-palette-trigger"
-                  />
-                }
+              <SidebarMenuButton
+                size="sm"
+                type="button"
+                aria-label="Search threads and commands"
+                className="h-8 gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                data-testid="command-palette-trigger"
+                onClick={() => openCommandPalette()}
               >
                 <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
                 <div className="flex-1 truncate text-left">Search</div>
@@ -2236,7 +2232,7 @@ export default function SidebarV2() {
                     {commandPaletteShortcutLabel}
                   </Kbd>
                 ) : null}
-              </CommandDialogTrigger>
+              </SidebarMenuButton>
             </div>
             <div className="shrink-0">
               <Tooltip>

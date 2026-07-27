@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { RouterProvider } from "@tanstack/react-router";
 
 import { isElectron } from "./env";
+import { STARTUP_OPTIONAL_UI_DELAY_MS, useAfterFirstPaint } from "./hooks/useAfterFirstPaint";
 import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
 import type { AppRouter } from "./router";
 
@@ -16,6 +17,18 @@ const ElectronBrowserHost = lazy(() =>
   })),
 );
 
+function DeferredRuntimeHosts() {
+  const ready = useAfterFirstPaint(STARTUP_OPTIONAL_UI_DELAY_MS);
+  if (!ready) return null;
+
+  return (
+    <Suspense fallback={null}>
+      <PreviewAutomationHosts />
+      {isElectron ? <ElectronBrowserHost /> : null}
+    </Suspense>
+  );
+}
+
 /**
  * Owns renderer-wide providers. The Electron browser host intentionally sits
  * outside the router so its webviews survive route transitions, but it must
@@ -25,10 +38,7 @@ export function AppRoot({ router }: { readonly router: AppRouter }) {
   return (
     <AppAtomRegistryProvider>
       <RouterProvider router={router} />
-      <Suspense fallback={null}>
-        <PreviewAutomationHosts />
-        {isElectron ? <ElectronBrowserHost /> : null}
-      </Suspense>
+      <DeferredRuntimeHosts />
     </AppAtomRegistryProvider>
   );
 }

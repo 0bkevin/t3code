@@ -1,60 +1,35 @@
-import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   Outlet,
   createRootRoute,
   type ErrorComponentProps,
   useLocation,
-  useNavigate,
 } from "@tanstack/react-router";
-import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
+import { lazy, Suspense, useEffect } from "react";
 
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPaletteShell } from "../components/CommandPaletteShell";
 import { Button } from "../components/ui/button";
-import {
-  AnchoredToastProvider,
-  stackedThreadToast,
-  ToastProvider,
-  toastManager,
-} from "../components/ui/toast";
-import { resolveAndPersistPreferredEditor } from "../editorPreferences";
+import { AnchoredToastProvider, ToastProvider } from "../components/ui/toast";
+import { STARTUP_OPTIONAL_UI_DELAY_MS, useAfterFirstPaint } from "../hooks/useAfterFirstPaint";
 import { useClientSettings } from "../hooks/useSettings";
-import {
-  deriveLogicalProjectKeyFromSettings,
-  derivePhysicalProjectKeyFromPath,
-  selectProjectGroupingSettings,
-} from "../logicalProject";
-import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import { configureClientTracing } from "../observability/clientTracing";
 import { markStartupMilestone } from "../startupPerformance";
 import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
-import { shellEnvironment } from "../state/shell";
 import { useAtomValue } from "@effect/atom-react";
-import { useAtomCommand } from "../state/use-atom-command";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
+import { primaryServerConfigAtom } from "../state/server";
 import {
-  primaryServerConfigAtom,
-  primaryServerConfigEventAtom,
-  primaryServerWelcomeAtom,
-} from "../state/server";
-import {
-  readProject,
   setActiveEnvironmentId,
   useActiveEnvironmentId,
   useAllEnvironmentShellsBootstrapped,
 } from "../state/entities";
-import {
-  createKeybindingsUpdateToastController,
-  type KeybindingsUpdateToastController,
-} from "../components/KeybindingsUpdateToast.logic";
 
 const AppOverlays = lazy(() => import("../components/AppOverlays"));
+const EventRouter = lazy(() => import("./-EventRouter"));
 const ProviderUpdateLaunchNotification = lazy(() =>
   import("../components/ProviderUpdateLaunchNotification").then((module) => ({
     default: module.ProviderUpdateLaunchNotification,
@@ -84,6 +59,8 @@ function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
+  const loadEventRouter = useAfterFirstPaint();
+  const loadOptionalUi = useAfterFirstPaint(STARTUP_OPTIONAL_UI_DELAY_MS);
 
   useEffect(() => {
     markStartupMilestone("react.usable");
@@ -131,12 +108,18 @@ function RootRouteView() {
         <GlassAppearanceSync />
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <StartupConnectionMilestones /> : null}
-        <Suspense fallback={null}>
-          <AppOverlays />
-          {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
-        </Suspense>
+        {loadOptionalUi ? (
+          <Suspense fallback={null}>
+            <AppOverlays />
+            {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+          </Suspense>
+        ) : null}
         <HostedStaticEnvironmentBootstrap />
-        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
+        {primaryEnvironmentAuthenticated && loadEventRouter ? (
+          <Suspense fallback={null}>
+            <EventRouter />
+          </Suspense>
+        ) : null}
         {appShell}
       </AnchoredToastProvider>
     </ToastProvider>
@@ -297,147 +280,6 @@ function AuthenticatedTracingBootstrap() {
   useEffect(() => {
     void configureClientTracing();
   }, []);
-
-  return null;
-}
-
-function EventRouter() {
-  const navigate = useNavigate();
-  const pathname = useLocation({ select: (loc) => loc.pathname });
-  const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const primaryEnvironment = usePrimaryEnvironment();
-  const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
-    reportFailure: false,
-  });
-  const serverConfig = useAtomValue(primaryServerConfigAtom);
-  const serverConfigEvent = useAtomValue(primaryServerConfigEventAtom);
-  const serverWelcome = useAtomValue(primaryServerWelcomeAtom);
-  const readPathname = useEffectEvent(() => pathname);
-  const handledBootstrapThreadIdRef = useRef<string | null>(null);
-  const handledConfigEventRef = useRef(serverConfigEvent);
-  const [keybindingsToastController] = useState<KeybindingsUpdateToastController>(() =>
-    createKeybindingsUpdateToastController({}),
-  );
-
-  const handleWelcome = useEffectEvent((payload: ServerLifecycleWelcomePayload | null) => {
-    if (!payload) return;
-
-    setActiveEnvironmentId(payload.environment.environmentId);
-    void (async () => {
-      if (!payload.bootstrapProjectId || !payload.bootstrapThreadId) {
-        return;
-      }
-      const bootstrapProject = readProject(
-        scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
-      );
-      const bootstrapProjectKey =
-        (bootstrapProject
-          ? deriveLogicalProjectKeyFromSettings(bootstrapProject, projectGroupingSettings)
-          : null) ??
-        (serverConfig?.cwd
-          ? derivePhysicalProjectKeyFromPath(payload.environment.environmentId, serverConfig.cwd)
-          : null) ??
-        scopedProjectKey(
-          scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
-        );
-      useUiStateStore.getState().setProjectExpanded(bootstrapProjectKey, true);
-
-      if (readPathname() !== "/") {
-        return;
-      }
-      if (handledBootstrapThreadIdRef.current === payload.bootstrapThreadId) {
-        return;
-      }
-      await navigate({
-        to: "/$environmentId/$threadId",
-        params: {
-          environmentId: payload.environment.environmentId,
-          threadId: payload.bootstrapThreadId,
-        },
-        replace: true,
-      });
-      handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
-    })().catch(() => undefined);
-  });
-
-  const handleServerConfigUpdated = useEffectEvent(() => {
-    const decision = keybindingsToastController.handle(serverConfigEvent);
-    if (!decision) {
-      return;
-    }
-
-    if (decision._tag === "Success") {
-      toastManager.add({
-        type: "success",
-        title: "Keybindings updated",
-        description: "Keybindings configuration reloaded successfully.",
-      });
-      return;
-    }
-
-    toastManager.add(
-      stackedThreadToast({
-        type: "warning",
-        title: "Invalid keybindings configuration",
-        description: decision.message,
-        actionVariant: "outline",
-        actionProps: {
-          children: "Open keybindings.json",
-          onClick: () => {
-            if (!serverConfig || !primaryEnvironment) {
-              return;
-            }
-
-            const editor = resolveAndPersistPreferredEditor(serverConfig.availableEditors);
-            if (!editor) {
-              return;
-            }
-            void (async () => {
-              const result = await openInEditor({
-                environmentId: primaryEnvironment.environmentId,
-                input: {
-                  cwd: serverConfig.keybindingsConfigPath,
-                  editor,
-                },
-              });
-              if (result._tag === "Success") {
-                return;
-              }
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Unable to open keybindings file",
-                  description:
-                    error instanceof Error ? error.message : "Unknown error opening file.",
-                }),
-              );
-            })();
-          },
-        },
-      }),
-    );
-  });
-
-  useEffect(() => {
-    if (!serverConfig) {
-      return;
-    }
-
-    setActiveEnvironmentId(serverConfig.environment.environmentId);
-  }, [serverConfig]);
-
-  useEffect(() => {
-    handleWelcome(serverWelcome);
-  }, [serverWelcome]);
-
-  useEffect(() => {
-    if (serverConfigEvent === null || handledConfigEventRef.current === serverConfigEvent) {
-      return;
-    }
-    handledConfigEventRef.current = serverConfigEvent;
-    handleServerConfigUpdated();
-  }, [serverConfigEvent]);
 
   return null;
 }

@@ -1,4 +1,4 @@
-import { Children, isValidElement, Suspense, type ReactElement, type ReactNode } from "react";
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { RouterProvider } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -16,6 +16,6 @@ describe("AppRoot", () => {
     );
     expect(children).toHaveLength(2);
     expect(isValidElement(children[0]) && children[0].type).toBe(RouterProvider);
-    expect(isValidElement(children[1]) && children[1].type).toBe(Suspense);
+    expect(isValidElement(children[1])).toBe(true);
   });
 });

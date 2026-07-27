@@ -108,6 +108,7 @@ import { resolveDefaultProviderModelSelection } from "../providerInstances";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import {
   Command,
+  CommandDialog,
   CommandDialogPopup,
   CommandFooter,
   CommandInput,
@@ -336,6 +337,18 @@ interface CommandPaletteOpenIntent {
 }
 
 export function CommandPaletteDialog(props: {
+  readonly openIntent: CommandPaletteOpenIntent | null;
+  readonly setOpen: (open: boolean) => void;
+  readonly clearOpenIntent: () => void;
+}) {
+  return (
+    <CommandDialog open onOpenChange={props.setOpen}>
+      <OpenCommandPaletteDialog {...props} />
+    </CommandDialog>
+  );
+}
+
+function OpenCommandPaletteDialog(props: {
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
   readonly clearOpenIntent: () => void;

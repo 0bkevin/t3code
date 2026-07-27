@@ -1,16 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../env";
+import { useAfterFirstPaint } from "../hooks/useAfterFirstPaint";
 import { getLocalStorageItem } from "../hooks/useLocalStorage";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { cn, isMacPlatform } from "../lib/utils";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { useClientSettings } from "../hooks/useSettings";
-import ThreadSidebar from "./Sidebar";
-import ThreadSidebarV2 from "./SidebarV2";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
 import {
   resolveInitialThreadSidebarWidth,
@@ -30,6 +29,8 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "90px";
+const ThreadSidebar = lazy(() => import("./Sidebar"));
+const ThreadSidebarV2 = lazy(() => import("./SidebarV2"));
 
 function readInitialThreadSidebarWidth(): number {
   try {
@@ -100,6 +101,7 @@ function SidebarControl() {
 
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const loadSidebarContent = useAfterFirstPaint();
   const sidebarV2Enabled = useClientSettings((settings) => settings.sidebarV2Enabled);
   // Settings routes render the settings nav, which lives in the v1 component
   // and is identical for both sidebars — so v1 stays mounted there.
@@ -178,7 +180,11 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           onResize: setSidebarWidth,
         }}
       >
-        {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
+        {loadSidebarContent ? (
+          <Suspense fallback={null}>
+            {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
+          </Suspense>
+        ) : null}
         <SidebarRail />
       </Sidebar>
       {children}

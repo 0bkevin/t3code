@@ -10,7 +10,6 @@ import { primaryServerKeybindingsAtom } from "../state/server";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
-import { CommandDialog } from "./ui/command";
 
 const CommandPaletteDialog = lazy(() =>
   import("./CommandPalette").then((module) => ({
@@ -99,18 +98,16 @@ export function CommandPaletteShell({ children }: { readonly children: ReactNode
 
   return (
     <ComposerHandleContext value={composerHandleRef}>
-      <CommandDialog open={state.open} onOpenChange={setOpen}>
-        {children}
-        {state.open ? (
-          <Suspense fallback={null}>
-            <CommandPaletteDialog
-              openIntent={state.openIntent}
-              setOpen={setOpen}
-              clearOpenIntent={clearOpenIntent}
-            />
-          </Suspense>
-        ) : null}
-      </CommandDialog>
+      {children}
+      {state.open ? (
+        <Suspense fallback={null}>
+          <CommandPaletteDialog
+            openIntent={state.openIntent}
+            setOpen={setOpen}
+            clearOpenIntent={clearOpenIntent}
+          />
+        </Suspense>
+      ) : null}
     </ComposerHandleContext>
   );
 }

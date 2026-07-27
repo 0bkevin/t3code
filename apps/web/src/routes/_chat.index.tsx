@@ -1,24 +1,19 @@
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LinkIcon, PlusIcon } from "lucide-react";
+import { lazy, Suspense, useCallback } from "react";
 
 import { openCommandPalette } from "../commandPaletteBus";
-import { sortScopedProjectsForSidebar } from "../components/Sidebar.logic";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
-import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import {
-  useAllEnvironmentShellsBootstrapped,
-  useProjects,
-  useThreadShells,
-} from "../state/entities";
+import { useAllEnvironmentShellsBootstrapped, useProjects } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
+
+const ExistingProjectIndex = lazy(() => import("./-ExistingProjectIndex"));
 
 function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
@@ -38,70 +33,19 @@ function ChatIndexRouteView() {
  */
 function IndexDraftLanding() {
   const projects = useProjects();
-  const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
-  const handleNewThread = useNewThreadHandler();
-  const startingRef = useRef(false);
-  const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
-
-  const mostRecentProject = useMemo(
-    () =>
-      bootstrapped
-        ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
-        : null,
-    [bootstrapped, projects, threads],
-  );
-
-  useEffect(() => {
-    if (mostRecentProject === null || startingRef.current) {
-      return;
-    }
-    startingRef.current = true;
-    void handleNewThread(scopeProjectRef(mostRecentProject.environmentId, mostRecentProject.id), {
-      replace: true,
-    }).catch(() => {
-      startingRef.current = false;
-      setStartState((state) => ({ ...state, failed: true }));
-    });
-  }, [handleNewThread, mostRecentProject, startState.retryRequest]);
 
   if (!bootstrapped) {
     return null;
   }
-  if (mostRecentProject !== null) {
-    return startState.failed ? (
-      <DraftStartError
-        onRetry={() => {
-          setStartState((state) => ({
-            failed: false,
-            retryRequest: state.retryRequest + 1,
-          }));
-        }}
-      />
-    ) : null;
+  if (projects.length > 0) {
+    return (
+      <Suspense fallback={null}>
+        <ExistingProjectIndex />
+      </Suspense>
+    );
   }
   return <NoProjectsHero />;
-}
-
-function DraftStartError({ onRetry }: { readonly onRetry: () => void }) {
-  return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-      <Empty className="flex-1">
-        <EmptyHeader className="max-w-md">
-          <EmptyTitle className="text-foreground text-xl">Couldn’t start a new thread</EmptyTitle>
-          <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-            The project is still available. Try opening the draft again.
-          </EmptyDescription>
-          <div className="mt-5 flex justify-center">
-            <Button size="sm" onClick={onRetry}>
-              <RotateCcwIcon className="size-4" />
-              Try again
-            </Button>
-          </div>
-        </EmptyHeader>
-      </Empty>
-    </SidebarInset>
-  );
 }
 
 function NoProjectsHero() {
