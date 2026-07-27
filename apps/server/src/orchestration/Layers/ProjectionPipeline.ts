@@ -831,9 +831,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          // A session clearing `activeTurnId` means the turn ENDED, not that
+          // the thread never had one — so retain the last known turn instead
+          // of nulling it. Nulling was survivable only for providers that
+          // emit `thread.turn-diff-completed`, which re-writes this field
+          // moments later. A workspaceless provider (Hermes) emits no diff,
+          // so the id stayed null forever and `latestTurn` never resolved —
+          // leaving every completed turn looking like a queued-but-unadopted
+          // turn start, which blocks settling for the whole grace window.
+          const nextLatestTurnId =
+            event.payload.session.activeTurnId ?? existingRow.value.latestTurnId;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            latestTurnId: nextLatestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
