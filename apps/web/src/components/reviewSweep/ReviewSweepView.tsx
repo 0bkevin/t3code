@@ -3,6 +3,7 @@ import {
   scopedThreadKey,
   scopeProjectRef,
 } from "@t3tools/client-runtime/environment";
+import { hasQueuedTurnStart } from "@t3tools/client-runtime/state/thread-settled";
 import { Link } from "@tanstack/react-router";
 import {
   ArchiveIcon,
@@ -33,6 +34,7 @@ import {
   sortSweepCandidates,
   startReviewSweep,
   SWEEP_MAX_THREADS,
+  sweepNowIso,
   useReviewSweepStore,
   type SweepItem,
 } from "../../reviewSweepStore";
@@ -138,7 +140,12 @@ function classifySweepItem(item: SweepItem): SweepBucket {
   // Live shell wins over review-time knowledge: a thread blocked on the user
   // right now belongs in "attention" even if the review predates the block.
   const shell = readThreadShell(item.ref);
-  const working = shell?.session?.status === "running" || shell?.session?.status === "starting";
+  const working =
+    shell?.session?.status === "running" ||
+    shell?.session?.status === "starting" ||
+    // A just-sent message no session has adopted yet is in-flight work, not
+    // something waiting on the user.
+    (shell !== null && hasQueuedTurnStart(shell, { now: new Date().toISOString() }));
   const blocked = shell?.hasPendingApprovals === true || shell?.hasPendingUserInput === true;
   if (blocked) return "attention";
   if (working) return "inFlight";
@@ -397,7 +404,7 @@ export function SweepPreRunSummary({ onStarted }: { onStarted?: () => void } = {
   const candidateVersion = useReviewSweepStore((state) => state.candidateVersion);
 
   const { candidateCount, reviewedCount, modelsByEnvironment } = useMemo(() => {
-    const now = new Date().toISOString();
+    const now = sweepNowIso();
     const candidates = sortSweepCandidates(
       shells.filter((shell) =>
         isSweepCandidate(shell, serverConfigs.get(shell.environmentId)?.environment.capabilities, {
@@ -499,6 +506,9 @@ export function ReviewSweepView() {
   const items = useReviewSweepStore((state) => state.items);
   const truncatedCount = useReviewSweepStore((state) => state.truncatedCount);
   const projects = useProjects();
+  // classifySweepItem reads live shells (running vs blocked), so bucketing
+  // must recompute when shells change and not only when items do.
+  const shells = useThreadShells();
 
   // Projects are only unique per (environmentId, projectId) — ids can
   // collide across connected environments.
@@ -547,7 +557,8 @@ export function ReviewSweepView() {
       const group = grouped.get(bucket);
       return group && group.length > 0 ? [[bucket, group] as const] : [];
     });
-  }, [visibleItems]);
+    // `shells` is a classification input via readThreadShell, not unused.
+  }, [shells, visibleItems]);
 
   const reviewedCount = visibleItems.filter(
     (item) => item.status === "done" || item.status === "error",

@@ -409,18 +409,25 @@ export const make = Effect.gen(function* () {
     // active thread must never carry a settle recommendation.
     const recommendSettle = generated.recommendSettle && canSettleNow;
 
-    // Latest ready checkpoint approximates the thread's cumulative diff —
-    // checkpoints stack per turn, so the newest one reflects total change.
-    const latestCheckpoint = thread.checkpoints
-      .toReversed()
-      .find((checkpoint) => checkpoint.status === "ready");
-    const diffStats = latestCheckpoint
-      ? {
-          files: latestCheckpoint.files.length,
-          additions: latestCheckpoint.files.reduce((sum, file) => sum + file.additions, 0),
-          deletions: latestCheckpoint.files.reduce((sum, file) => sum + file.deletions, 0),
-        }
-      : undefined;
+    // Each checkpoint's files are that TURN's delta (CheckpointReactor diffs
+    // previous→current), not a cumulative thread diff — so sum every ready
+    // checkpoint. Line counts add up across turns; the file count dedupes by
+    // path so a file edited in three turns counts once.
+    const readyCheckpoints = thread.checkpoints.filter(
+      (checkpoint) => checkpoint.status === "ready",
+    );
+    const touchedPaths = new Set<string>();
+    let additions = 0;
+    let deletions = 0;
+    for (const checkpoint of readyCheckpoints) {
+      for (const file of checkpoint.files) {
+        touchedPaths.add(file.path);
+        additions += file.additions;
+        deletions += file.deletions;
+      }
+    }
+    const diffStats =
+      touchedPaths.size > 0 ? { files: touchedPaths.size, additions, deletions } : undefined;
 
     return {
       threadId: input.threadId,
@@ -440,7 +447,8 @@ export const make = Effect.gen(function* () {
     const mapProjectionError = (cause: unknown) =>
       new ReviewMergeError({
         threadId: input.threadId,
-        detail: `Failed to read the thread projection: ${String(cause)}`,
+        detail: "Failed to read the thread projection for merge.",
+        cause,
       });
     const threadOption = yield* projectionSnapshotQuery
       .getThreadDetailById(input.threadId)

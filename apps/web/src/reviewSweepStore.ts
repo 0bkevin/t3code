@@ -36,7 +36,16 @@ let changeRequestStateByKey: ReadonlyMap<string, "open" | "closed" | "merged"> =
 export function publishSweepChangeRequestStates(
   states: ReadonlyMap<string, "open" | "closed" | "merged">,
 ): void {
-  changeRequestStateByKey = states;
+  // MERGE rather than replace: SidebarV2 remounts (navigating to settings and
+  // back) publish an empty map before its rows re-subscribe, and wiping the
+  // cache would make merged-PR threads look unsettled again. Rows only ever
+  // add states for threads they own, so stale entries are harmless — a
+  // thread whose PR state genuinely changes republishes its own key.
+  const merged = new Map(changeRequestStateByKey);
+  for (const [key, state] of states) {
+    merged.set(key, state);
+  }
+  changeRequestStateByKey = merged;
   // Bump the store version so the pre-run summary recomputes its candidate
   // count as PR states stream in from the sidebar rows.
   useReviewSweepStore.getState().bumpCandidateVersion();
@@ -150,11 +159,18 @@ export function isSweepCandidate(
   });
 }
 
+/** Minute-quantized clock, matching SidebarV2's `nowMinute`. Using a raw
+    wall clock here would disagree with the sidebar around the merged-PR
+    idle boundary and include threads the sidebar already shows as settled. */
+export function sweepNowIso(): string {
+  return `${new Date().toISOString().slice(0, 16)}:00.000Z`;
+}
+
 /** All unsettled, unarchived threads across every connected environment that
     supports the sweep, most recently active first — the exact order the
     SWEEP_MAX_THREADS cap is applied in. */
 export function collectSweepCandidates(): EnvironmentThreadShell[] {
-  const now = new Date().toISOString();
+  const now = sweepNowIso();
   const autoSettleAfterDays = getClientSettings().sidebarAutoSettleAfterDays;
   const candidates: EnvironmentThreadShell[] = [];
   for (const ref of readThreadRefs()) {

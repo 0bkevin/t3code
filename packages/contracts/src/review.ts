@@ -129,6 +129,7 @@ export class ReviewMergeError extends Schema.TaggedErrorClass<ReviewMergeError>(
   {
     threadId: ThreadId,
     detail: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 

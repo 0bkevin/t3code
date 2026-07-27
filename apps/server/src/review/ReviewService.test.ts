@@ -602,6 +602,48 @@ describe("ReviewService", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("summarizeThread sums diff stats across every ready checkpoint", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      // Checkpoint files are per-TURN deltas, so a multi-turn thread's real
+      // size is the sum — with files deduped by path across turns.
+      const thread = makeThread({
+        checkpoints: [
+          {
+            turnId: "turn_1",
+            checkpointTurnCount: 1,
+            checkpointRef: "ref_1",
+            status: "ready",
+            files: [
+              { path: "a.ts", kind: "modified", additions: 10, deletions: 2 },
+              { path: "b.ts", kind: "added", additions: 5, deletions: 0 },
+            ],
+            assistantMessageId: null,
+            completedAt: "2026-07-20T00:00:00.000Z",
+          },
+          {
+            turnId: "turn_2",
+            checkpointTurnCount: 2,
+            checkpointRef: "ref_2",
+            status: "ready",
+            files: [{ path: "a.ts", kind: "modified", additions: 3, deletions: 1 }],
+            assistantMessageId: null,
+            completedAt: "2026-07-20T00:01:00.000Z",
+          },
+        ] as unknown as OrchestrationThread["checkpoints"],
+      });
+
+      const result = yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        return yield* review.summarizeThread({ threadId: thread.id, canSettleNow: true });
+      }).pipe(Effect.provide(makeLayer({ workspaceRoot, baseDir, thread })));
+
+      assert.deepStrictEqual(result.diffStats, { files: 2, additions: 18, deletions: 3 });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("summarizeThread treats a queued turn start as active", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
