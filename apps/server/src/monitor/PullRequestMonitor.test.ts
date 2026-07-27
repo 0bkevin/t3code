@@ -125,6 +125,7 @@ const harness = Effect.fn("PullRequestMonitor.testHarness")(function* (input: {
   readonly reconcileThreadIds?: ReadonlyArray<ThreadId>;
   readonly failReconcileThreadId?: ThreadId;
   readonly releaseWakeOnDispatch?: boolean;
+  readonly sessionErrorOnDispatch?: boolean;
   readonly busy?: { value: boolean };
   readonly queuedUserTurn?: boolean;
   readonly afterUpdate?: () => void;
@@ -219,6 +220,38 @@ const harness = Effect.fn("PullRequestMonitor.testHarness")(function* (input: {
       }
       if (command.type === "thread.turn.start") {
         ordering.push("dispatch");
+        // Simulates the event-stream fiber observing session-set(error)
+        // after the turn.start command is accepted but before dispatchWake
+        // stamps the claim in-flight — the window where a pending claim
+        // could be left behind forever.
+        if (input.sessionErrorOnDispatch && monitorService) {
+          return monitorService
+            .handleDomainEvent({
+              sequence: 1,
+              eventId: EventId.make("session-error-early"),
+              aggregateKind: "thread",
+              aggregateId: threadId,
+              occurredAt: now,
+              commandId: CommandId.make("session-error-early"),
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              type: "thread.session-set",
+              payload: {
+                threadId,
+                session: {
+                  threadId,
+                  status: "error",
+                  providerName: "claude",
+                  runtimeMode: "full-access",
+                  activeTurnId: null,
+                  lastError: "boom",
+                  updatedAt: now,
+                },
+              },
+            })
+            .pipe(Effect.as({ sequence: commands.length }));
+        }
         if (input.releaseWakeOnDispatch && monitorService) {
           return monitorService
             .handleDomainEvent({
@@ -522,6 +555,24 @@ describe("PullRequestMonitor dispatch protocol", () => {
       });
       assert.deepStrictEqual(h.getRegistration()?.cursor, cursorFromSnapshot(initial));
       assert.strictEqual(h.getRegistration()?.wakeCount, 0);
+    }),
+  );
+
+  it.effect("session error clears a claim that is still pending", () =>
+    Effect.gen(function* () {
+      // The event fiber can see the error before the claim is stamped
+      // in-flight. A pending claim left behind is cleared by nothing else,
+      // so it would block every subsequent wake for this thread.
+      const current = { value: snapshot({ reviewThreads: [comment("one")] }) };
+      const h = yield* harness({ initial: snapshot(), current, sessionErrorOnDispatch: true });
+      yield* h.monitor.pollOnce;
+      // A later poll must still be able to wake — proving no stuck claim.
+      current.value = snapshot({ reviewThreads: [comment("one"), comment("two")] });
+      yield* h.monitor.pollOnce;
+      assert.strictEqual(
+        h.commands.filter((command) => command.type === "thread.turn.start").length,
+        2,
+      );
     }),
   );
 

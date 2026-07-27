@@ -553,7 +553,13 @@ export const make = Effect.gen(function* () {
       // re-diff (I5). Rewind on error; a clean finish (ready/idle/stopped)
       // just frees the claim — its events were genuinely delivered.
       if (status === "error") {
-        return releaseClaim(threadId, (claim) => claim.phase === "in-flight");
+        // Release regardless of phase: this handler runs on the event-stream
+        // fiber and can observe the error before dispatchWake stamps the
+        // claim in-flight. A claim left behind in `pending` is never cleared
+        // by any other path, which would block every future wake for this
+        // thread. releaseClaim only rewinds in-flight claims, so a pending
+        // release is just a claim drop (it never acked a cursor).
+        return releaseClaim(threadId, () => true);
       }
       if (status !== "starting" && status !== "running") {
         return mutateClaim(threadId, (claim) => (claim?.phase === "in-flight" ? undefined : claim));
