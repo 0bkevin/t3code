@@ -176,6 +176,11 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
       assert.isTrue(rebuilt.valid);
       const shellProjection = yield* projections.getThreadProjection(threadId);
       assert.equal(shellProjection.thread.historyOrigin, "v1_import");
+      const shellSnapshot = yield* projections.getShellSnapshot();
+      assert.equal(
+        shellSnapshot.threads.find((thread) => thread.id === threadId)?.historyOrigin,
+        "v1_import",
+      );
       assert.deepStrictEqual(
         shellProjection.messages.map((message) => message.id),
         ["message:legacy:3", "message:legacy:4"],
