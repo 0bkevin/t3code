@@ -32,6 +32,7 @@ import {
 } from "../../providerInstances";
 import { primaryServerProvidersAtom } from "../../state/server";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
 import {
   applyAllSweepRecommendations,
   applySweepSettle,
@@ -433,12 +434,16 @@ export function SweepPreRunSummary({ onStarted }: { onStarted?: () => void } = {
   );
   const activeInstanceId = selectedModel?.instanceId ?? instanceEntries[0]?.instanceId ?? null;
   const activeModel = selectedModel?.model ?? instanceEntries[0]?.models[0]?.slug ?? "";
+  const activeOptions = selectedModel?.options ?? [];
   const modelOptionsByInstance = useMemo(
     () =>
       activeInstanceId === null
         ? new Map()
         : getCustomModelOptionsByInstance(settings, serverProviders, activeInstanceId, activeModel),
     [activeInstanceId, activeModel, serverProviders, settings],
+  );
+  const activeInstanceEntry = instanceEntries.find(
+    (entry) => entry.instanceId === activeInstanceId,
   );
 
   const { candidateCount, reviewedCount, modelsByEnvironment } = useMemo(() => {
@@ -520,21 +525,50 @@ export function SweepPreRunSummary({ onStarted }: { onStarted?: () => void } = {
             ))}
           </div>
         ) : null}
-        <div className="flex items-center gap-2 pt-0.5">
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
           <span className="shrink-0">Review with</span>
           {activeInstanceId !== null ? (
-            <ProviderModelPicker
-              activeInstanceId={activeInstanceId}
-              model={activeModel}
-              lockedProvider={null}
-              instanceEntries={instanceEntries}
-              modelOptionsByInstance={modelOptionsByInstance}
-              triggerVariant="outline"
-              triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-              onInstanceModelChange={(instanceId, model) => {
-                setSweepModelSelection(createModelSelection(instanceId, model));
-              }}
-            />
+            <>
+              <ProviderModelPicker
+                activeInstanceId={activeInstanceId}
+                model={activeModel}
+                lockedProvider={null}
+                instanceEntries={instanceEntries}
+                modelOptionsByInstance={modelOptionsByInstance}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onInstanceModelChange={(instanceId, model) => {
+                  // Carry the current traits across a model switch when the
+                  // instance is unchanged; a different instance's options
+                  // aren't transferable, so start clean there.
+                  setSweepModelSelection(
+                    createModelSelection(
+                      instanceId,
+                      model,
+                      instanceId === activeInstanceId ? activeOptions : undefined,
+                    ),
+                  );
+                }}
+              />
+              {activeInstanceEntry ? (
+                <TraitsPicker
+                  provider={activeInstanceEntry.driverKind}
+                  models={activeInstanceEntry.models}
+                  model={activeModel}
+                  prompt=""
+                  onPromptChange={() => {}}
+                  modelOptions={activeOptions}
+                  allowPromptInjectedEffort={false}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  onModelOptionsChange={(nextOptions) => {
+                    setSweepModelSelection(
+                      createModelSelection(activeInstanceId, activeModel, nextOptions),
+                    );
+                  }}
+                />
+              ) : null}
+            </>
           ) : (
             <span className="text-foreground">server default</span>
           )}
