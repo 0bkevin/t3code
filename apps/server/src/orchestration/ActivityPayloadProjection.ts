@@ -104,6 +104,31 @@ function projectCommandData(data: Record<string, unknown>): Record<string, unkno
   return Object.keys(projectedItem).length > 0 ? projectedItem : undefined;
 }
 
+/**
+ * Image view items carry the on-disk path both clients need to render the
+ * output gallery. The generated image itself also rides along in `result` as
+ * base64 — that stays pruned, since it is megabytes per activity and no client
+ * reads it.
+ */
+function projectImageViewData(data: Record<string, unknown>): Record<string, unknown> | undefined {
+  const item = asRecord(data.item);
+  if (!item) {
+    return undefined;
+  }
+  if (item.type !== "imageView" && item.type !== "imageGeneration") {
+    return undefined;
+  }
+
+  const projectedItem: Record<string, unknown> = { type: item.type };
+  if (asTrimmedString(item.path)) {
+    projectedItem.path = item.path;
+  }
+  if (asTrimmedString(item.savedPath)) {
+    projectedItem.savedPath = item.savedPath;
+  }
+  return Object.keys(projectedItem).length > 1 ? projectedItem : undefined;
+}
+
 function summarizeToolTextOutput(value: string): string | null {
   const lines: string[] = [];
   for (const rawLine of value.split(/\r?\n/u)) {
@@ -165,7 +190,7 @@ export function projectActivityPayload(
   }
 
   const projectedData: Record<string, unknown> = {};
-  const item = projectCommandData(data);
+  const item = projectCommandData(data) ?? projectImageViewData(data);
   if (item) {
     projectedData.item = item;
   }
