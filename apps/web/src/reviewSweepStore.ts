@@ -77,7 +77,7 @@ function readStickyComposerModelSelection(): ModelSelection | null {
   return store.stickyModelSelectionByProvider[activeProvider] ?? null;
 }
 
-const SWEEP_CONCURRENCY = 3;
+const SWEEP_CONCURRENCY = 5;
 /** Soft cap so a giant backlog doesn't spawn an unbounded number of LLM
     generations in one click. */
 export const SWEEP_MAX_THREADS = 50;
