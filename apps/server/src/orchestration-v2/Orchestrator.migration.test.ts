@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
+import { ContextHandoffId } from "@t3tools/contracts";
 
-import { shouldPrepareLegacyImportHandoff } from "./Orchestrator.ts";
+import { appendContextHandoffId, shouldPrepareLegacyImportHandoff } from "./Orchestrator.ts";
 
 it("reissues imported context until the provider thread is materialized", () => {
   assert.isTrue(
@@ -31,4 +32,18 @@ it("reissues imported context until the provider thread is materialized", () => 
       legacyImportItemCount: 0,
     }),
   );
+});
+
+it("records a reissued legacy handoff on an existing provider thread", () => {
+  const existingHandoffId = ContextHandoffId.make("handoff:legacy-import:existing");
+  const retryHandoffId = ContextHandoffId.make("handoff:legacy-import:retry");
+
+  assert.deepEqual(appendContextHandoffId([existingHandoffId], retryHandoffId), [
+    existingHandoffId,
+    retryHandoffId,
+  ]);
+  assert.deepEqual(appendContextHandoffId([existingHandoffId], existingHandoffId), [
+    existingHandoffId,
+  ]);
+  assert.deepEqual(appendContextHandoffId([existingHandoffId], null), [existingHandoffId]);
 });

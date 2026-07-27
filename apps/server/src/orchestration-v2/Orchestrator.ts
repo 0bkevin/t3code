@@ -459,6 +459,13 @@ export function shouldPrepareLegacyImportHandoff(input: {
   );
 }
 
+export function appendContextHandoffId(
+  handoffIds: OrchestrationV2ProviderThread["handoffIds"],
+  handoffId: OrchestrationV2ContextHandoff["id"] | null,
+): OrchestrationV2ProviderThread["handoffIds"] {
+  return handoffId === null ? handoffIds : Array.from(new Set([...handoffIds, handoffId]));
+}
+
 function rootProviderThreadsForProvider(
   projection: OrchestrationV2ThreadProjection,
   providerInstanceId: ModelSelection["instanceId"],
@@ -2626,6 +2633,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ...activeProviderThread,
                 providerSessionId,
                 lastRunOrdinal: ordinal,
+                handoffIds: appendContextHandoffId(
+                  activeProviderThread.handoffIds,
+                  legacyImportHandoff?.id ?? null,
+                ),
                 updatedAt: now,
               };
         const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
