@@ -468,6 +468,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepEqual(closedShellSnapshot.threads, []);
       const closedThreadShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
       assert.equal(closedThreadShell._tag, "None");
+      const closedTaskTabs = yield* snapshotQuery.getClosedTaskTabs();
+      assert.equal(closedTaskTabs.length, 1);
+      assert.equal(closedTaskTabs[0]?.id, ThreadId.make("thread-1"));
+      assert.equal(closedTaskTabs[0]?.tabClosedAt, "2026-02-24T00:00:09.000Z");
+      assert.isNull(closedTaskTabs[0]?.session);
+      assert.isNull(closedTaskTabs[0]?.latestTurn);
       const closedThreadDetail = yield* snapshotQuery.getThreadDetailById(
         ThreadId.make("thread-1"),
       );

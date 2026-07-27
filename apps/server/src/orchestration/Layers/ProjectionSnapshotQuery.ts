@@ -246,6 +246,39 @@ function mapProjectShellRow(
   };
 }
 
+function mapThreadShellRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>,
+): OrchestrationThreadShell {
+  return {
+    id: row.threadId,
+    projectId: row.projectId,
+    workspaceTaskId: row.workspaceTaskId,
+    tabLabel: row.tabLabel,
+    tabPosition: row.tabPosition,
+    tabClosedAt: row.tabClosedAt,
+    forkProvenance: row.forkProvenance,
+    title: row.title,
+    modelSelection: row.modelSelection,
+    runtimeMode: row.runtimeMode,
+    interactionMode: row.interactionMode,
+    branch: row.branch,
+    worktreePath: row.worktreePath,
+    latestTurn: null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    archivedAt: row.archivedAt,
+    settledOverride: row.settledOverride,
+    settledAt: row.settledAt,
+    snoozedUntil: row.snoozedUntil,
+    snoozedAt: row.snoozedAt,
+    session: null,
+    latestUserMessageAt: row.latestUserMessageAt,
+    hasPendingApprovals: row.pendingApprovalCount > 0,
+    hasPendingUserInput: row.pendingUserInputCount > 0,
+    hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
+  };
+}
+
 function mapProposedPlanRow(
   row: Schema.Schema.Type<typeof ProjectionThreadProposedPlanDbRowSchema>,
 ): OrchestrationProposedPlan {
@@ -396,6 +429,46 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND archived_at IS NULL
           AND tab_closed_at IS NULL
         ORDER BY project_id ASC, created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listClosedTaskTabRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          project_id AS "projectId",
+          COALESCE(workspace_task_id, thread_id) AS "workspaceTaskId",
+          tab_label AS "tabLabel",
+          tab_position AS "tabPosition",
+          tab_closed_at AS "tabClosedAt",
+          fork_provenance_json AS "forkProvenance",
+          title,
+          model_selection_json AS "modelSelection",
+          runtime_mode AS "runtimeMode",
+          interaction_mode AS "interactionMode",
+          branch,
+          worktree_path AS "worktreePath",
+          latest_turn_id AS "latestTurnId",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          archived_at AS "archivedAt",
+          settled_override AS "settledOverride",
+          settled_at AS "settledAt",
+          snoozed_until AS "snoozedUntil",
+          snoozed_at AS "snoozedAt",
+          latest_user_message_at AS "latestUserMessageAt",
+          pending_approval_count AS "pendingApprovalCount",
+          pending_user_input_count AS "pendingUserInputCount",
+          has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          deleted_at AS "deletedAt"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND archived_at IS NULL
+          AND tab_closed_at IS NOT NULL
+        ORDER BY tab_closed_at DESC, thread_id ASC
       `,
   });
 
@@ -1756,6 +1829,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         }),
       );
 
+  const getClosedTaskTabs: ProjectionSnapshotQueryShape["getClosedTaskTabs"] = () =>
+    listClosedTaskTabRows(undefined).pipe(
+      Effect.map((rows) => rows.map(mapThreadShellRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getClosedTaskTabs:query",
+          "ProjectionSnapshotQuery.getClosedTaskTabs:decodeRows",
+        ),
+      ),
+    );
+
   const getSnapshotSequence: ProjectionSnapshotQueryShape["getSnapshotSequence"] = () =>
     listProjectionStateRows(undefined).pipe(
       Effect.mapError(
@@ -2166,6 +2250,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,
+    getClosedTaskTabs,
     getSnapshotSequence,
     getCounts,
     getActiveProjectByWorkspaceRoot,

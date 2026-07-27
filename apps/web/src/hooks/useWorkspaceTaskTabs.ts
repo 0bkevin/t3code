@@ -22,11 +22,12 @@ import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
+import { refreshClosedTaskTabsForEnvironment, useClosedTaskTabs } from "../lib/closedTaskTabsState";
 import { newDraftId, newThreadId } from "../lib/utils";
 import { resolveWorkspaceTaskId } from "../lib/workspaceTasks";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { threadEnvironment } from "../state/threads";
-import { useProjects, useServerConfigs, useThreadShells } from "../state/entities";
+import { readThreadShell, useProjects, useServerConfigs, useThreadShells } from "../state/entities";
 import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
 import { useClientSettings } from "./useSettings";
@@ -95,6 +96,16 @@ interface CurrentTaskContext {
 
 function draftTaskId(draft: DraftSessionState): WorkspaceTaskId {
   return draft.workspaceTaskId ?? WorkspaceTaskId.make(String(draft.threadId));
+}
+
+async function waitForThreadShellState(
+  threadRef: ScopedThreadRef,
+  expectedToExist: boolean,
+): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while ((readThreadShell(threadRef) !== null) !== expectedToExist && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 export function useWorkspaceTaskTabs() {
@@ -177,6 +188,9 @@ export function useWorkspaceTaskTabs() {
     currentContext !== null &&
     serverConfigs.get(currentContext.environmentId)?.environment.capabilities.workspaceTaskTabs ===
       true;
+  const closedServerTaskTabs = useClosedTaskTabs(
+    supportsTaskTabs ? currentContext.environmentId : null,
+  );
 
   const tabs = useMemo<ReadonlyArray<WorkspaceTaskTab>>(() => {
     if (currentContext === null) return [];
@@ -247,15 +261,14 @@ export function useWorkspaceTaskTabs() {
 
   const closedTabs = useMemo<ReadonlyArray<ClosedWorkspaceTaskTab>>(() => {
     if (currentContext === null) return [];
-    const serverTabs: ClosedWorkspaceTaskTab[] = threads.flatMap((thread) => {
+    const serverTabs: ClosedWorkspaceTaskTab[] = closedServerTaskTabs.flatMap((thread) => {
       if (
-        thread.environmentId !== currentContext.environmentId ||
         resolveWorkspaceTaskId(thread) !== currentContext.workspaceTaskId ||
         thread.tabClosedAt == null
       ) {
         return [];
       }
-      const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+      const threadRef = scopeThreadRef(currentContext.environmentId, thread.id);
       return [
         {
           kind: "server",
@@ -299,7 +312,7 @@ export function useWorkspaceTaskTabs() {
         left.position - right.position ||
         left.key.localeCompare(right.key),
     );
-  }, [currentContext, draftSessions, threads]);
+  }, [closedServerTaskTabs, currentContext, draftSessions]);
 
   const navigateToTab = useCallback(
     (tab: WorkspaceTaskTab | ClosedWorkspaceTaskTab) => {
@@ -393,6 +406,8 @@ export function useWorkspaceTaskTabs() {
           },
         });
         if (result._tag === "Failure") return;
+        await waitForThreadShellState(tab.threadRef, false);
+        refreshClosedTaskTabsForEnvironment(tab.threadRef.environmentId);
       }
       if (tab.active && fallback) {
         await navigateToTab(fallback);
@@ -414,6 +429,8 @@ export function useWorkspaceTaskTabs() {
           },
         });
         if (result._tag === "Failure") return;
+        await waitForThreadShellState(tab.threadRef, true);
+        refreshClosedTaskTabsForEnvironment(tab.threadRef.environmentId);
       }
       await navigateToTab(tab);
     },

@@ -81,6 +81,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
           getArchivedShellSnapshot: () => Effect.die("unused"),
+          getClosedTaskTabs: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () =>
             Deferred.await(releaseCounts).pipe(
@@ -138,6 +139,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
         getArchivedShellSnapshot: () => Effect.die("unused"),
+        getClosedTaskTabs: () => Effect.die("unused"),
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () =>
@@ -194,6 +196,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
         getArchivedShellSnapshot: () => Effect.die("unused"),
+        getClosedTaskTabs: () => Effect.die("unused"),
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -244,6 +247,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
         getArchivedShellSnapshot: () => Effect.die("unused"),
+        getClosedTaskTabs: () => Effect.die("unused"),
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),

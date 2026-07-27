@@ -29,6 +29,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  getClosedTaskTabs: "orchestration.getClosedTaskTabs",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -447,6 +448,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasActionableProposedPlan: Schema.Boolean,
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
+
+export const OrchestrationClosedTaskTabs = Schema.Array(OrchestrationThreadShell);
+export type OrchestrationClosedTaskTabs = typeof OrchestrationClosedTaskTabs.Type;
 
 export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
@@ -1421,6 +1425,10 @@ export const OrchestrationRpcSchemas = {
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),
     output: OrchestrationShellSnapshot,
+  },
+  getClosedTaskTabs: {
+    input: Schema.Struct({}),
+    output: OrchestrationClosedTaskTabs,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

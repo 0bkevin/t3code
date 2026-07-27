@@ -20,5 +20,9 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:archived-shell-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
     }),
+    closedTaskTabs: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:closed-task-tabs",
+      tag: ORCHESTRATION_WS_METHODS.getClosedTaskTabs,
+    }),
   };
 }

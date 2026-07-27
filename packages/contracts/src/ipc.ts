@@ -93,6 +93,7 @@ import type {
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationShellSnapshot,
+  OrchestrationThreadShell,
   OrchestrationShellStreamItem,
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadStreamItem,
@@ -1245,6 +1246,7 @@ export interface EnvironmentApi {
       input: OrchestrationGetFullThreadDiffInput,
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
     getArchivedShellSnapshot: () => Promise<OrchestrationShellSnapshot>;
+    getClosedTaskTabs: () => Promise<ReadonlyArray<OrchestrationThreadShell>>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,
       options?: {

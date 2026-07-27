@@ -95,6 +95,15 @@ export interface ProjectionSnapshotQueryShape {
   >;
 
   /**
+   * Read closed, non-archived task-tab shells so clients can offer restore
+   * without bootstrapping them into normal navigation state.
+   */
+  readonly getClosedTaskTabs: () => Effect.Effect<
+    ReadonlyArray<OrchestrationThreadShell>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Read the latest projection snapshot sequence without hydrating read-model
    * entities.
    */
