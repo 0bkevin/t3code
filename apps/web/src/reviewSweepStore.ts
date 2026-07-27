@@ -17,6 +17,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 import { stackedThreadToast, toastManager } from "./components/ui/toast";
 import { useComposerDraftStore } from "./composerDraftStore";
@@ -132,31 +133,76 @@ interface ReviewSweepState {
   reset: () => void;
 }
 
-export const useReviewSweepStore = create<ReviewSweepState>((set) => ({
-  phase: "idle",
-  runId: 0,
-  order: [],
-  items: {},
-  truncatedCount: 0,
-  candidateVersion: 0,
-  startRun: ({ runId, items, truncatedCount }) =>
-    set({
-      phase: "running",
-      runId,
-      order: items.map((item) => scopedThreadKey(item.ref)),
-      items: Object.fromEntries(items.map((item) => [scopedThreadKey(item.ref), item])),
-      truncatedCount,
+const SWEEP_STORAGE_KEY = "t3code:review-sweep:v1";
+
+export const useReviewSweepStore = create<ReviewSweepState>()(
+  persist(
+    (set) => ({
+      phase: "idle",
+      runId: 0,
+      order: [],
+      items: {},
+      truncatedCount: 0,
+      candidateVersion: 0,
+      startRun: ({ runId, items, truncatedCount }) =>
+        set({
+          phase: "running",
+          runId,
+          order: items.map((item) => scopedThreadKey(item.ref)),
+          items: Object.fromEntries(items.map((item) => [scopedThreadKey(item.ref), item])),
+          truncatedCount,
+        }),
+      patchItem: (key, patch) =>
+        set((state) => {
+          const existing = state.items[key];
+          if (!existing) return state;
+          return { items: { ...state.items, [key]: { ...existing, ...patch } } };
+        }),
+      finishRun: (runId) => set((state) => (state.runId === runId ? { phase: "complete" } : state)),
+      bumpCandidateVersion: () =>
+        set((state) => ({ candidateVersion: state.candidateVersion + 1 })),
+      reset: () => set({ phase: "idle", order: [], items: {}, truncatedCount: 0 }),
     }),
-  patchItem: (key, patch) =>
-    set((state) => {
-      const existing = state.items[key];
-      if (!existing) return state;
-      return { items: { ...state.items, [key]: { ...existing, ...patch } } };
-    }),
-  finishRun: (runId) => set((state) => (state.runId === runId ? { phase: "complete" } : state)),
-  bumpCandidateVersion: () => set((state) => ({ candidateVersion: state.candidateVersion + 1 })),
-  reset: () => set({ phase: "idle", order: [], items: {}, truncatedCount: 0 }),
-}));
+    {
+      name: SWEEP_STORAGE_KEY,
+      version: 1,
+      storage: createJSONStorage(() => window.localStorage),
+      // candidateVersion is a live signal, not state worth keeping.
+      partialize: (state) => ({
+        phase: state.phase,
+        runId: state.runId,
+        order: state.order,
+        items: state.items,
+        truncatedCount: state.truncatedCount,
+      }),
+      merge: (persisted, current) => {
+        const restored = { ...current, ...(persisted as Partial<ReviewSweepState>) };
+        // In-flight RPCs don't survive a reload: anything still pending or
+        // running when the page died rehydrates as a retry-able error, and
+        // an interrupted run reports as complete so the header offers
+        // Re-run instead of a progress bar that will never advance.
+        const items = Object.fromEntries(
+          Object.entries(restored.items).map(([key, item]) => [
+            key,
+            item.status === "pending" || item.status === "running"
+              ? {
+                  ...item,
+                  status: "error" as const,
+                  errorMessage: "Interrupted by reload — retry to review this thread.",
+                  finishedAtMs: item.finishedAtMs ?? Date.now(),
+                }
+              : item,
+          ]),
+        );
+        return {
+          ...restored,
+          items,
+          phase: restored.phase === "running" ? "complete" : restored.phase,
+        };
+      },
+    },
+  ),
+);
 
 function readServerCapabilities(environmentId: EnvironmentId) {
   return appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
