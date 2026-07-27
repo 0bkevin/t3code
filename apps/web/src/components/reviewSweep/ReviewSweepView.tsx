@@ -96,48 +96,54 @@ const BUCKET_ORDER: readonly SweepBucket[] = [
 
 const BUCKET_META: Record<
   SweepBucket,
-  { title: string; hint: string; accent: string; icon: typeof ArchiveIcon }
+  {
+    title: string;
+    hint: string;
+    /** Tinted icon chip beside the section title. */
+    iconChip: string;
+    icon: typeof ArchiveIcon;
+  }
 > = {
   mergeReady: {
     title: "Merge ready",
     hint: "Open PRs with green CI, approvals, and clean merges.",
-    accent: "border-s-violet-500/70",
+    iconChip: "bg-violet-500/12 text-violet-400",
     icon: GitMergeIcon,
   },
   settle: {
     title: "Ready to settle",
     hint: "Work concluded — one click clears each from your active list.",
-    accent: "border-s-emerald-500/70",
+    iconChip: "bg-emerald-500/12 text-emerald-400",
     icon: ArchiveIcon,
   },
   title: {
     title: "Title fixes",
     hint: "Still in progress, but the name no longer matches the work.",
-    accent: "border-s-sky-500/70",
+    iconChip: "bg-sky-500/12 text-sky-400",
     icon: PencilLineIcon,
   },
   attention: {
     title: "Needs your attention",
     hint: "Waiting on you — review, input, or a decision.",
-    accent: "border-s-amber-500/70",
+    iconChip: "bg-amber-500/12 text-amber-400",
     icon: CircleAlertIcon,
   },
   inFlight: {
     title: "In flight",
     hint: "Agents are still working; nothing to do yet.",
-    accent: "border-s-border",
+    iconChip: "bg-muted text-muted-foreground",
     icon: LoaderIcon,
   },
   failed: {
     title: "Review failed",
     hint: "The reviewer couldn't process these — retry or open them directly.",
-    accent: "border-s-red-500/70",
+    iconChip: "bg-red-500/12 text-red-400",
     icon: CircleAlertIcon,
   },
   reviewing: {
     title: "Still reviewing",
     hint: "",
-    accent: "border-s-border",
+    iconChip: "bg-muted text-muted-foreground",
     icon: LoaderIcon,
   },
 };
@@ -259,7 +265,6 @@ function SweepItemCard({
   const key = scopedThreadKey(item.ref);
   const [applying, setApplying] = useState(false);
   const result = item.result;
-  const meta = BUCKET_META[bucket];
 
   const primaryAction =
     bucket === "mergeReady" ? (
@@ -324,20 +329,27 @@ function SweepItemCard({
   const nextStep = item.status === "error" ? null : (result?.nextStep ?? nextStepFallback);
 
   return (
-    <Card className={cn("min-w-0 gap-1.5 border-s-2 p-3", meta.accent)}>
-      <div className="flex items-center gap-1.5">
-        <Link
-          to="/$environmentId/$threadId"
-          params={buildThreadRouteParams(item.ref)}
-          className="min-w-0 truncate text-sm font-medium text-foreground hover:underline"
-        >
-          {item.threadTitle}
-        </Link>
-        {bucket === "settle" && item.settleApplied ? (
-          <Badge variant="outline">Settled</Badge>
-        ) : null}
-        {bucket === "mergeReady" ? <MergeStatusBadge item={item} /> : null}
-        <div className="ms-auto flex shrink-0 items-center gap-1">
+    <Card className="group min-w-0 gap-2 p-4">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex min-h-5 items-center gap-1.5">
+            <Link
+              to="/$environmentId/$threadId"
+              params={buildThreadRouteParams(item.ref)}
+              className="min-w-0 truncate text-sm font-medium tracking-[-0.005em] text-foreground hover:underline"
+            >
+              {item.threadTitle}
+            </Link>
+            {bucket === "settle" && item.settleApplied ? (
+              <Badge variant="outline" size="sm">
+                Settled
+              </Badge>
+            ) : null}
+            {bucket === "mergeReady" ? <MergeStatusBadge item={item} /> : null}
+          </div>
+          <SweepItemMetaRow item={item} projectTitle={projectTitle} workspaceRoot={workspaceRoot} />
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">
           {result?.summary ? (
             <Tooltip>
               <TooltipTrigger
@@ -369,14 +381,16 @@ function SweepItemCard({
         </div>
       </div>
 
-      <SweepItemMetaRow item={item} projectTitle={projectTitle} workspaceRoot={workspaceRoot} />
-
       {item.status === "error" ? (
-        <p className="line-clamp-2 text-sm text-red-400/90">{item.errorMessage}</p>
+        <p className="line-clamp-2 text-[13px] leading-[1.45] text-destructive-foreground">
+          {item.errorMessage}
+        </p>
       ) : item.mergeStatus === "conflicted" || item.mergeStatus === "failed" ? (
-        <p className="line-clamp-2 text-sm text-warning-foreground">{item.mergeDetail}</p>
+        <p className="line-clamp-2 text-[13px] leading-[1.45] text-warning-foreground">
+          {item.mergeDetail}
+        </p>
       ) : nextStep ? (
-        <p className="line-clamp-2 text-sm text-foreground/90">{nextStep}</p>
+        <p className="line-clamp-2 text-[13px] leading-[1.45] text-muted-foreground">{nextStep}</p>
       ) : null}
 
       {bucket === "title" && result?.suggestedTitle ? (
@@ -396,7 +410,7 @@ function SweepItemCard({
         </p>
       ) : null}
 
-      {primaryAction ? <div className="flex justify-end pt-0.5">{primaryAction}</div> : null}
+      {primaryAction ? <div className="flex justify-end pt-1">{primaryAction}</div> : null}
     </Card>
   );
 }
@@ -438,7 +452,7 @@ function SweepProgressList({
   }, [items]);
 
   return (
-    <div className="flex flex-col divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
+    <Card className="flex flex-col gap-0 divide-y divide-border/50 overflow-hidden p-0">
       {ordered.map((item) => {
         const project = projectsByKey.get(
           scopedProjectKey(scopeProjectRef(item.ref.environmentId, item.projectId)),
@@ -485,7 +499,7 @@ function SweepProgressList({
           </div>
         );
       })}
-    </div>
+    </Card>
   );
 }
 
@@ -819,7 +833,7 @@ export function ReviewSweepView() {
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5">
+        <div className="settings-page-scroll-fade scrollbar-gutter-both min-h-0 flex-1 overflow-y-auto px-4 pt-8 pb-10 sm:px-8">
           {phase === "idle" ? (
             <SweepPreRunSummary />
           ) : running ? (
@@ -858,9 +872,9 @@ export function ReviewSweepView() {
             </Empty>
           ) : (
             <TooltipProvider>
-              <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+              <div className="mx-auto flex w-full max-w-5xl flex-col gap-10">
                 {truncatedCount > 0 ? (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-[13px] leading-[1.45] text-muted-foreground/80">
                     Reviewed the {visibleItems.length} most recent threads; {truncatedCount} more
                     were skipped this run.
                   </p>
@@ -875,25 +889,34 @@ export function ReviewSweepView() {
                         ).length
                       : 0;
                   return (
-                    <section key={bucket} className="flex flex-col gap-2">
-                      <div className="flex items-baseline gap-2">
-                        <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-foreground/80">
-                          <BucketIcon className="size-3.5" />
-                          {meta.title}
-                          <span className="font-normal text-muted-foreground">
-                            · {bucketItems.length}
-                          </span>
-                        </h2>
-                        {meta.hint ? (
-                          <span className="truncate text-xs text-muted-foreground/70">
-                            {meta.hint}
-                          </span>
-                        ) : null}
+                    <section key={bucket} className="flex flex-col gap-3">
+                      <div className="flex min-h-8 items-center gap-3">
+                        <span
+                          className={cn(
+                            "flex size-7 shrink-0 items-center justify-center rounded-lg",
+                            meta.iconChip,
+                          )}
+                        >
+                          <BucketIcon className="size-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <h2 className="flex items-baseline gap-2 text-[15px] font-semibold tracking-[-0.02em] text-foreground">
+                            {meta.title}
+                            <span className="text-sm font-normal text-muted-foreground">
+                              {bucketItems.length}
+                            </span>
+                          </h2>
+                          {meta.hint ? (
+                            <p className="truncate text-[13px] leading-[1.45] text-muted-foreground/80">
+                              {meta.hint}
+                            </p>
+                          ) : null}
+                        </div>
                         {bucket === "mergeReady" && mergeableCount > 0 ? (
                           <Button
                             size="xs"
                             variant="outline"
-                            className="ms-auto shrink-0"
+                            className="shrink-0"
                             disabled={mergingAll}
                             onClick={() => {
                               setMergingAll(true);
@@ -905,7 +928,7 @@ export function ReviewSweepView() {
                           </Button>
                         ) : null}
                       </div>
-                      <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                         {bucketItems.map((item) => {
                           const projectKey = scopedProjectKey(
                             scopeProjectRef(item.ref.environmentId, item.projectId),
