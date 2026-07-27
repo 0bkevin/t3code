@@ -15,7 +15,7 @@ import {
   WorkspaceTaskId,
 } from "@t3tools/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 
 import { DraftId, type DraftSessionState, useComposerDraftStore } from "../composerDraftStore";
 import {
@@ -110,6 +110,7 @@ async function waitForThreadShellState(
 
 export function useWorkspaceTaskTabs() {
   const router = useRouter();
+  const creatingTabRef = useRef(false);
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -334,56 +335,63 @@ export function useWorkspaceTaskTabs() {
     async (mode: "fresh" | "portable" = "fresh") => {
       if (currentContext === null || !supportsTaskTabs) return;
       if (mode === "portable" && !currentContext.sourceIsServer) return;
+      if (creatingTabRef.current) return;
+      creatingTabRef.current = true;
 
-      const draftId = newDraftId();
-      const threadId = newThreadId();
-      const createdAt = new Date().toISOString();
-      const position =
-        [...tabs, ...closedTabs].reduce((max, tab) => Math.max(max, tab.position), -1) + 1;
-      const forkProvenance: ThreadForkProvenance = {
-        mode,
-        sourceThreadId: mode === "portable" ? currentContext.threadId : null,
-        createdAt,
-      };
-      const store = useComposerDraftStore.getState();
-      const currentComposer =
-        routeTarget?.kind === "server"
-          ? store.getComposerDraft(routeTarget.threadRef)
-          : routeTarget?.kind === "draft"
-            ? store.getComposerDraft(routeTarget.draftId)
-            : null;
-      const activeProvider = currentComposer?.activeProvider ?? null;
-      const carriedModelSelection =
-        (activeProvider ? currentComposer?.modelSelectionByProvider[activeProvider] : undefined) ??
-        currentContext.modelSelection;
-
-      store.setLogicalProjectDraftThreadId(
-        currentContext.logicalProjectKey,
-        scopeProjectRef(currentContext.environmentId, currentContext.projectId),
-        draftId,
-        {
-          threadId,
-          workspaceTaskId: currentContext.workspaceTaskId,
-          tabPosition: position,
-          tabLabel: null,
-          forkProvenance,
+      try {
+        const draftId = newDraftId();
+        const threadId = newThreadId();
+        const createdAt = new Date().toISOString();
+        const position =
+          [...tabs, ...closedTabs].reduce((max, tab) => Math.max(max, tab.position), -1) + 1;
+        const forkProvenance: ThreadForkProvenance = {
+          mode,
+          sourceThreadId: mode === "portable" ? currentContext.threadId : null,
           createdAt,
-          branch: currentContext.branch,
-          worktreePath: currentContext.worktreePath,
-          envMode: currentContext.worktreePath ? "worktree" : "local",
-          startFromOrigin: false,
-          runtimeMode: currentContext.runtimeMode,
-          interactionMode: currentContext.interactionMode,
-          retainPreviousDraft: true,
-        },
-      );
-      store.applyStickyState(draftId);
-      store.setModelSelection(draftId, carriedModelSelection, { replaceOptions: true });
+        };
+        const store = useComposerDraftStore.getState();
+        const currentComposer =
+          routeTarget?.kind === "server"
+            ? store.getComposerDraft(routeTarget.threadRef)
+            : routeTarget?.kind === "draft"
+              ? store.getComposerDraft(routeTarget.draftId)
+              : null;
+        const activeProvider = currentComposer?.activeProvider ?? null;
+        const carriedModelSelection =
+          (activeProvider
+            ? currentComposer?.modelSelectionByProvider[activeProvider]
+            : undefined) ?? currentContext.modelSelection;
 
-      await router.navigate({
-        to: "/draft/$draftId",
-        params: { draftId },
-      });
+        store.setLogicalProjectDraftThreadId(
+          currentContext.logicalProjectKey,
+          scopeProjectRef(currentContext.environmentId, currentContext.projectId),
+          draftId,
+          {
+            threadId,
+            workspaceTaskId: currentContext.workspaceTaskId,
+            tabPosition: position,
+            tabLabel: null,
+            forkProvenance,
+            createdAt,
+            branch: currentContext.branch,
+            worktreePath: currentContext.worktreePath,
+            envMode: currentContext.worktreePath ? "worktree" : "local",
+            startFromOrigin: false,
+            runtimeMode: currentContext.runtimeMode,
+            interactionMode: currentContext.interactionMode,
+            retainPreviousDraft: true,
+          },
+        );
+        store.applyStickyState(draftId);
+        store.setModelSelection(draftId, carriedModelSelection, { replaceOptions: true });
+
+        await router.navigate({
+          to: "/draft/$draftId",
+          params: { draftId },
+        });
+      } finally {
+        creatingTabRef.current = false;
+      }
     },
     [closedTabs, currentContext, routeTarget, router, supportsTaskTabs, tabs],
   );
