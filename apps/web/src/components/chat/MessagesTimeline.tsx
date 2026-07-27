@@ -1088,7 +1088,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           "relative min-w-0 px-1 py-0.5",
           // A delivery interrupts rather than continues, so it gets room to
           // read as its own arrival instead of running into the message above.
-          notificationBadge ? "mt-5 first:mt-1" : null,
+          notificationBadge ? "mt-9 first:mt-1" : null,
         )}
       >
         {notificationBadge ? (
