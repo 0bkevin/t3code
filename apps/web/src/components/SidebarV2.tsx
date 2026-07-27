@@ -77,6 +77,7 @@ import {
 } from "../logicalProject";
 import {
   buildSidebarProjectSnapshots,
+  isAgentProject,
   resolveAgentProjectDriverKind,
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
@@ -2351,6 +2352,11 @@ export default function SidebarV2() {
                       environmentId={scopedProjectGroup.environmentId}
                       cwd={scopedProjectGroup.workspaceRoot}
                       className="size-4 shrink-0"
+                      agentDriverKind={resolveAgentProjectDriverKind(
+                        scopedProjectGroup,
+                        providerEntryByInstanceId,
+                      )}
+                      agentDisplayName={scopedProjectGroup.displayName}
                     />
                   ) : (
                     <FolderIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
@@ -2388,20 +2394,31 @@ export default function SidebarV2() {
                             environmentId={project.environmentId}
                             cwd={project.workspaceRoot}
                             className="size-4 shrink-0"
+                            agentDriverKind={resolveAgentProjectDriverKind(
+                              project,
+                              providerEntryByInstanceId,
+                            )}
+                            agentDisplayName={project.displayName}
                           />
                           <span className="min-w-0 truncate text-sm">{project.displayName}</span>
-                          <button
-                            type="button"
-                            aria-label={`Project actions for ${project.displayName}`}
-                            title={`Project actions for ${project.displayName}`}
-                            className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/55 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={(event) => {
-                              void handleProjectActions(event, project);
-                            }}
-                          >
-                            <EllipsisIcon className="size-3.5" />
-                          </button>
+                          {/* No actions for an agent's synthetic project: the
+                              dialog offers rename/regroup/Remove, all of which
+                              treat it as a user-managed workspace — Remove
+                              would delete the agent's Home thread history. */}
+                          {isAgentProject(project) ? null : (
+                            <button
+                              type="button"
+                              aria-label={`Project actions for ${project.displayName}`}
+                              title={`Project actions for ${project.displayName}`}
+                              className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/55 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                void handleProjectActions(event, project);
+                              }}
+                            >
+                              <EllipsisIcon className="size-3.5" />
+                            </button>
+                          )}
                         </MenuRadioItem>
                       );
                     })}
