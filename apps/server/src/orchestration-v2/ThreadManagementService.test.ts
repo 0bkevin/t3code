@@ -141,6 +141,16 @@ it("identifies every existing thread that must be hydrated before dispatch", () 
 
   expect(
     existingThreadIdsForCommand({
+      type: "delegated_task.wake-policy",
+      commandId: CommandId.make("command:thread-management:wake-policy"),
+      parentThreadId,
+      taskId: NodeId.make("node:thread-management:delegated"),
+      completionWake: "always",
+    }),
+  ).toEqual([parentThreadId]);
+
+  expect(
+    existingThreadIdsForCommand({
       type: "thread.created.record",
       commandId: CommandId.make("command:thread-management:record"),
       parentThreadId,
