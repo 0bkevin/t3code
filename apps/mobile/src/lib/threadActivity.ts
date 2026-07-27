@@ -39,8 +39,9 @@ export interface ThreadFeedActivity {
   readonly runId: RunId | null;
   readonly summary: string;
   readonly detail: string | null;
-  readonly fullDetail: string | null;
-  readonly copyText: string;
+  readonly canExpand: boolean;
+  readonly getFullDetail: () => string | null;
+  readonly getCopyText: () => string;
   readonly icon:
     | "agent"
     | "alert"
@@ -150,6 +151,18 @@ function resolvePendingUserInputAnswer(
 function capitalizePhrase(value: string): string {
   const trimmed = value.trim();
   return trimmed.length === 0 ? value : `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
+
+function memoizeValue<T>(build: () => T): () => T {
+  let value: T;
+  let initialized = false;
+  return () => {
+    if (!initialized) {
+      value = build();
+      initialized = true;
+    }
+    return value;
+  };
 }
 
 function itemIsToolLike(item: OrchestrationV2TurnItem): boolean {
@@ -324,15 +337,25 @@ function toFeedActivity(row: OrchestrationV2ProjectedTurnItem): ThreadFeedActivi
   const toolPresentation = itemToolPresentation(item);
   const summary = itemSummary(item, toolPresentation);
   const detail = itemPreview(item);
-  const fullDetail = JSON.stringify(
-    {
-      visibility: row.visibility,
-      sourceThreadId: row.sourceThreadId,
-      sourceItemId: row.sourceItemId,
-      item,
-    },
-    null,
-    2,
+  const getFullDetail = memoizeValue(() =>
+    JSON.stringify(
+      {
+        visibility: row.visibility,
+        sourceThreadId: row.sourceThreadId,
+        sourceItemId: row.sourceItemId,
+        item,
+      },
+      null,
+      2,
+    ),
+  );
+  const getCopyText = memoizeValue(() =>
+    [summary, detail, getFullDetail()]
+      .filter(
+        (value, index, values): value is string =>
+          Boolean(value) && values.indexOf(value) === index,
+      )
+      .join("\n"),
   );
   return {
     id: `${row.visibility}:${row.sourceThreadId}:${row.sourceItemId}`,
@@ -340,15 +363,11 @@ function toFeedActivity(row: OrchestrationV2ProjectedTurnItem): ThreadFeedActivi
     runId: item.runId,
     summary,
     detail,
-    fullDetail,
+    canExpand: true,
+    getFullDetail,
+    getCopyText,
     icon: itemIcon(item),
     logo: toolPresentation?.logo ?? null,
-    copyText: [summary, detail, fullDetail]
-      .filter(
-        (value, index, values): value is string =>
-          Boolean(value) && values.indexOf(value) === index,
-      )
-      .join("\n"),
     toolLike: itemIsToolLike(item),
     prominent: itemIsProminent(item),
     status: itemStatus(item),

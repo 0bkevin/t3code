@@ -554,6 +554,7 @@ function makeReplayServerConfig(
       baseDir,
       staticDir: undefined,
       devUrl: undefined,
+      devAllowedOrigins: [],
       noBrowser: false,
       startupPresentation: "browser",
       tailscaleServeEnabled: false,

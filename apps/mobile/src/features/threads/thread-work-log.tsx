@@ -203,7 +203,7 @@ export function ThreadWorkLog(props: {
       <View className="gap-px">
         {visibleRows.map((row) => {
           const expanded = props.expandedRows[row.id] ?? false;
-          const canExpand = row.fullDetail !== null;
+          const canExpand = row.canExpand;
           const detail = compactActivityDetail(row.detail);
           const displayText = detail ? `${row.summary} ${detail}` : row.summary;
           const textIsDestructive = row.icon === "alert" || row.icon === "warning";
@@ -233,7 +233,7 @@ export function ThreadWorkLog(props: {
                     props.onToggleRow(row.id);
                   }
                 }}
-                onLongPress={() => props.onCopyRow(row.id, row.copyText)}
+                onLongPress={() => props.onCopyRow(row.id, row.getCopyText())}
                 style={({ pressed }) => ({
                   backgroundColor: pressed ? pressedBackground : "transparent",
                 })}
@@ -298,7 +298,7 @@ export function ThreadWorkLog(props: {
                 </View>
               </Pressable>
 
-              {expanded && row.fullDetail ? (
+              {expanded && canExpand ? (
                 <View className="ml-7 border-l border-neutral-300/60 pb-1.5 pl-3 pt-0.5 dark:border-white/[0.12]">
                   <ThreadActivityInspector
                     activity={row}

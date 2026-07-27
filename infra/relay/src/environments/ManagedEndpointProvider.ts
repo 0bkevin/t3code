@@ -23,6 +23,7 @@ import {
   managedEndpointTunnelName,
 } from "../deploymentConfig.ts";
 import * as ManagedEndpointAllocations from "./ManagedEndpointAllocations.ts";
+import * as ManagedTunnelLimits from "./ManagedTunnelLimits.ts";
 
 export class ManagedEndpointProvisioningNotConfigured extends Schema.TaggedErrorClass<ManagedEndpointProvisioningNotConfigured>()(
   "ManagedEndpointProvisioningNotConfigured",
@@ -41,6 +42,7 @@ export class ManagedEndpointProvisioningNotConfigured extends Schema.TaggedError
 
 const ManagedEndpointProvisioningStage = Schema.Literals([
   "derive-environment-hash",
+  "check-tunnel-limit",
   "reserve-allocation",
   "ensure-tunnel",
   "validate-tunnel-response",
@@ -112,7 +114,8 @@ export class ManagedEndpointOriginNotAllowed extends Schema.TaggedErrorClass<Man
 export type ManagedEndpointProviderError =
   | ManagedEndpointProvisioningNotConfigured
   | ManagedEndpointProvisioningFailed
-  | ManagedEndpointOriginNotAllowed;
+  | ManagedEndpointOriginNotAllowed
+  | ManagedTunnelLimits.ManagedTunnelLimitExceeded;
 
 export interface ManagedEndpointProvisioningResult {
   readonly endpoint: RelayManagedEndpoint;
@@ -331,6 +334,7 @@ export const make = Effect.gen(function* () {
   const tunnels = yield* ManagedEndpointTunnelClient;
   const dns = yield* ManagedEndpointDnsClient;
   const allocations = yield* ManagedEndpointAllocations.ManagedEndpointAllocations;
+  const tunnelLimits = yield* ManagedTunnelLimits.ManagedTunnelLimits;
 
   const updateExistingDnsRecords = Effect.fnUntraced(function* (
     records: ReadonlyArray<{ readonly id: string }>,
@@ -504,6 +508,26 @@ export const make = Effect.gen(function* () {
         environmentHash,
       );
       const requestedTunnelName = managedEndpointTunnelName(cf.namespace, environmentHash);
+      yield* tunnelLimits
+        .ensureCapacity({
+          userId: input.userId,
+          environmentId: input.environmentId,
+        })
+        .pipe(
+          Effect.catchTags({
+            ManagedTunnelLimitPersistenceError: (cause) =>
+              Effect.fail(
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "check-tunnel-limit",
+                  hostname: requestedHostname,
+                  tunnelName: requestedTunnelName,
+                  cause,
+                }),
+              ),
+          }),
+        );
       const allocation = yield* allocations
         .reserve({
           userId: input.userId,
@@ -702,134 +726,139 @@ export const make = Effect.gen(function* () {
 export const layer = Layer.effect(ManagedEndpointProvider, make);
 
 export const layerCloudflareBindings = (
-  tunnelClient: Cloudflare.TunnelReadWriteClient,
-  dnsClient: Cloudflare.DnsReadWriteClient,
-  alchemyRuntimeContext: Alchemy.BaseRuntimeContext,
+  tunnelClient: Cloudflare.Tunnel.ReadWriteTunnelClient,
+  dnsClient: Cloudflare.DNS.ReadWriteDnsClient,
 ) =>
   layer.pipe(
     Layer.provide(
-      Layer.mergeAll(
-        layerTunnelClient({
-          list: (request) =>
-            tunnelClient.list(request).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointTunnelClientError({
-                    operation: "list",
-                    tunnelName: request.name,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+      Layer.unwrap(
+        Alchemy.RuntimeContext.pipe(
+          Effect.map((alchemyRuntimeContext) =>
+            Layer.mergeAll(
+              layerTunnelClient({
+                list: (request) =>
+                  tunnelClient.list(request).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointTunnelClientError({
+                          operation: "list",
+                          tunnelName: request.name,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+                create: (request) =>
+                  tunnelClient.create(request).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointTunnelClientError({
+                          operation: "create",
+                          tunnelName: request.name,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+                putConfiguration: (tunnelId, config) =>
+                  tunnelClient.putConfiguration(tunnelId, config).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointTunnelClientError({
+                          operation: "put-configuration",
+                          tunnelId,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+                getToken: (tunnelId) =>
+                  tunnelClient.getToken(tunnelId).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointTunnelClientError({
+                          operation: "get-token",
+                          tunnelId,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+                delete: (tunnelId) =>
+                  tunnelClient.delete(tunnelId).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointTunnelClientError({
+                          operation: "delete",
+                          tunnelId,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+              }),
+              layerDnsClient({
+                listRecords: (hostname) =>
+                  dnsClient.listDnsRecords({ search: hostname }).pipe(
+                    Effect.map((response) =>
+                      response.result.filter(
+                        (record): record is typeof record & { readonly id: string } =>
+                          typeof record.id === "string" &&
+                          normalizeHostname(record.name) === normalizeHostname(hostname),
+                      ),
+                    ),
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointDnsClientError({
+                          operation: "list-records",
+                          hostname,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+                createRecord: (request) =>
+                  dnsClient.createDnsRecord(request).pipe(
+                    Effect.map((response) => ({ id: response.id })),
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointDnsClientError({
+                          operation: "create-record",
+                          hostname: request.name,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+                updateRecord: (dnsRecordId, request) =>
+                  dnsClient.updateDnsRecord(dnsRecordId, request).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointDnsClientError({
+                          operation: "update-record",
+                          hostname: request.name,
+                          dnsRecordId,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+                deleteRecord: (dnsRecordId) =>
+                  dnsClient.deleteDnsRecord(dnsRecordId).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ManagedEndpointDnsClientError({
+                          operation: "delete-record",
+                          dnsRecordId,
+                          cause,
+                        }),
+                    ),
+                    Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
+                  ),
+              }),
             ),
-          create: (request) =>
-            tunnelClient.create(request).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointTunnelClientError({
-                    operation: "create",
-                    tunnelName: request.name,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-          putConfiguration: (tunnelId, config) =>
-            tunnelClient.putConfiguration(tunnelId, config).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointTunnelClientError({
-                    operation: "put-configuration",
-                    tunnelId,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-          getToken: (tunnelId) =>
-            tunnelClient.getToken(tunnelId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointTunnelClientError({
-                    operation: "get-token",
-                    tunnelId,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-          delete: (tunnelId) =>
-            tunnelClient.delete(tunnelId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointTunnelClientError({
-                    operation: "delete",
-                    tunnelId,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-        }),
-        layerDnsClient({
-          listRecords: (hostname) =>
-            dnsClient.listDnsRecords({ search: hostname }).pipe(
-              Effect.map((response) =>
-                response.result.filter(
-                  (record): record is typeof record & { readonly id: string } =>
-                    typeof record.id === "string" &&
-                    normalizeHostname(record.name) === normalizeHostname(hostname),
-                ),
-              ),
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointDnsClientError({
-                    operation: "list-records",
-                    hostname,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-          createRecord: (request) =>
-            dnsClient.createDnsRecord(request).pipe(
-              Effect.map((response) => ({ id: response.id })),
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointDnsClientError({
-                    operation: "create-record",
-                    hostname: request.name,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-          updateRecord: (dnsRecordId, request) =>
-            dnsClient.updateDnsRecord(dnsRecordId, request).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointDnsClientError({
-                    operation: "update-record",
-                    hostname: request.name,
-                    dnsRecordId,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-          deleteRecord: (dnsRecordId) =>
-            dnsClient.deleteDnsRecord(dnsRecordId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ManagedEndpointDnsClientError({
-                    operation: "delete-record",
-                    dnsRecordId,
-                    cause,
-                  }),
-              ),
-              Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
-            ),
-        }),
+          ),
+        ),
       ),
     ),
   );
