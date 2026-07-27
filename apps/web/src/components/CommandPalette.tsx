@@ -58,7 +58,11 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
-import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
+import {
+  resolveSoleNewThreadProjectRef,
+  resolveThreadActionProjectRef,
+  startNewThreadFromContext,
+} from "../lib/chatThreadActions";
 import {
   appendBrowsePathSegment,
   canNavigateUp,
@@ -1214,13 +1218,7 @@ function OpenCommandPaletteDialog(props: {
     const activeProjectTitle =
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
       (currentProjectId ? (projectTitleById.get(currentProjectId) ?? null) : null);
-    // Only meaningful when there is exactly one destination; with several,
-    // an absent `defaultProjectRef` means "no obvious target" and the user
-    // should pick from the submenu rather than have one chosen for them.
-    const soleNewThreadProjectRef =
-      newThreadProjectTargets.length === 1 && newThreadProjectTargets[0]
-        ? scopeProjectRef(newThreadProjectTargets[0].environmentId, newThreadProjectTargets[0].id)
-        : null;
+    const soleNewThreadProjectRef = resolveSoleNewThreadProjectRef(newThreadProjectTargets);
 
     if (activeProjectTitle) {
       actionItems.push({

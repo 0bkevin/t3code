@@ -87,7 +87,10 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { openCommandPalette } from "../commandPaletteBus";
-import { startNewThreadFromContext } from "../lib/chatThreadActions";
+import {
+  resolveSoleNewThreadProjectRef,
+  startNewThreadFromContext,
+} from "../lib/chatThreadActions";
 import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -2257,17 +2260,11 @@ export default function SidebarV2() {
     // One project: nothing to pick, create immediately.
     if (projectGroups.length <= 1) {
       if (isMobile) setOpenMobile(false);
-      // `defaultProjectRef` deliberately resolves to workspaces only, so a
-      // user whose sole project is an agent has none — without this fallback
-      // `startNewThreadFromContext` returns false and the click does nothing.
-      const onlyGroup = projectGroups[0];
-      const fallbackProjectRef =
-        newThreadContext.defaultProjectRef ??
-        (onlyGroup ? scopeProjectRef(onlyGroup.environmentId, onlyGroup.id) : null);
       void startNewThreadFromContext({
         activeDraftThread: newThreadContext.activeDraftThread,
         activeThread: newThreadContext.activeThread ?? undefined,
-        defaultProjectRef: fallbackProjectRef,
+        defaultProjectRef:
+          newThreadContext.defaultProjectRef ?? resolveSoleNewThreadProjectRef(projectGroups),
         handleNewThread: newThreadContext.handleNewThread,
       });
       return;

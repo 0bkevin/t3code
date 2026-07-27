@@ -1139,23 +1139,28 @@ label:has(> select#reasoning-effort) select {
  * while leaving the real heading the largest thing in the block. The first
  * heading also loses its top margin, since the header rule above it is
  * already the separation.
+ *
+ * The compound `.chat-markdown.…` selector out-specifies the base
+ * `.chat-markdown h1` rules regardless of source order — both classes land on
+ * the same root div, so a single-class selector would win or lose purely on
+ * position in this file.
  */
-.chat-markdown-notification-body h1 {
+.chat-markdown.chat-markdown-notification-body h1 {
   font-size: 1.0625rem;
 }
 
-.chat-markdown-notification-body h2 {
+.chat-markdown.chat-markdown-notification-body h2 {
   font-size: 1rem;
 }
 
-.chat-markdown-notification-body h3,
-.chat-markdown-notification-body h4,
-.chat-markdown-notification-body h5,
-.chat-markdown-notification-body h6 {
+.chat-markdown.chat-markdown-notification-body h3,
+.chat-markdown.chat-markdown-notification-body h4,
+.chat-markdown.chat-markdown-notification-body h5,
+.chat-markdown.chat-markdown-notification-body h6 {
   font-size: 0.875rem;
 }
 
-.chat-markdown-notification-body > :first-child {
+.chat-markdown.chat-markdown-notification-body > :first-child {
   margin-top: 0;
 }
 

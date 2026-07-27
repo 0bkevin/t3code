@@ -909,10 +909,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // `thread.create` fixes both, and Hermes sets
   // `requiresNewThreadForModelChange`. A picker there would offer a choice
   // that cannot be taken, so the chip renders as a static label instead.
-  const isHomeThread = useMemo(
-    () => isHomeThreadId(providerStatuses, activeThread?.id),
-    [activeThread?.id, providerStatuses],
-  );
+  const isHomeThread = isHomeThreadId(providerStatuses, activeThread?.id);
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,

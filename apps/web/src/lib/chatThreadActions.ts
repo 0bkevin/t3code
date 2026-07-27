@@ -48,6 +48,18 @@ export function resolveThreadActionProjectRef(
   return context.defaultProjectRef;
 }
 
+// `defaultProjectRef` resolves to workspaces only by design, so a user whose
+// sole project is an agent has none — and "new thread" would silently no-op.
+// The fallback applies only when there is exactly one destination: with
+// several, an absent default means "no obvious target" and the user should
+// pick rather than have one chosen for them.
+export function resolveSoleNewThreadProjectRef(
+  targets: ReadonlyArray<{ environmentId: EnvironmentId; id: ProjectId }>,
+): ScopedProjectRef | null {
+  const sole = targets.length === 1 ? targets[0] : undefined;
+  return sole ? scopeProjectRef(sole.environmentId, sole.id) : null;
+}
+
 // New threads inherit only the *project* from the current context. Branch,
 // worktree, and env mode always come from the user's configured defaults —
 // carrying them over from the viewed thread meant "new thread" silently
