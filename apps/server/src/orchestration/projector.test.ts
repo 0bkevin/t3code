@@ -7,6 +7,7 @@ import {
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vite-plus/test";
 
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
@@ -488,11 +489,11 @@ describe("orchestration projector", () => {
     expect(message?.updatedAt).toBe(completeAt);
   });
 
-  it("replaces an assistant snapshot between legacy appended deltas", async () => {
-    const createdAt = "2026-02-23T09:00:00.000Z";
-    const model = createEmptyReadModel(createdAt);
-    const afterCreate = await Effect.runPromise(
-      projectEvent(
+  effectIt.effect("replaces an assistant snapshot between legacy appended deltas", () =>
+    Effect.gen(function* () {
+      const createdAt = "2026-02-23T09:00:00.000Z";
+      const model = createEmptyReadModel(createdAt);
+      const afterCreate = yield* projectEvent(
         model,
         makeEvent({
           sequence: 1,
@@ -516,54 +517,54 @@ describe("orchestration projector", () => {
             updatedAt: createdAt,
           },
         }),
-      ),
-    );
+      );
 
-    const messageEvent = (input: {
-      sequence: number;
-      text: string;
-      streaming: boolean;
-      textOperation?: "replace";
-    }) =>
-      makeEvent({
-        sequence: input.sequence,
-        type: "thread.message-sent",
-        aggregateKind: "thread",
-        aggregateId: "thread-1",
-        occurredAt: createdAt,
-        commandId: `cmd-message-${input.sequence}`,
-        payload: {
-          threadId: "thread-1",
-          messageId: "assistant:msg-replace",
-          role: "assistant",
-          text: input.text,
-          turnId: "turn-1",
-          streaming: input.streaming,
-          ...(input.textOperation !== undefined ? { textOperation: input.textOperation } : {}),
-          createdAt,
-          updatedAt: createdAt,
-        },
-      });
+      const messageEvent = (input: {
+        sequence: number;
+        text: string;
+        streaming: boolean;
+        textOperation?: "replace";
+      }) =>
+        makeEvent({
+          sequence: input.sequence,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: `cmd-message-${input.sequence}`,
+          payload: {
+            threadId: "thread-1",
+            messageId: "assistant:msg-replace",
+            role: "assistant",
+            text: input.text,
+            turnId: "turn-1",
+            streaming: input.streaming,
+            ...(input.textOperation !== undefined ? { textOperation: input.textOperation } : {}),
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
 
-    let projected = afterCreate;
-    for (const event of [
-      messageEvent({ sequence: 2, text: "Hello wor", streaming: true }),
-      messageEvent({
-        sequence: 3,
-        text: "Hello there",
-        streaming: true,
-        textOperation: "replace",
-      }),
-      messageEvent({ sequence: 4, text: "!", streaming: true }),
-      messageEvent({ sequence: 5, text: "", streaming: false }),
-    ]) {
-      projected = await Effect.runPromise(projectEvent(projected, event));
-    }
+      let projected = afterCreate;
+      for (const event of [
+        messageEvent({ sequence: 2, text: "Hello wor", streaming: true }),
+        messageEvent({
+          sequence: 3,
+          text: "Hello there",
+          streaming: true,
+          textOperation: "replace",
+        }),
+        messageEvent({ sequence: 4, text: "!", streaming: true }),
+        messageEvent({ sequence: 5, text: "", streaming: false }),
+      ]) {
+        projected = yield* projectEvent(projected, event);
+      }
 
-    const message = projected.threads[0]?.messages[0];
-    expect(message?.text).toBe("Hello there!");
-    expect(message?.streaming).toBe(false);
-  });
+      const message = projected.threads[0]?.messages[0];
+      expect(message?.text).toBe("Hello there!");
+      expect(message?.streaming).toBe(false);
+    }),
+  );
 
   it("prunes reverted turn messages from in-memory thread snapshot", async () => {
     const createdAt = "2026-02-23T10:00:00.000Z";
