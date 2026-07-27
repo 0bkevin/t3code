@@ -442,6 +442,18 @@ export const make = Effect.gen(function* () {
       settleReason: recommendSettle ? generated.settleReason : null,
       ...(diffStats !== undefined ? { diffStats } : {}),
       ...(prContext !== null ? { prStatus: prContext.status } : {}),
+      ...(generated.usage !== undefined
+        ? {
+            usage: {
+              inputTokens: generated.usage.inputTokens,
+              outputTokens: generated.usage.outputTokens,
+              durationMs: generated.usage.durationMs,
+              ...(generated.usage.costUsd !== undefined
+                ? { costUsd: generated.usage.costUsd }
+                : {}),
+            },
+          }
+        : {}),
     };
   });
 

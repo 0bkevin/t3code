@@ -102,6 +102,10 @@ export interface SweepItem {
   readonly dismissed: boolean;
   readonly mergeStatus: SweepMergeStatus;
   readonly mergeDetail: string | null;
+  /** Epoch ms when this item's review started (for the live elapsed clock). */
+  readonly startedAtMs: number | null;
+  /** Epoch ms when it finished, successfully or not. */
+  readonly finishedAtMs: number | null;
 }
 
 export type SweepPhase = "idle" | "running" | "complete";
@@ -225,7 +229,7 @@ async function reviewOne(runId: number, item: SweepItem): Promise<void> {
   const store = useReviewSweepStore.getState();
   if (store.runId !== runId) return;
   const key = scopedThreadKey(item.ref);
-  store.patchItem(key, { status: "running" });
+  store.patchItem(key, { status: "running", startedAtMs: Date.now(), finishedAtMs: null });
 
   const shell = readThreadShell(item.ref);
   const canSettleNow = shell !== null && canSettle(shell, { now: new Date().toISOString() });
@@ -247,12 +251,18 @@ async function reviewOne(runId: number, item: SweepItem): Promise<void> {
   const current = useReviewSweepStore.getState();
   if (current.runId !== runId) return;
   if (result._tag === "Success") {
-    current.patchItem(key, { status: "done", result: result.value, errorMessage: null });
+    current.patchItem(key, {
+      status: "done",
+      result: result.value,
+      errorMessage: null,
+      finishedAtMs: Date.now(),
+    });
   } else {
     const error = squashAtomCommandFailure(result);
     current.patchItem(key, {
       status: "error",
       errorMessage: error instanceof Error ? error.message : "Review failed.",
+      finishedAtMs: Date.now(),
     });
   }
 }
@@ -331,6 +341,8 @@ export function startReviewSweep(): void {
       dismissed: false,
       mergeStatus: "idle",
       mergeDetail: null,
+      startedAtMs: null,
+      finishedAtMs: null,
     }),
   );
   useReviewSweepStore.getState().startRun({

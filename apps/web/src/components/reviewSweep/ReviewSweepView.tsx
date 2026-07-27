@@ -10,6 +10,7 @@ import { Link } from "@tanstack/react-router";
 import {
   ArchiveIcon,
   ArrowRightIcon,
+  CheckIcon,
   CircleAlertIcon,
   GitMergeIcon,
   InfoIcon,
@@ -19,7 +20,7 @@ import {
   RotateCcwIcon,
   XIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
@@ -400,6 +401,94 @@ function SweepItemCard({
   );
 }
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  return `${Math.floor(totalSeconds / 60)}m ${String(totalSeconds % 60).padStart(2, "0")}s`;
+}
+
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return String(tokens);
+}
+
+/** Live per-thread progress: what's running, for how long, and what each
+    review cost. Replaces a bare spinner so a multi-minute sweep is
+    legible while it works. */
+function SweepProgressList({
+  items,
+  projectsByKey,
+}: {
+  items: ReadonlyArray<SweepItem>;
+  projectsByKey: ReadonlyMap<string, { title: string; workspaceRoot: string }>;
+}) {
+  // Ticking clock so elapsed times advance without store writes.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // Running first (that's the live part), then queued, then finished.
+  const ordered = useMemo(() => {
+    const rank = (item: SweepItem) =>
+      item.status === "running" ? 0 : item.status === "pending" ? 1 : 2;
+    return [...items].sort((a, b) => rank(a) - rank(b));
+  }, [items]);
+
+  return (
+    <div className="flex flex-col divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
+      {ordered.map((item) => {
+        const project = projectsByKey.get(
+          scopedProjectKey(scopeProjectRef(item.ref.environmentId, item.projectId)),
+        );
+        const elapsedMs =
+          item.startedAtMs === null ? null : (item.finishedAtMs ?? nowMs) - item.startedAtMs;
+        const usage = item.result?.usage;
+        return (
+          <div
+            key={scopedThreadKey(item.ref)}
+            className={cn(
+              "flex items-center gap-3 px-3 py-2 text-sm",
+              item.status === "pending" && "opacity-50",
+            )}
+          >
+            <span className="flex size-4 shrink-0 items-center justify-center">
+              {item.status === "running" ? (
+                <Spinner className="size-3.5 text-sky-400" />
+              ) : item.status === "done" ? (
+                <CheckIcon className="size-3.5 text-emerald-500" />
+              ) : item.status === "error" ? (
+                <CircleAlertIcon className="size-3.5 text-red-400" />
+              ) : (
+                <span className="size-1.5 rounded-full bg-muted-foreground/40" />
+              )}
+            </span>
+            {project?.workspaceRoot ? (
+              <ProjectFavicon
+                environmentId={item.ref.environmentId}
+                cwd={project.workspaceRoot}
+                className="size-3.5 shrink-0"
+              />
+            ) : null}
+            <span className="min-w-0 flex-1 truncate text-foreground/90">{item.threadTitle}</span>
+            {usage ? (
+              <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                {formatTokens(usage.inputTokens + usage.outputTokens)} tok
+                {usage.costUsd !== undefined ? ` · $${usage.costUsd.toFixed(2)}` : ""}
+              </span>
+            ) : null}
+            <span className="w-16 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
+              {elapsedMs === null ? "—" : formatDuration(elapsedMs)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Cost-transparency threshold: at or above this many candidate threads the
     pre-run screen calls out that the sweep may be slow/expensive. */
 const SWEEP_COST_NOTE_THRESHOLD = 15;
@@ -664,6 +753,22 @@ export function ReviewSweepView() {
   const running = phase === "running";
   const [applyingAll, setApplyingAll] = useState(false);
   const [mergingAll, setMergingAll] = useState(false);
+  // Aggregate what the run has cost so far, from provider-reported usage.
+  const runTotals = useMemo(
+    () =>
+      visibleItems.reduce(
+        (totals, item) => {
+          const usage = item.result?.usage;
+          if (!usage) return totals;
+          return {
+            tokens: totals.tokens + usage.inputTokens + usage.outputTokens,
+            costUsd: totals.costUsd + (usage.costUsd ?? 0),
+          };
+        },
+        { tokens: 0, costUsd: 0 },
+      ),
+    [visibleItems],
+  );
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
@@ -718,18 +823,32 @@ export function ReviewSweepView() {
           {phase === "idle" ? (
             <SweepPreRunSummary />
           ) : running ? (
-            <Empty>
-              <EmptyHeader>
-                <Spinner className="mx-auto size-6 text-muted-foreground" />
-                <EmptyTitle>
-                  Reviewing your work — {reviewedCount} of {visibleItems.length}
-                </EmptyTitle>
-                <EmptyDescription>
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <h2 className="text-sm font-medium text-foreground">
+                    Reviewing your work — {reviewedCount} of {visibleItems.length}
+                  </h2>
+                  <span className="text-xs text-muted-foreground">
+                    {runTotals.tokens > 0 ? `${formatTokens(runTotals.tokens)} tokens` : null}
+                    {runTotals.costUsd > 0 ? ` · $${runTotals.costUsd.toFixed(2)}` : ""}
+                  </span>
+                </div>
+                <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-sky-500 transition-[width] duration-500"
+                    style={{
+                      width: `${visibleItems.length === 0 ? 0 : Math.round((reviewedCount / visibleItems.length) * 100)}%`,
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
                   Results appear all at once when every thread is reviewed, so you can triage in one
                   pass. Feel free to navigate away; the sweep keeps running.
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+                </p>
+              </div>
+              <SweepProgressList items={visibleItems} projectsByKey={projectsByKey} />
+            </div>
           ) : visibleItems.length === 0 ? (
             <Empty>
               <EmptyHeader>

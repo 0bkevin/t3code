@@ -51,11 +51,33 @@ const CLAUDE_TIMEOUT_MS = 180_000;
 
 /**
  * Schema for the wrapper JSON returned by `claude -p --output-format json`.
- * We only care about `structured_output`.
+ * `structured_output` is the payload; the usage/cost fields are optional
+ * telemetry surfaced to callers that ask for it (the review sweep shows
+ * per-thread tokens and cost while it runs).
  */
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
+  total_cost_usd: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  duration_api_ms: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  usage: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        input_tokens: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+        output_tokens: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+        cache_creation_input_tokens: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+        cache_read_input_tokens: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+      }),
+    ),
+  ),
 });
+
+/** Telemetry a caller can opt into by passing an `onUsage` sink. */
+export interface ClaudeGenerationUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costUsd?: number | undefined;
+  readonly durationMs: number;
+}
 
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 const decodeClaudeOutputEnvelope = Schema.decodeEffect(Schema.fromJsonString(ClaudeOutputEnvelope));
@@ -113,6 +135,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     prompt,
     outputSchemaJson,
     modelSelection,
+    onUsage,
   }: {
     operation:
       | "generateCommitMessage"
@@ -124,6 +147,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     prompt: string;
     outputSchemaJson: S;
     modelSelection: ModelSelection;
+    /** Optional sink for the CLI's reported token/cost telemetry. */
+    onUsage?: ((usage: ClaudeGenerationUsage) => void) | undefined;
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
     const jsonSchemaStr = yield* encodeJsonForOperation(
       operation,
@@ -250,6 +275,24 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       }),
     );
 
+    if (onUsage) {
+      const usage = envelope.usage ?? null;
+      // Cache-creation and cache-read tokens are still input the model
+      // processed; fold them in so the reported number matches billing.
+      const inputTokens =
+        (usage?.input_tokens ?? 0) +
+        (usage?.cache_creation_input_tokens ?? 0) +
+        (usage?.cache_read_input_tokens ?? 0);
+      onUsage({
+        inputTokens: Math.round(inputTokens),
+        outputTokens: Math.round(usage?.output_tokens ?? 0),
+        ...(typeof envelope.total_cost_usd === "number"
+          ? { costUsd: envelope.total_cost_usd }
+          : {}),
+        durationMs: Math.round(envelope.duration_api_ms ?? 0),
+      });
+    }
+
     const decodeOutput = Schema.decodeEffect(outputSchemaJson);
     return yield* decodeOutput(envelope.structured_output).pipe(
       Effect.catchTags({
@@ -369,15 +412,22 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         pullRequest: input.pullRequest,
       });
 
+      let usage: TextGeneration.ThreadReviewGenerationUsage | undefined;
       const generated = yield* runClaudeJson({
         operation: "generateThreadReview",
         cwd: input.cwd,
         prompt,
         outputSchemaJson: outputSchema,
         modelSelection: input.modelSelection,
+        onUsage: (reported) => {
+          usage = reported;
+        },
       });
 
-      return normalizeThreadReview(generated, input.isActive);
+      return {
+        ...normalizeThreadReview(generated, input.isActive),
+        ...(usage !== undefined ? { usage } : {}),
+      };
     });
 
   return {

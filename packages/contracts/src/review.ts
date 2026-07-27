@@ -76,6 +76,16 @@ export const ReviewThreadPrStatus = Schema.Struct({
 });
 export type ReviewThreadPrStatus = typeof ReviewThreadPrStatus.Type;
 
+/** What the review generation itself cost, reported by the provider CLI. */
+export const ReviewThreadGenerationUsage = Schema.Struct({
+  inputTokens: Schema.Int,
+  outputTokens: Schema.Int,
+  /** Absent when the provider doesn't report a cost. */
+  costUsd: Schema.optionalKey(Schema.Number),
+  durationMs: Schema.Int,
+});
+export type ReviewThreadGenerationUsage = typeof ReviewThreadGenerationUsage.Type;
+
 export const ReviewThreadSummaryResult = Schema.Struct({
   threadId: ThreadId,
   summary: TrimmedNonEmptyString,
@@ -90,6 +100,8 @@ export const ReviewThreadSummaryResult = Schema.Struct({
   diffStats: Schema.optionalKey(ReviewThreadDiffStats),
   /** Absent when the thread has no PR, the lookup failed, or pre-PR servers. */
   prStatus: Schema.optionalKey(ReviewThreadPrStatus),
+  /** Absent when the provider doesn't report usage. */
+  usage: Schema.optionalKey(ReviewThreadGenerationUsage),
 });
 export type ReviewThreadSummaryResult = typeof ReviewThreadSummaryResult.Type;
 

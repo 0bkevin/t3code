@@ -90,7 +90,16 @@ export interface ThreadReviewGenerationInput {
   modelSelection: ModelSelection;
 }
 
+export interface ThreadReviewGenerationUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd?: number | undefined;
+  durationMs: number;
+}
+
 export interface ThreadReviewGenerationResult {
+  /** Provider-reported cost of this generation, when available. */
+  usage?: ThreadReviewGenerationUsage | undefined;
   summary: string;
   /** One imperative sentence: the user's single next action. */
   nextStep: string;
