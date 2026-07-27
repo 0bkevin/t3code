@@ -367,7 +367,14 @@ function appendImageOutputRows(input: {
       trailingOutputs.push(outputRow);
       continue;
     }
-    outputsAfterRowId.set(targetRowId, [outputRow]);
+    // A grouped work row can cover several turns, so multiple turns may map to
+    // the same target row — append rather than replacing the previous gallery.
+    const existingOutputs = outputsAfterRowId.get(targetRowId);
+    if (existingOutputs) {
+      existingOutputs.push(outputRow);
+    } else {
+      outputsAfterRowId.set(targetRowId, [outputRow]);
+    }
   }
 
   return input.rows

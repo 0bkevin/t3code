@@ -216,7 +216,16 @@ const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWor
 
     const path = yield* Path.Path;
     const relative = path.relative(canonicalRoot.value, canonicalFile.value);
-    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    // `..name` is an ordinary in-root directory, so only a real `..` segment
+    // counts as an escape.
+    if (
+      relative === "" ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      return null;
+    }
 
     const info = yield* optionOnNotFound(fileSystem.stat(canonicalFile.value));
     return Option.isSome(info) && info.value.type === "File" ? canonicalFile.value : null;

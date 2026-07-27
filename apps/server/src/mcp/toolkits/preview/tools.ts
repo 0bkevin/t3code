@@ -116,7 +116,10 @@ export const PreviewSetAppearanceTool = safeBrowserTool(
     .annotate(Tool.Idempotent, true),
 );
 
-export const PreviewSnapshotTool = readonlyBrowserTool(
+// Not `readonlyBrowserTool`: `save`/`savePath` write a screenshot file, and
+// `save:true` names a fresh artifact per call, so it is neither read-only
+// nor idempotent.
+export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
       "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics, action history, and a PNG screenshot. To keep visual evidence for the human (before/after states of UI work), pass save:true — the result then includes savedScreenshotPath, which you embed in your final reply with markdown image syntax, e.g. ![after](<savedScreenshotPath>). Use savePath only when the screenshot should live inside the repo.",
