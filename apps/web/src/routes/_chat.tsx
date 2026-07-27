@@ -118,6 +118,14 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
+      if (command === "chat.reopenClosedTab") {
+        if (!sidebarV2Enabled || workspaceTaskTabs.closedTabs.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void workspaceTaskTabs.reopenLastClosedTab();
+        return;
+      }
+
       if (command === "preview.toggle") {
         event.preventDefault();
         event.stopPropagation();

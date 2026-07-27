@@ -23,8 +23,8 @@ describe("task tab context descriptors", () => {
     const [main] = describeTaskTabContexts([tab({ threadId: "root", title: "Tab 1" })]);
     expect(main?.title).toBe("Main");
     expect(main?.kind).toBe("main");
-    expect(main?.label).toBe("Own context");
-    expect(main?.detail).toContain("one-time context fork");
+    expect(main?.label).toBe("Independent");
+    expect(main?.detail).toBe("Separate chat history.");
   });
 
   it("keeps an explicit tab label on the first tab", () => {
@@ -43,8 +43,8 @@ describe("task tab context descriptors", () => {
       }),
     ]);
     expect(draft?.kind).toBe("empty");
-    expect(draft?.label).toBe("Starts empty");
-    expect(draft?.detail).toContain("no conversation yet");
+    expect(draft?.label).toBe("Empty");
+    expect(draft?.detail).toBe("No chat history.");
   });
 
   it("describes a started sibling tab as independent, not shared", () => {
@@ -58,8 +58,8 @@ describe("task tab context descriptors", () => {
       }),
     ]);
     expect(started?.kind).toBe("own");
-    expect(started?.label).toBe("Own context");
-    expect(started?.detail).toContain("does not follow the other tabs");
+    expect(started?.label).toBe("Independent");
+    expect(started?.detail).toBe("Separate chat history.");
   });
 
   it("resolves a portable fork's source to the sibling tab label", () => {
@@ -75,8 +75,8 @@ describe("task tab context descriptors", () => {
     ]);
     expect(fork?.kind).toBe("snapshot");
     expect(fork?.sourceTitle).toBe("Main");
-    expect(fork?.label).toBe("Snapshot from Main");
-    expect(fork?.detail).toContain("bounded snapshot");
+    expect(fork?.label).toBe("From Main");
+    expect(fork?.detail).toBe("Copies Main once on send.");
   });
 
   it("describes a started fork in the past tense once it owns a thread", () => {
@@ -89,8 +89,8 @@ describe("task tab context descriptors", () => {
         forkProvenance: { mode: "portable", sourceThreadId: "root" },
       }),
     ]);
-    expect(fork?.label).toBe("Snapshot from Main");
-    expect(fork?.detail).toContain("continued independently");
+    expect(fork?.label).toBe("From Main");
+    expect(fork?.detail).toBe("Started from Main; now independent.");
   });
 
   it("falls back to a neutral phrase when the source tab is gone", () => {
@@ -103,7 +103,7 @@ describe("task tab context descriptors", () => {
       }),
     ]);
     expect(fork?.sourceTitle).toBeNull();
-    expect(fork?.label).toBe("Snapshot from another tab");
+    expect(fork?.label).toBe("From other tab");
   });
 
   it("never invents message counts", () => {

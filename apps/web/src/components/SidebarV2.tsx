@@ -317,8 +317,7 @@ function SidebarV2ThreadTooltip({
             <div className="flex min-w-0 items-start gap-2">
               <SquareStackIcon aria-hidden className="mt-0.5 size-4 shrink-0 stroke-current" />
               <div className="min-w-0 flex-1 wrap-break-word leading-5">
-                {tabCount} tabs sharing this worktree and branch. Each tab keeps its own
-                conversation.
+                {tabCount} tabs · Shared files, separate chats.
               </div>
             </div>
           ) : null}

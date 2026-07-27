@@ -213,6 +213,7 @@ const PersistedDraftThreadState = Schema.Struct({
   tabLabel: Schema.optionalKey(Schema.NullOr(Schema.String)),
   tabPosition: Schema.optionalKey(Schema.Number),
   forkProvenance: Schema.optionalKey(Schema.NullOr(ThreadForkProvenance)),
+  tabClosedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   environmentId: Schema.String,
   projectId: ProjectId,
   logicalProjectKey: Schema.optionalKey(Schema.String),
@@ -296,6 +297,7 @@ export interface DraftSessionState {
   tabLabel?: string | null | undefined;
   tabPosition?: number | undefined;
   forkProvenance?: ThreadForkProvenance | null | undefined;
+  tabClosedAt: string | null;
   environmentId: EnvironmentId;
   projectId: ProjectId;
   logicalProjectKey: string;
@@ -374,6 +376,7 @@ interface ComposerDraftStoreState {
       tabLabel?: string | null;
       tabPosition?: number;
       forkProvenance?: ThreadForkProvenance | null;
+      tabClosedAt?: string | null;
       retainPreviousDraft?: boolean;
     },
   ) => void;
@@ -394,6 +397,7 @@ interface ComposerDraftStoreState {
       tabLabel?: string | null;
       tabPosition?: number;
       forkProvenance?: ThreadForkProvenance | null;
+      tabClosedAt?: string | null;
       retainPreviousDraft?: boolean;
     },
   ) => void;
@@ -409,6 +413,7 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      tabClosedAt?: string | null;
     },
   ) => void;
   clearProjectDraftThreadId: (projectRef: ScopedProjectRef) => void;
@@ -1356,6 +1361,7 @@ function createDraftThreadState(
     tabLabel?: string | null;
     tabPosition?: number;
     forkProvenance?: ThreadForkProvenance | null;
+    tabClosedAt?: string | null;
     retainPreviousDraft?: boolean;
   },
 ): DraftThreadState {
@@ -1387,6 +1393,10 @@ function createDraftThreadState(
     tabLabel: options?.tabLabel ?? existingThread?.tabLabel ?? null,
     tabPosition: options?.tabPosition ?? existingThread?.tabPosition ?? 0,
     forkProvenance: options?.forkProvenance ?? existingThread?.forkProvenance ?? null,
+    tabClosedAt:
+      options?.tabClosedAt === undefined
+        ? (existingThread?.tabClosedAt ?? null)
+        : options.tabClosedAt,
     environmentId: projectRef.environmentId,
     projectId: projectRef.projectId,
     logicalProjectKey,
@@ -1430,6 +1440,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.tabLabel === right.tabLabel &&
     left.tabPosition === right.tabPosition &&
     Equal.equals(left.forkProvenance, right.forkProvenance) &&
+    left.tabClosedAt === right.tabClosedAt &&
     left.environmentId === right.environmentId &&
     left.projectId === right.projectId &&
     left.logicalProjectKey === right.logicalProjectKey &&
@@ -1575,6 +1586,9 @@ function normalizePersistedDraftThreads(
         ...(isThreadForkProvenance(candidateDraftThread.forkProvenance)
           ? { forkProvenance: candidateDraftThread.forkProvenance }
           : {}),
+        ...(typeof candidateDraftThread.tabClosedAt === "string"
+          ? { tabClosedAt: candidateDraftThread.tabClosedAt }
+          : {}),
         environmentId: normalizedEnvironmentId,
         projectId: projectId as ProjectId,
         logicalProjectKey:
@@ -1646,6 +1660,7 @@ function normalizePersistedDraftThreads(
           worktreePath: null,
           envMode: "local",
           startFromOrigin: false,
+          tabClosedAt: null,
           promotedTo: null,
         };
       } else if (
@@ -1967,6 +1982,7 @@ function partializeComposerDraftStoreState(
         ...(draft.tabLabel !== undefined ? { tabLabel: draft.tabLabel } : {}),
         ...(draft.tabPosition !== undefined ? { tabPosition: draft.tabPosition } : {}),
         ...(draft.forkProvenance !== undefined ? { forkProvenance: draft.forkProvenance } : {}),
+        ...(draft.tabClosedAt !== null ? { tabClosedAt: draft.tabClosedAt } : {}),
         environmentId: draft.environmentId,
         projectId: draft.projectId,
         logicalProjectKey: draft.logicalProjectKey,
@@ -2227,6 +2243,7 @@ function toHydratedDraftThreadState(
     tabLabel: persistedDraftThread.tabLabel ?? null,
     tabPosition: persistedDraftThread.tabPosition ?? 0,
     forkProvenance: persistedDraftThread.forkProvenance ?? null,
+    tabClosedAt: persistedDraftThread.tabClosedAt ?? null,
     environmentId: persistedDraftThread.environmentId as EnvironmentId,
     projectId: persistedDraftThread.projectId,
     logicalProjectKey:
@@ -2367,11 +2384,13 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               previousDraftThread?.workspaceTaskId !== undefined &&
               nextDraftThread.workspaceTaskId !== undefined &&
               previousDraftThread.workspaceTaskId === nextDraftThread.workspaceTaskId;
+            const previousDraftIsClosed = previousDraftThread?.tabClosedAt != null;
             if (
               previousThreadKeyForLogicalProject &&
               previousThreadKeyForLogicalProject !== draftId &&
               options?.retainPreviousDraft !== true &&
               !sharesWorkspaceTask &&
+              !previousDraftIsClosed &&
               !isComposerThreadKeyInUse(
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
                 previousThreadKeyForLogicalProject,
@@ -2447,6 +2466,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               tabLabel: existing.tabLabel,
               tabPosition: existing.tabPosition,
               forkProvenance: existing.forkProvenance,
+              tabClosedAt:
+                options.tabClosedAt === undefined ? existing.tabClosedAt : options.tabClosedAt,
               environmentId: nextProjectRef.environmentId,
               projectId: nextProjectRef.projectId,
               logicalProjectKey: existing.logicalProjectKey,
@@ -2475,6 +2496,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.createdAt === existing.createdAt &&
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
+              nextDraftThread.tabClosedAt === existing.tabClosedAt &&
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&

@@ -28,7 +28,7 @@ export interface TaskTabContextDescriptor {
   readonly kind: TaskTabContextKind;
   /** Tab name as rendered in the strip. */
   readonly title: string;
-  /** Short chip label, e.g. "Snapshot from Main". */
+  /** Short inline label, e.g. "From Main". */
   readonly label: string;
   /** One sentence expanding the label, for tooltips. */
   readonly detail: string;
@@ -36,11 +36,7 @@ export interface TaskTabContextDescriptor {
   readonly sourceTitle: string | null;
 }
 
-/** Shared across every tab of a task, so it is stated once and not per tab. */
-export const TASK_TABS_SHARED_SCOPE_EXPLANATION =
-  "Tabs in this task share the same project, worktree, and branch. Each keeps its own ongoing conversation. A context fork copies one bounded snapshot; it does not keep histories in sync.";
-
-const FALLBACK_SOURCE_TITLE = "another tab";
+const FALLBACK_SOURCE_TITLE = "other tab";
 
 /**
  * Mirrors the legacy strip fallback: the first tab reads as "Main" even when a
@@ -63,11 +59,11 @@ function describeOne(
     return {
       ...base,
       kind: "snapshot",
-      label: `Snapshot from ${from}`,
+      label: `From ${from}`,
       detail:
         tab.kind === "draft"
-          ? `On its first message this tab receives a bounded snapshot of ${from}'s conversation, then continues independently.`
-          : `Started from a bounded snapshot of ${from}'s conversation and has continued independently since.`,
+          ? `Copies ${from} once on send.`
+          : `Started from ${from}; now independent.`,
     };
   }
 
@@ -75,9 +71,8 @@ function describeOne(
     return {
       ...base,
       kind: "empty",
-      label: "Starts empty",
-      detail:
-        "This tab has no conversation yet. Once you send a message its context is its own — no history is carried over.",
+      label: "Empty",
+      detail: "No chat history.",
     };
   }
 
@@ -85,17 +80,16 @@ function describeOne(
     return {
       ...base,
       kind: "main",
-      label: "Own context",
-      detail:
-        "The task's first tab keeps its own conversation. Other tabs only receive it through a one-time context fork.",
+      label: "Independent",
+      detail: "Separate chat history.",
     };
   }
 
   return {
     ...base,
     kind: "own",
-    label: "Own context",
-    detail: "This tab keeps an independent conversation and does not follow the other tabs.",
+    label: "Independent",
+    detail: "Separate chat history.",
   };
 }
 

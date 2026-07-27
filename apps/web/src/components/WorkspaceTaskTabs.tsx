@@ -1,25 +1,52 @@
-import { CircleDashedIcon, GitForkIcon, InfoIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  CircleDashedIcon,
+  CopyPlusIcon,
+  HistoryIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  XIcon,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { shortcutLabelForCommand } from "../keybindings";
 import { useClientSettings } from "../hooks/useSettings";
-import { type WorkspaceTaskTab, useWorkspaceTaskTabs } from "../hooks/useWorkspaceTaskTabs";
 import {
-  TASK_TABS_SHARED_SCOPE_EXPLANATION,
+  type ClosedWorkspaceTaskTab,
+  type WorkspaceTaskTab,
+  useWorkspaceTaskTabs,
+} from "../hooks/useWorkspaceTaskTabs";
+import {
   describeTaskTabContexts,
   type TaskTabContextDescriptor,
+  type TaskTabContextSource,
 } from "../lib/taskTabContext";
 import { cn } from "../lib/utils";
+import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
-function tabThreadId(tab: WorkspaceTaskTab): string {
-  return String(tab.kind === "server" ? tab.threadRef.threadId : tab.threadId);
+type AnyWorkspaceTaskTab = WorkspaceTaskTab | ClosedWorkspaceTaskTab;
+
+function tabContextSource(tab: AnyWorkspaceTaskTab): TaskTabContextSource {
+  return {
+    kind: tab.kind,
+    threadId: String(tab.kind === "server" ? tab.threadRef.threadId : tab.threadId),
+    title: tab.title,
+    position: tab.position,
+    forkProvenance: tab.forkProvenance
+      ? {
+          mode: tab.forkProvenance.mode,
+          sourceThreadId:
+            tab.forkProvenance.sourceThreadId === null
+              ? null
+              : String(tab.forkProvenance.sourceThreadId),
+        }
+      : null,
+  };
 }
 
 /**
  * State is carried by shape and text as well as hue: blocked tabs get a filled
- * ring plus "Waiting on you", working tabs get a dashed spinner glyph. Colour
- * is the accent, never the only signal.
+ * ring plus "Waiting on you", working tabs get a dashed spinner glyph.
  */
 function TabStateGlyph(props: { tab: WorkspaceTaskTab }) {
   const { tab } = props;
@@ -35,8 +62,6 @@ function TabStateGlyph(props: { tab: WorkspaceTaskTab }) {
     );
   }
   if (tab.working) {
-    // Duty-cycled steps() pulse from index.css, not a continuous spin: this
-    // strip can be on screen for hours on a 120Hz display.
     return (
       <CircleDashedIcon
         role="img"
@@ -48,47 +73,59 @@ function TabStateGlyph(props: { tab: WorkspaceTaskTab }) {
   return null;
 }
 
-function contextChipClass(kind: TaskTabContextDescriptor["kind"], active: boolean): string {
-  if (!active) return "border-border/30 bg-background/30 text-muted-foreground/60";
-  return kind === "snapshot"
-    ? "border-border/60 bg-muted/80 text-muted-foreground/90"
-    : "border-border/45 bg-muted/60 text-muted-foreground/75";
+function ContextSummary(props: {
+  context: TaskTabContextDescriptor;
+  active: boolean;
+  className?: string;
+}) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "hidden shrink-0 truncate text-[10px] font-normal whitespace-nowrap md:inline",
+        props.active ? "text-muted-foreground/80" : "text-muted-foreground/55",
+        props.className,
+      )}
+    >
+      · {props.context.label}
+    </span>
+  );
 }
 
 export function WorkspaceTaskTabs() {
   const sidebarV2Enabled = useClientSettings((settings) => settings.sidebarV2Enabled);
-  const { tabs, keybindings, hasTask, canForkContext, createTab, closeTab, navigateToTab } =
-    useWorkspaceTaskTabs();
+  const {
+    tabs,
+    closedTabs,
+    keybindings,
+    hasTask,
+    canForkContext,
+    createTab,
+    closeTab,
+    reopenTab,
+    navigateToTab,
+  } = useWorkspaceTaskTabs();
   const [creatingMode, setCreatingMode] = useState<"fresh" | "portable" | null>(null);
-  const contexts = useMemo(
-    () =>
-      describeTaskTabContexts(
-        tabs.map((tab) => ({
-          kind: tab.kind,
-          threadId: tabThreadId(tab),
-          title: tab.title,
-          position: tab.position,
-          forkProvenance: tab.forkProvenance
-            ? {
-                mode: tab.forkProvenance.mode,
-                sourceThreadId:
-                  tab.forkProvenance.sourceThreadId === null
-                    ? null
-                    : String(tab.forkProvenance.sourceThreadId),
-              }
-            : null,
-        })),
-      ),
-    [tabs],
-  );
+  const [reopeningKey, setReopeningKey] = useState<string | null>(null);
+  const contextByTabKey = useMemo(() => {
+    const allTabs = [...tabs, ...closedTabs];
+    const contexts = describeTaskTabContexts(allTabs.map(tabContextSource));
+    return new Map(allTabs.map((tab, index) => [tab.key, contexts[index]!]));
+  }, [closedTabs, tabs]);
 
   if (!sidebarV2Enabled || !hasTask) return null;
 
   const newTabShortcut = shortcutLabelForCommand(keybindings, "chat.newTab");
+  const reopenShortcut = shortcutLabelForCommand(keybindings, "chat.reopenClosedTab");
   const create = (mode: "fresh" | "portable") => {
     if (creatingMode !== null) return;
     setCreatingMode(mode);
     void createTab(mode).finally(() => setCreatingMode(null));
+  };
+  const reopen = (tab: ClosedWorkspaceTaskTab) => {
+    if (reopeningKey !== null) return;
+    setReopeningKey(tab.key);
+    void reopenTab(tab).finally(() => setReopeningKey(null));
   };
 
   return (
@@ -98,11 +135,9 @@ export function WorkspaceTaskTabs() {
         data-testid="workspace-task-tabs"
         className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-background px-3 sm:px-5"
       >
-        {/* One segmented control, not browser chrome: the tabs sit inside a
-            single inset track so the strip reads as a compact control. */}
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto rounded-md bg-muted/40 p-0.5 [scrollbar-width:none]">
-          {tabs.map((tab, index) => {
-            const context = contexts[index];
+          {tabs.map((tab) => {
+            const context = contextByTabKey.get(tab.key);
             return (
               <div
                 key={tab.key}
@@ -125,39 +160,24 @@ export function WorkspaceTaskTabs() {
                     }
                   >
                     <TabStateGlyph tab={tab} />
-                    {tab.forkProvenance?.mode === "portable" ? (
-                      <GitForkIcon aria-hidden className="size-3 shrink-0 opacity-45" />
-                    ) : null}
                     <span className="truncate font-medium">
                       {context?.title ?? tab.title}
-                      {/* Context stays legible to assistive tech even when the
-                          chip is hidden at narrow widths. */}
                       {context ? <span className="sr-only"> — {context.label}</span> : null}
                     </span>
-                    {context ? (
-                      <span
-                        aria-hidden
-                        className={cn(
-                          "hidden max-w-40 shrink-0 truncate rounded-sm border px-1 py-px text-[9px] leading-3.5 font-normal whitespace-nowrap md:inline-block",
-                          contextChipClass(context.kind, tab.active),
-                        )}
-                      >
-                        {context.label}
-                      </span>
-                    ) : null}
+                    {context ? <ContextSummary context={context} active={tab.active} /> : null}
                   </TooltipTrigger>
-                  <TooltipPopup side="bottom" className="max-w-72">
-                    <span className="block px-0.5 py-0.5 text-left leading-relaxed whitespace-normal">
+                  <TooltipPopup side="bottom" className="max-w-56">
+                    <span className="block text-left">
                       <span className="font-medium text-foreground">
-                        {context?.label ?? "Own context"}
+                        {context?.label ?? "Independent"}
                       </span>
                       {context ? (
-                        <span className="mt-0.5 block text-muted-foreground">{context.detail}</span>
+                        <span className="ml-1.5 text-muted-foreground">{context.detail}</span>
                       ) : null}
                     </span>
                   </TooltipPopup>
                 </Tooltip>
-                {tabs.length > 1 && tab.position > 0 ? (
+                {tabs.length > 1 ? (
                   <button
                     type="button"
                     aria-label={`Close ${context?.title ?? tab.title}`}
@@ -175,67 +195,93 @@ export function WorkspaceTaskTabs() {
             );
           })}
         </div>
+
         <div className="flex shrink-0 items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label="New task tab"
-                  disabled={creatingMode !== null}
-                  onClick={() => create("fresh")}
-                  className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-                />
-              }
-            >
-              <PlusIcon className="size-4" />
-            </TooltipTrigger>
-            <TooltipPopup side="bottom">
-              New empty tab{newTabShortcut ? ` (${newTabShortcut})` : ""}
-            </TooltipPopup>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label="Fork context into a new task tab"
-                  disabled={!canForkContext || creatingMode !== null}
-                  onClick={() => create("portable")}
-                  className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-35"
-                />
-              }
-            >
-              <GitForkIcon className="size-3.5" />
-            </TooltipTrigger>
-            <TooltipPopup side="bottom" className="max-w-64">
-              <span className="block py-0.5 text-left whitespace-normal">
-                {canForkContext
-                  ? "New tab seeded with a one-time snapshot of this tab's conversation"
-                  : "Send the first message before forking context"}
-              </span>
-            </TooltipPopup>
-          </Tooltip>
-          {/* Stated once for the whole task, so individual tabs don't need to
-              repeat the shared-worktree / separate-history caveat. */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label="How task tabs share context"
-                  className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-                />
-              }
-            >
-              <InfoIcon className="size-3.5" />
-            </TooltipTrigger>
-            <TooltipPopup side="bottom" align="end" className="max-w-72">
-              <span className="block py-0.5 text-left leading-relaxed whitespace-normal">
-                {TASK_TABS_SHARED_SCOPE_EXPLANATION}
-              </span>
-            </TooltipPopup>
-          </Tooltip>
+          {closedTabs.length > 0 ? (
+            <Menu>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <MenuTrigger
+                      render={
+                        <button
+                          type="button"
+                          aria-label="Closed tabs"
+                          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        />
+                      }
+                    />
+                  }
+                >
+                  <HistoryIcon className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipPopup side="bottom">
+                  Closed tabs{reopenShortcut ? ` (${reopenShortcut})` : ""}
+                </TooltipPopup>
+              </Tooltip>
+              <MenuPopup align="end" className="min-w-52 max-w-72">
+                {closedTabs.map((tab, index) => {
+                  const context = contextByTabKey.get(tab.key);
+                  return (
+                    <MenuItem
+                      key={tab.key}
+                      disabled={reopeningKey !== null}
+                      onClick={() => reopen(tab)}
+                    >
+                      <RotateCcwIcon />
+                      <span className="min-w-0 flex-1 truncate">{context?.title ?? tab.title}</span>
+                      {context ? (
+                        <span className="max-w-28 truncate text-xs text-muted-foreground">
+                          {context.label}
+                        </span>
+                      ) : null}
+                      {index === 0 && reopenShortcut ? (
+                        <MenuShortcut>{reopenShortcut}</MenuShortcut>
+                      ) : null}
+                    </MenuItem>
+                  );
+                })}
+              </MenuPopup>
+            </Menu>
+          ) : null}
+
+          <Menu>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <MenuTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label="New tab"
+                        disabled={creatingMode !== null}
+                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      />
+                    }
+                  />
+                }
+              >
+                <PlusIcon className="size-4" />
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">
+                New tab{newTabShortcut ? ` (${newTabShortcut})` : ""}
+              </TooltipPopup>
+            </Tooltip>
+            <MenuPopup align="end" className="min-w-48">
+              <MenuItem disabled={creatingMode !== null} onClick={() => create("fresh")}>
+                <PlusIcon />
+                Empty
+                {newTabShortcut ? <MenuShortcut>{newTabShortcut}</MenuShortcut> : null}
+              </MenuItem>
+              <MenuItem
+                disabled={!canForkContext || creatingMode !== null}
+                onClick={() => create("portable")}
+              >
+                <CopyPlusIcon />
+                Copy current context
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
         </div>
       </nav>
     </TooltipProvider>

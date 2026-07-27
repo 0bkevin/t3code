@@ -58,6 +58,27 @@ export type WorkspaceTaskTab =
       readonly forkProvenance: ThreadForkProvenance | null;
     };
 
+export type ClosedWorkspaceTaskTab =
+  | {
+      readonly kind: "server";
+      readonly key: string;
+      readonly threadRef: ScopedThreadRef;
+      readonly title: string;
+      readonly position: number;
+      readonly forkProvenance: ThreadForkProvenance | null;
+      readonly closedAt: string;
+    }
+  | {
+      readonly kind: "draft";
+      readonly key: string;
+      readonly draftId: DraftId;
+      readonly threadId: ThreadId;
+      readonly title: string;
+      readonly position: number;
+      readonly forkProvenance: ThreadForkProvenance | null;
+      readonly closedAt: string;
+    };
+
 interface CurrentTaskContext {
   readonly environmentId: EnvironmentThreadShell["environmentId"];
   readonly projectId: EnvironmentThreadShell["projectId"];
@@ -191,6 +212,7 @@ export function useWorkspaceTaskTabs() {
         if (
           draft.environmentId !== currentContext.environmentId ||
           draftTaskId(draft) !== currentContext.workspaceTaskId ||
+          draft.tabClosedAt != null ||
           draft.promotedTo != null
         ) {
           return [];
@@ -223,8 +245,64 @@ export function useWorkspaceTaskTabs() {
     );
   }, [currentContext, draftSessions, routeTarget, threads]);
 
+  const closedTabs = useMemo<ReadonlyArray<ClosedWorkspaceTaskTab>>(() => {
+    if (currentContext === null) return [];
+    const serverTabs: ClosedWorkspaceTaskTab[] = threads.flatMap((thread) => {
+      if (
+        thread.environmentId !== currentContext.environmentId ||
+        resolveWorkspaceTaskId(thread) !== currentContext.workspaceTaskId ||
+        thread.tabClosedAt == null
+      ) {
+        return [];
+      }
+      const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+      return [
+        {
+          kind: "server",
+          key: scopedThreadKey(threadRef),
+          threadRef,
+          title: thread.tabLabel ?? (thread.tabPosition === 0 ? "Main" : thread.title),
+          position: thread.tabPosition ?? 0,
+          forkProvenance: thread.forkProvenance ?? null,
+          closedAt: thread.tabClosedAt,
+        },
+      ];
+    });
+    const draftTabs: ClosedWorkspaceTaskTab[] = Object.entries(draftSessions).flatMap(
+      ([rawDraftId, draft]) => {
+        if (
+          draft.environmentId !== currentContext.environmentId ||
+          draftTaskId(draft) !== currentContext.workspaceTaskId ||
+          draft.tabClosedAt == null ||
+          draft.promotedTo != null
+        ) {
+          return [];
+        }
+        const draftId = DraftId.make(rawDraftId);
+        return [
+          {
+            kind: "draft",
+            key: `draft:${draftId}`,
+            draftId,
+            threadId: draft.threadId,
+            title: draft.tabLabel ?? `Tab ${(draft.tabPosition ?? 0) + 1}`,
+            position: draft.tabPosition ?? 0,
+            forkProvenance: draft.forkProvenance ?? null,
+            closedAt: draft.tabClosedAt,
+          },
+        ];
+      },
+    );
+    return [...serverTabs, ...draftTabs].toSorted(
+      (left, right) =>
+        right.closedAt.localeCompare(left.closedAt) ||
+        left.position - right.position ||
+        left.key.localeCompare(right.key),
+    );
+  }, [currentContext, draftSessions, threads]);
+
   const navigateToTab = useCallback(
-    (tab: WorkspaceTaskTab) => {
+    (tab: WorkspaceTaskTab | ClosedWorkspaceTaskTab) => {
       if (tab.kind === "server") {
         return router.navigate({
           to: "/$environmentId/$threadId",
@@ -247,7 +325,8 @@ export function useWorkspaceTaskTabs() {
       const draftId = newDraftId();
       const threadId = newThreadId();
       const createdAt = new Date().toISOString();
-      const position = tabs.reduce((max, tab) => Math.max(max, tab.position), -1) + 1;
+      const position =
+        [...tabs, ...closedTabs].reduce((max, tab) => Math.max(max, tab.position), -1) + 1;
       const forkProvenance: ThreadForkProvenance = {
         mode,
         sourceThreadId: mode === "portable" ? currentContext.threadId : null,
@@ -293,16 +372,18 @@ export function useWorkspaceTaskTabs() {
         params: { draftId },
       });
     },
-    [currentContext, routeTarget, router, supportsTaskTabs, tabs],
+    [closedTabs, currentContext, routeTarget, router, supportsTaskTabs, tabs],
   );
 
   const closeTab = useCallback(
     async (tab: WorkspaceTaskTab) => {
-      if (tabs.length <= 1 || tab.position === 0 || tab.working || tab.blocked) return;
+      if (tabs.length <= 1 || tab.working || tab.blocked) return;
       const index = tabs.findIndex((candidate) => candidate.key === tab.key);
       const fallback = tabs[index + 1] ?? tabs[index - 1] ?? null;
       if (tab.kind === "draft") {
-        useComposerDraftStore.getState().clearDraftThread(tab.draftId);
+        useComposerDraftStore
+          .getState()
+          .setDraftThreadContext(tab.draftId, { tabClosedAt: new Date().toISOString() });
       } else {
         const result = await updateThreadMetadata({
           environmentId: tab.threadRef.environmentId,
@@ -320,13 +401,40 @@ export function useWorkspaceTaskTabs() {
     [navigateToTab, tabs, updateThreadMetadata],
   );
 
+  const reopenTab = useCallback(
+    async (tab: ClosedWorkspaceTaskTab) => {
+      if (tab.kind === "draft") {
+        useComposerDraftStore.getState().setDraftThreadContext(tab.draftId, { tabClosedAt: null });
+      } else {
+        const result = await updateThreadMetadata({
+          environmentId: tab.threadRef.environmentId,
+          input: {
+            threadId: tab.threadRef.threadId,
+            tabClosedAt: null,
+          },
+        });
+        if (result._tag === "Failure") return;
+      }
+      await navigateToTab(tab);
+    },
+    [navigateToTab, updateThreadMetadata],
+  );
+
+  const reopenLastClosedTab = useCallback(async () => {
+    const lastClosed = closedTabs[0];
+    if (lastClosed) await reopenTab(lastClosed);
+  }, [closedTabs, reopenTab]);
+
   return {
     tabs,
+    closedTabs,
     keybindings,
     hasTask: currentContext !== null && supportsTaskTabs,
     canForkContext: currentContext?.sourceIsServer === true && supportsTaskTabs,
     createTab,
     closeTab,
+    reopenTab,
+    reopenLastClosedTab,
     navigateToTab,
   } as const;
 }
