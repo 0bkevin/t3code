@@ -38,6 +38,14 @@ const resolveSharedHome = (path: Path.Path): string => {
   );
 };
 
+const isPathWithin = (path: Path.Path, parent: string, candidate: string): boolean => {
+  const relative = path.relative(parent, candidate);
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
+};
+
 class DevSeedTargetError extends Schema.TaggedErrorClass<DevSeedTargetError>()(
   "DevSeedTargetError",
   {
@@ -283,7 +291,7 @@ const devSeedCli = Command.make("dev-seed", {
         canonicalDbPath(sourceDbPath),
         fileSystem.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
       ]);
-      if (canonicalTargetDb.startsWith(`${canonicalShared}${path.sep}`)) {
+      if (isPathWithin(path, canonicalShared, canonicalTargetDb)) {
         return yield* new DevSeedTargetError({ reason: "shared-home", detail: canonicalTargetDb });
       }
       // After the shared-home refusal: that one must come first because the
