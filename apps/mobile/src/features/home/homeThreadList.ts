@@ -310,6 +310,9 @@ export function buildHomeThreadGroups(input: {
             workspaceRoot:
               pendingTask.creation.projectCwd ?? String(pendingTask.creation.projectId),
             repositoryIdentity: null,
+            // A queued task always targets a real workspace; agent projects
+            // never enqueue through this path.
+            agentInstanceId: null,
             defaultModelSelection: null,
             scripts: [],
             createdAt: pendingTask.message.createdAt,

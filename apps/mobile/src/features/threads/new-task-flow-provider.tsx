@@ -264,6 +264,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       // fabricated path.
       workspaceRoot: creation.projectCwd ?? "",
       repositoryIdentity: null,
+      // A queued task always targets a real workspace; agent projects never
+      // enqueue through this path.
+      agentInstanceId: null,
       defaultModelSelection: editingPendingTask.modelSelection ?? null,
       scripts: [],
       createdAt: editingPendingTask.createdAt,

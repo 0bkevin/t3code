@@ -11,6 +11,7 @@ function makeProject(
   return {
     workspaceRoot: `/workspaces/${input.id}`,
     repositoryIdentity: null,
+    agentInstanceId: null,
     defaultModelSelection: null,
     scripts: [],
     createdAt: "2026-04-01T00:00:00.000Z",
