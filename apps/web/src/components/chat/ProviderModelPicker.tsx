@@ -174,10 +174,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         data-chat-provider-model-picker="true"
         data-static="true"
         className={cn(
-          // Mirrors the interactive trigger's size="sm" Button metrics
-          // (h-8 sm:h-7, text-base sm:text-sm) so a Home thread's composer
-          // footer sits at exactly the same height as every other thread's.
-          "flex h-8 min-w-0 items-center whitespace-nowrap px-2 text-base text-muted-foreground/70 sm:h-7 sm:text-sm",
+          // Mirrors the interactive trigger's size="sm" Button metrics —
+          // height (h-8 sm:h-7), type (text-base sm:text-sm, font-medium) and
+          // the 1px transparent border that insets the Button's content — so
+          // a Home thread's chip is pixel-identical to every other thread's,
+          // minus only the chevron it deliberately drops.
+          "flex h-8 min-w-0 items-center whitespace-nowrap rounded-lg border border-transparent px-2 font-medium text-base text-muted-foreground/70 sm:h-7 sm:text-sm",
           props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
           props.triggerClassName,
         )}
