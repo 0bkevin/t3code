@@ -28,6 +28,11 @@ import * as Effect from "effect/Effect";
  *   inventing one.
  * - Ties on `requested_at` (possible when a turn is steered within the same
  *   millisecond) break on `row_id`, which is monotonic per insert.
+ * - Rows with a null `turn_id` are skipped: those are pending turn-starts
+ *   (requested but never adopted), and a dangling one is often the *newest*
+ *   row on exactly the threads this bug stranded. Without the filter the
+ *   subquery would select it and write NULL over NULL — silently skipping
+ *   the repair of the completed turn underneath.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -38,6 +43,7 @@ export default Effect.gen(function* () {
       SELECT turns.turn_id
       FROM projection_turns turns
       WHERE turns.thread_id = projection_threads.thread_id
+        AND turns.turn_id IS NOT NULL
       ORDER BY turns.requested_at DESC, turns.row_id DESC
       LIMIT 1
     )
@@ -46,6 +52,7 @@ export default Effect.gen(function* () {
         SELECT 1
         FROM projection_turns turns
         WHERE turns.thread_id = projection_threads.thread_id
+          AND turns.turn_id IS NOT NULL
       )
   `;
 });
