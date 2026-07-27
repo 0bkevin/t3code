@@ -428,8 +428,9 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         >
           {/* The mark alone. `aria-label` on the trigger and the tooltip below
               both still say "Open agent details", so dropping the visible
-              word costs nothing to a screen reader. */}
-          <HermesIcon />
+              word costs nothing to a screen reader. Sized explicitly: the
+              button's automatic svg sizing does not reach an <img> mark. */}
+          <HermesIcon className="size-4 shrink-0" />
         </TooltipTrigger>
         <TooltipPopup side="top">Open agent details</TooltipPopup>
       </Tooltip>
