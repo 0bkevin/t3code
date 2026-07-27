@@ -7,6 +7,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
+import Migration036 from "./036_ProjectionThreadMessageNotification.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
@@ -104,6 +105,25 @@ layer("036_ProjectionThreadMessageNotification", (it) => {
         label: "Cron: daily-digest",
         deliveryId: "delivery-1",
       });
+    }),
+  );
+
+  it.effect("is idempotent: re-running against a migrated database is a no-op", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      // The layer shares one in-memory database across this file's tests, so
+      // the schema may already be at 36 here; make sure it is, then apply the
+      // migration effect again directly — the migrator's tracking table would
+      // otherwise skip it, which is exactly the protection a restored backup
+      // or divergent branch does not have.
+      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* Migration036;
+
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_thread_messages)
+      `;
+      assert.equal(columns.filter((column) => column.name === "notification_json").length, 1);
     }),
   );
 });

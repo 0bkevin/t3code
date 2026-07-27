@@ -14,9 +14,14 @@ import * as Effect from "effect/Effect";
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-
-  yield* sql`
-    ALTER TABLE projection_threads
-    ADD COLUMN latest_notification_json TEXT
+  const columns = yield* sql<{ readonly name: string }>`
+    PRAGMA table_info(projection_threads)
   `;
+
+  if (!columns.some((column) => column.name === "latest_notification_json")) {
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN latest_notification_json TEXT
+    `;
+  }
 });
