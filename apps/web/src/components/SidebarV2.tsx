@@ -46,7 +46,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import { useParams, useRouter } from "@tanstack/react-router";
+import { useLocation, useParams, useRouter } from "@tanstack/react-router";
 
 import {
   isAtomCommandInterrupted,
@@ -154,6 +154,7 @@ import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./u
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -1000,6 +1001,7 @@ export default function SidebarV2() {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const router = useRouter();
+  const pathname = useLocation({ select: (location) => location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const autoSettleAfterDays = useClientSettings((s) => s.sidebarAutoSettleAfterDays);
@@ -2217,6 +2219,19 @@ export default function SidebarV2() {
   const newThreadShortcutLabel =
     shortcutLabelForCommand(keybindings, "chat.newLocal") ??
     shortcutLabelForCommand(keybindings, "chat.new");
+
+  // Settings routes swap the thread list for the settings nav. The component
+  // stays mounted so sidebar state (project scope, expanded tails) survives a
+  // trip through settings.
+  if (pathname === "/settings" || pathname.startsWith("/settings/")) {
+    return (
+      <>
+        <SidebarChromeHeader isElectron={isElectron} />
+        <SettingsSidebarNav pathname={pathname} />
+      </>
+    );
+  }
+
   return (
     <>
       <SidebarChromeHeader isElectron={isElectron} />

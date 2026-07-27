@@ -14,9 +14,7 @@ import { getLocalStorageItem } from "../hooks/useLocalStorage";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { cn, isMacPlatform } from "../lib/utils";
 import { primaryServerKeybindingsAtom } from "../state/server";
-import { useClientSettings } from "../hooks/useSettings";
-import ThreadSidebar from "./Sidebar";
-import ThreadSidebarV2 from "./SidebarV2";
+import ThreadSidebar from "./SidebarV2";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
 import {
   resolveInitialThreadSidebarWidth,
@@ -115,13 +113,7 @@ function SidebarControl() {
 
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
-  const sidebarV2Enabled = useClientSettings((settings) => settings.sidebarV2Enabled);
-  // Settings routes render the settings nav, which lives in the v1 component
-  // and is identical for both sidebars — so v1 stays mounted there.
   const pathname = useLocation({ select: (location) => location.pathname });
-  const isOnSettings = pathname === "/settings" || pathname.startsWith("/settings/");
-  const useSidebarV2 = sidebarV2Enabled && !isOnSettings;
-  const useSidebarV2Theme = useSidebarV2 || isOnSettings;
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // Subscribed rather than read once: the clamp must track live window size,
@@ -185,7 +177,6 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         side="left"
         collapsible="offcanvas"
         data-app-sidebar=""
-        data-sidebar-version={useSidebarV2Theme ? "v2" : "v1"}
         className="border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
         resizable={{
           maxWidth: sidebarMaximumWidth,
@@ -197,7 +188,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           onResize: setSidebarWidth,
         }}
       >
-        {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
+        <ThreadSidebar />
         <SidebarRail />
       </Sidebar>
       {children}

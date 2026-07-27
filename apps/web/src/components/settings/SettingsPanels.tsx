@@ -404,9 +404,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
-      ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
-        ? ["Visible threads"]
-        : []),
       ...(settings.sidebarProjectGroupingMode !==
       DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
         ? ["Project Grouping"]
@@ -461,7 +458,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
       settings.sidebarProjectGroupingMode,
-      settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
       settings.wordWrap,
       theme,
@@ -484,7 +480,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
-      sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
