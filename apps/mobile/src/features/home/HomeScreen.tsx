@@ -1,19 +1,9 @@
 import {
-  LegendList,
-  type LegendListRef,
-  type LegendListRenderItemProps,
-} from "@legendapp/list/react-native";
-import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import type {
-  EnvironmentId,
-  SidebarProjectGroupingMode,
-  SidebarThreadSortOrder,
-} from "@t3tools/contracts";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import type { EnvironmentId, SidebarProjectGroupingMode } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Platform, Pressable, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
@@ -26,15 +16,9 @@ import type { WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
-import {
-  PendingTaskListRow,
-  ThreadListGroupHeader,
-  ThreadListRow,
-  ThreadListShowMoreRow,
-} from "../threads/thread-list-items";
+import { PendingTaskListRow } from "../threads/thread-list-items";
 import { ThreadListV2Row } from "../threads/thread-list-v2-items";
 import {
   buildThreadListV2Items,
@@ -44,17 +28,7 @@ import {
 } from "../threads/threadListV2";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
-  buildHomeListLayout,
-  DEFAULT_GROUP_DISPLAY_STATE,
-  homeListItemsAreEqual,
-  nextGroupDisplayState,
-  type HomeGroupDisplayAction,
-  type HomeGroupDisplayState,
-  type HomeListItem,
-} from "./homeListItems";
-import {
   buildHomeProjectScopes,
-  buildHomeThreadGroups,
   sortHomeProjectScopes,
   type HomeProjectSortOrder,
 } from "./homeThreadList";
@@ -75,13 +49,10 @@ interface HomeScreenProps {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly projectSortOrder: HomeProjectSortOrder;
-  readonly threadSortOrder: SidebarThreadSortOrder;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
-  readonly onProjectSortOrderChange: (sortOrder: HomeProjectSortOrder) => void;
-  readonly onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
   readonly onAddConnection: () => void;
   readonly onOpenEnvironments: () => void;
   readonly onOpenSettings: () => void;
@@ -96,16 +67,6 @@ interface HomeScreenProps {
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
 }
-
-/* ─── Layout constants ───────────────────────────────────────────────── */
-
-const ESTIMATED_THREAD_ROW_HEIGHT = 72;
-/**
- * Top spacing between the list and the Android custom header. The Android
- * header (AndroidHomeHeader) is rendered in-flow above this screen and
- * already consumes the top safe-area inset, so the list only needs breathing
- * room here.
- */
 
 function deriveEmptyState(props: {
   readonly catalogState: WorkspaceState;
@@ -177,53 +138,9 @@ function HomeTopContentSpacer() {
 /* ─── Main screen ────────────────────────────────────────────────────── */
 
 export function HomeScreen(props: HomeScreenProps) {
-  const [groupDisplayStates, setGroupDisplayStates] = useState<
-    ReadonlyMap<string, HomeGroupDisplayState>
-  >(() => new Map());
-  const preferencesResult = useAtomValue(mobilePreferencesAtom);
-  const threadListV2Enabled =
-    AsyncResult.isSuccess(preferencesResult) &&
-    preferencesResult.value.threadListV2Enabled === true;
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
-  const listRef = useRef<LegendListRef | null>(null);
   const insets = useSafeAreaInsets();
   const accentColor = useThemeColor("--color-icon-muted");
-  const effectiveGroupDisplayStates = useMemo(() => {
-    const next = new Map(groupDisplayStates);
-    if (!AsyncResult.isSuccess(preferencesResult)) {
-      return next;
-    }
-    for (const key of preferencesResult.value.collapsedProjectGroups ?? []) {
-      const existing = next.get(key);
-      next.set(key, {
-        ...(existing ?? DEFAULT_GROUP_DISPLAY_STATE),
-        collapsed: true,
-      });
-    }
-    return next;
-  }, [groupDisplayStates, preferencesResult]);
-  const effectiveGroupDisplayStatesRef = useRef(effectiveGroupDisplayStates);
-  effectiveGroupDisplayStatesRef.current = effectiveGroupDisplayStates;
-
-  const updateGroupDisplay = useCallback(
-    (key: string, action: HomeGroupDisplayAction) => {
-      const next = new Map(effectiveGroupDisplayStatesRef.current);
-      next.set(key, nextGroupDisplayState(next.get(key) ?? DEFAULT_GROUP_DISPLAY_STATE, action));
-      effectiveGroupDisplayStatesRef.current = next;
-      setGroupDisplayStates(next);
-      if (action === "toggle-collapsed") {
-        const collapsedProjectGroups: string[] = [];
-        for (const [groupKey, state] of next) {
-          if (state.collapsed) {
-            collapsedProjectGroups.push(groupKey);
-          }
-        }
-        savePreferences({ collapsedProjectGroups });
-      }
-    },
-    [savePreferences],
-  );
 
   const handleSwipeableWillOpen = useCallback((methods: SwipeableMethods) => {
     if (openSwipeableRef.current !== methods) {
@@ -254,96 +171,7 @@ export function HomeScreen(props: HomeScreenProps) {
       }),
     [props.projectGroupingMode, props.projects, props.selectedEnvironmentId],
   );
-  const selectedProjectScope = useMemo(
-    () =>
-      props.selectedProjectKey === null
-        ? null
-        : (projectScopes.find(
-            (scope) =>
-              scope.key === props.selectedProjectKey ||
-              scope.projectRefs.some(
-                (projectRef) =>
-                  scopedProjectKey(projectRef.environmentId, projectRef.projectId) ===
-                  props.selectedProjectKey,
-              ),
-          ) ?? null),
-    [projectScopes, props.selectedProjectKey],
-  );
-  const selectedProjectRefKeys = useMemo(
-    () =>
-      selectedProjectScope === null
-        ? null
-        : new Set(
-            selectedProjectScope.projectRefs.map((projectRef) =>
-              scopedProjectKey(projectRef.environmentId, projectRef.projectId),
-            ),
-          ),
-    [selectedProjectScope],
-  );
-  const scopedProjects = useMemo(
-    () =>
-      selectedProjectRefKeys === null
-        ? props.projects
-        : props.projects.filter((project) =>
-            selectedProjectRefKeys.has(scopedProjectKey(project.environmentId, project.id)),
-          ),
-    [props.projects, selectedProjectRefKeys],
-  );
-  const scopedThreads = useMemo(
-    () =>
-      selectedProjectRefKeys === null
-        ? props.threads
-        : props.threads.filter((thread) =>
-            selectedProjectRefKeys.has(scopedProjectKey(thread.environmentId, thread.projectId)),
-          ),
-    [props.threads, selectedProjectRefKeys],
-  );
-  const scopedPendingTasks = useMemo(
-    () =>
-      selectedProjectRefKeys === null
-        ? props.pendingTasks
-        : props.pendingTasks.filter((pendingTask) =>
-            selectedProjectRefKeys.has(
-              scopedProjectKey(pendingTask.message.environmentId, pendingTask.creation.projectId),
-            ),
-          ),
-    [props.pendingTasks, selectedProjectRefKeys],
-  );
-
-  const projectGroups = useMemo(
-    () =>
-      buildHomeThreadGroups({
-        projects: scopedProjects,
-        threads: scopedThreads,
-        pendingTasks: scopedPendingTasks,
-        environmentId: props.selectedEnvironmentId,
-        searchQuery: props.searchQuery,
-        projectSortOrder: props.projectSortOrder,
-        threadSortOrder: props.threadSortOrder,
-        projectGroupingMode: props.projectGroupingMode,
-      }),
-    [
-      props.projectGroupingMode,
-      props.projectSortOrder,
-      props.searchQuery,
-      props.selectedEnvironmentId,
-      props.threadSortOrder,
-      scopedPendingTasks,
-      scopedProjects,
-      scopedThreads,
-    ],
-  );
-
   const hasSearchQuery = props.searchQuery.trim().length > 0;
-  const listLayout = useMemo(
-    () =>
-      buildHomeListLayout({
-        groups: projectGroups,
-        displayStates: effectiveGroupDisplayStates,
-        showAllThreads: hasSearchQuery,
-      }),
-    [projectGroups, effectiveGroupDisplayStates, hasSearchQuery],
-  );
 
   const projectCwdByKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -420,7 +248,7 @@ export function HomeScreen(props: HomeScreenProps) {
           ),
     [v2ScopedProjectGroup],
   );
-  // Thread List v2 (beta): one flat list in creation order, no grouping.
+  // One flat list in creation order, no grouping.
   // Settled threads collapse into a recency tail below the card block.
   // Settled threads stay in the live shell stream (settled ≠ archived), so
   // the partition works directly off live shells — no snapshot merging or
@@ -477,14 +305,9 @@ export function HomeScreen(props: HomeScreenProps) {
   // thread reappears immediately instead of on the next minute tick.
   const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
   useEffect(() => {
-    if (!threadListV2Enabled) return;
-    // Refresh immediately on enable: the mount-time value can be hours old
-    // by the time the beta is switched on, which would misclassify the
-    // inactivity auto-settle boundary until the first tick.
-    setNowMinute(new Date().toISOString().slice(0, 16));
     const id = setInterval(() => setNowMinute(new Date().toISOString().slice(0, 16)), 60_000);
     return () => clearInterval(id);
-  }, [threadListV2Enabled]);
+  }, []);
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
@@ -506,36 +329,35 @@ export function HomeScreen(props: HomeScreenProps) {
     }
     return supported;
   }, [serverConfigs]);
-  const threadListV2Layout = useMemo(() => {
-    if (!threadListV2Enabled)
-      return { items: [], hiddenSettledCount: 0, snoozedCount: 0, nextSnoozeWakeAt: null };
+  const threadListV2Layout = useMemo(
     // Settled threads are live shells; archived threads keep their original
     // "hidden from lists" meaning.
-    return buildThreadListV2Items({
-      threads: props.threads.filter((thread) => thread.archivedAt === null),
-      environmentId: props.selectedEnvironmentId,
-      projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
-      searchQuery: props.searchQuery,
+    () =>
+      buildThreadListV2Items({
+        threads: props.threads.filter((thread) => thread.archivedAt === null),
+        environmentId: props.selectedEnvironmentId,
+        projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
+        searchQuery: props.searchQuery,
+        changeRequestStateByKey,
+        settlementEnvironmentIds,
+        snoozeEnvironmentIds,
+        settledLimit: settledVisibleCount,
+        now: `${nowMinute}:00.000Z`,
+        snoozeNow: new Date().toISOString(),
+      }),
+    [
       changeRequestStateByKey,
+      nowMinute,
+      snoozeWakeTick,
+      settledVisibleCount,
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
-      settledLimit: settledVisibleCount,
-      now: `${nowMinute}:00.000Z`,
-      snoozeNow: new Date().toISOString(),
-    });
-  }, [
-    changeRequestStateByKey,
-    nowMinute,
-    snoozeWakeTick,
-    settledVisibleCount,
-    settlementEnvironmentIds,
-    snoozeEnvironmentIds,
-    props.searchQuery,
-    props.selectedEnvironmentId,
-    props.threads,
-    threadListV2Enabled,
-    v2ScopedProjectGroup,
-  ]);
+      props.searchQuery,
+      props.selectedEnvironmentId,
+      props.threads,
+      v2ScopedProjectGroup,
+    ],
+  );
   // Re-partition the moment the earliest snooze expires (clamped to the
   // signed-32-bit setTimeout range; far-future wakes re-arm at the clamp).
   const nextSnoozeWakeAt = threadListV2Layout.nextSnoozeWakeAt;
@@ -616,106 +438,13 @@ export function HomeScreen(props: HomeScreenProps) {
     [],
   );
 
-  const extraData = useMemo(
-    () => ({ savedConnectionsById: props.savedConnectionsById, projectCwdByKey }),
-    [props.savedConnectionsById, projectCwdByKey],
-  );
-
-  const renderItem = useCallback(
-    ({ item }: LegendListRenderItemProps<HomeListItem>) => {
-      switch (item.type) {
-        case "header":
-          return (
-            <ThreadListGroupHeader
-              variant="compact"
-              collapsed={item.collapsed}
-              isFirst={item.isFirst}
-              groupKey={item.group.key}
-              onGroupAction={updateGroupDisplay}
-              // Aggregated groups (same repo across machines) have no single
-              // target project, and `pending-project:` groups hold a placeholder
-              // built from queued-task metadata rather than a real project shell,
-              // so the quick new-thread button is single-real-project only.
-              newThreadTarget={item.group.newThreadTarget}
-              onNewThread={props.onNewThreadInProject}
-              project={item.group.representative}
-              threadCount={item.group.threads.length + item.group.pendingTasks.length}
-              title={item.group.title}
-            />
-          );
-        case "pending-task":
-          return (
-            <PendingTaskListRow
-              variant="compact"
-              pendingTask={item.pendingTask}
-              environmentLabel={
-                props.savedConnectionsById[item.pendingTask.message.environmentId]
-                  ?.environmentLabel ?? null
-              }
-              isLast={item.isLast}
-              onSelectPendingTask={props.onSelectPendingTask}
-              onDeletePendingTask={props.onDeletePendingTask}
-            />
-          );
-        case "thread": {
-          const thread = item.thread;
-          return (
-            <ThreadListRow
-              variant="compact"
-              thread={thread}
-              environmentLabel={
-                props.savedConnectionsById[thread.environmentId]?.environmentLabel ?? null
-              }
-              projectCwd={
-                projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ??
-                null
-              }
-              isLast={item.isLast}
-              onArchiveThread={props.onArchiveThread}
-              onDeleteThread={props.onDeleteThread}
-              onSelectThread={props.onSelectThread}
-              onSwipeableClose={handleSwipeableClose}
-              onSwipeableWillOpen={handleSwipeableWillOpen}
-            />
-          );
-        }
-        case "show-more":
-          return (
-            <ThreadListShowMoreRow
-              variant="compact"
-              hiddenCount={item.hiddenCount}
-              canShowLess={item.canShowLess}
-              groupKey={item.groupKey}
-              onGroupAction={updateGroupDisplay}
-            />
-          );
-      }
-    },
-    [
-      handleSwipeableClose,
-      handleSwipeableWillOpen,
-      projectCwdByKey,
-      props.onArchiveThread,
-      props.onDeletePendingTask,
-      props.onDeleteThread,
-      props.onNewThreadInProject,
-      props.onSelectPendingTask,
-      props.onSelectThread,
-      props.savedConnectionsById,
-      updateGroupDisplay,
-    ],
-  );
-
-  const keyExtractor = useCallback((item: HomeListItem) => item.key, []);
-
   /* Empty states */
   // The signal must ignore the search/environment filters: an active query
   // that matches nothing needs the in-list "No results" state, not the
   // full-page "No threads yet". Settled threads are unarchived live shells,
-  // so the v1 check already covers v2.
+  // so this check covers them too.
   const hasAnyThreads =
     props.threads.some((thread) => thread.archivedAt === null) || props.pendingTasks.length > 0;
-  const hasResults = projectGroups.length > 0;
   const selectedEnvironmentLabel =
     props.selectedEnvironmentId === null
       ? null
@@ -825,30 +554,11 @@ export function HomeScreen(props: HomeScreenProps) {
     </>
   );
 
-  const listEmpty = !hasResults ? (
-    hasSearchQuery ? (
-      <EmptyState title="No results" detail={`No threads matching "${props.searchQuery}".`} />
-    ) : selectedProjectScope !== null ? (
-      <EmptyState
-        title={`No threads in ${selectedProjectScope.title}`}
-        detail="Choose another project or create a new task."
-      />
-    ) : selectedEnvironmentLabel ? (
-      <EmptyState
-        title={`No threads in ${selectedEnvironmentLabel}`}
-        detail="Choose another environment or create a new task."
-      />
-    ) : (
-      <EmptyState title="No threads yet" detail="Create a task to start a new coding session." />
-    )
-  ) : null;
-  // Self-contained: v1's listEmpty keys off projectGroups, which ignores the
-  // v2 project scope, so it can be null (results elsewhere) while this list
-  // is empty. Search outranks the scope — "No results" names the actionable
-  // fact when a query is active. Snoozed threads outrank the rest: "No
-  // threads yet" over an inbox that is merely all-snoozed reads as data
-  // loss. Pending tasks render in the header, so the list showing them
-  // isn't empty in the user's eyes.
+  // Search outranks the scope — "No results" names the actionable fact when a
+  // query is active. Snoozed threads outrank the rest: "No threads yet" over
+  // an inbox that is merely all-snoozed reads as data loss. Pending tasks
+  // render in the header, so the list showing them isn't empty in the user's
+  // eyes.
   const v2SnoozedCount = threadListV2Layout.snoozedCount;
   const v2ListEmpty =
     v2PendingTasks.length > 0 ? null : hasSearchQuery ? (
@@ -875,106 +585,58 @@ export function HomeScreen(props: HomeScreenProps) {
         title={`No threads in ${v2ScopedProjectGroup.title}`}
         detail="Choose another project or create a new task."
       />
+    ) : selectedEnvironmentLabel ? (
+      <EmptyState
+        title={`No threads in ${selectedEnvironmentLabel}`}
+        detail="Choose another environment or create a new task."
+      />
     ) : (
-      listEmpty
+      <EmptyState title="No threads yet" detail="Create a task to start a new coding session." />
     );
-
-  if (threadListV2Enabled) {
-    return (
-      <View className="flex-1 bg-screen">
-        <SwipeableScrollGateProvider enabled={swipeEnabled}>
-          <FlatList
-            data={threadListV2Items}
-            renderItem={renderV2Item}
-            keyExtractor={v2KeyExtractor}
-            extraData={{
-              projectByKey,
-              serverConfigs,
-              savedConnectionsById: props.savedConnectionsById,
-            }}
-            ListHeaderComponent={v2ListHeader}
-            ListFooterComponent={
-              threadListV2Layout.hiddenSettledCount > 0 ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Show ${Math.min(threadListV2Layout.hiddenSettledCount, THREAD_LIST_V2_SETTLED_PAGE_COUNT)} more settled threads`}
-                  onPress={showMoreSettled}
-                  className="mx-4 mt-2 items-center rounded-lg border border-dashed border-border py-2.5"
-                  style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-                >
-                  <Text className="text-xs font-t3-medium text-foreground-muted">
-                    Show more ({threadListV2Layout.hiddenSettledCount} settled hidden)
-                  </Text>
-                </Pressable>
-              ) : null
-            }
-            ListEmptyComponent={v2ListEmpty}
-            style={{ flex: 1 }}
-            automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios"}
-            contentInsetAdjustmentBehavior={Platform.OS === "ios" ? "automatic" : "never"}
-            showsVerticalScrollIndicator={false}
-            keyboardDismissMode="on-drag"
-            keyboardShouldPersistTaps="handled"
-            {...scrollGateHandlers}
-            scrollEventThrottle={16}
-            contentContainerStyle={{
-              paddingBottom:
-                Platform.OS === "ios"
-                  ? Math.max(insets.bottom, 24) + 96
-                  : Math.max(insets.bottom, 16) + 88,
-            }}
-          />
-        </SwipeableScrollGateProvider>
-        {connectionStatus}
-      </View>
-    );
-  }
 
   return (
     <View className="flex-1 bg-screen">
-      {/* Sticky headers are deliberately not wired up: LegendList's JS sticky
-          implementation mispositions pinned headers at mount under iOS
-          automatic content insets (headers render one nav-inset too low until
-          the first scroll event) and blanks non-pinned headers after
-          collapse/expand data changes. The flattened layout still exposes
-          `stickyHeaderIndices` if this gets revisited. */}
       <SwipeableScrollGateProvider enabled={swipeEnabled}>
-        <LegendList
-          ref={listRef}
-          data={listLayout.items}
-          renderItem={renderItem}
-          keyExtractor={keyExtractor}
-          itemsAreEqual={homeListItemsAreEqual}
-          drawDistance={500}
-          estimatedItemSize={ESTIMATED_THREAD_ROW_HEIGHT}
-          extraData={extraData}
-          ListHeaderComponent={listHeader}
-          ListEmptyComponent={listEmpty}
+        <FlatList
+          data={threadListV2Items}
+          renderItem={renderV2Item}
+          keyExtractor={v2KeyExtractor}
+          extraData={{
+            projectByKey,
+            serverConfigs,
+            savedConnectionsById: props.savedConnectionsById,
+          }}
+          ListHeaderComponent={v2ListHeader}
+          ListFooterComponent={
+            threadListV2Layout.hiddenSettledCount > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Show ${Math.min(threadListV2Layout.hiddenSettledCount, THREAD_LIST_V2_SETTLED_PAGE_COUNT)} more settled threads`}
+                onPress={showMoreSettled}
+                className="mx-4 mt-2 items-center rounded-lg border border-dashed border-border py-2.5"
+                style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+              >
+                <Text className="text-xs font-t3-medium text-foreground-muted">
+                  Show more ({threadListV2Layout.hiddenSettledCount} settled hidden)
+                </Text>
+              </Pressable>
+            ) : null
+          }
+          ListEmptyComponent={v2ListEmpty}
           style={{ flex: 1 }}
-          automaticallyAdjustsScrollIndicatorInsets={NATIVE_LIQUID_GLASS_SUPPORTED}
-          contentInsetAdjustmentBehavior={NATIVE_LIQUID_GLASS_SUPPORTED ? "automatic" : "never"}
+          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios"}
+          contentInsetAdjustmentBehavior={Platform.OS === "ios" ? "automatic" : "never"}
           showsVerticalScrollIndicator={false}
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           {...scrollGateHandlers}
-          recycleItems
           scrollEventThrottle={16}
           contentContainerStyle={{
-            // Android reserves room for the floating new-task FAB
-            // (56 button + 16 gap + bottom inset).
             paddingBottom:
               Platform.OS === "ios"
-                ? Math.max(insets.bottom, 24) + 24
+                ? Math.max(insets.bottom, 24) + 96
                 : Math.max(insets.bottom, 16) + 88,
           }}
-          scrollIndicatorInsets={
-            Platform.OS === "ios"
-              ? {
-                  bottom: Math.max(insets.bottom, 16) + 24,
-                  top: 0,
-                }
-              : undefined
-          }
         />
       </SwipeableScrollGateProvider>
       {connectionStatus}

@@ -21,14 +21,7 @@ export interface Preferences {
   readonly codeFontSize?: number | null;
   readonly codeWordBreak?: boolean;
   readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
-  readonly collapsedProjectGroups?: readonly string[];
   readonly projectGroupingEnabled?: boolean;
-  /**
-   * Device-local mirror of the web beta's `sidebarV2Enabled`. Mobile has no
-   * client-settings sync, so the flat v2 thread list is opted into per
-   * device.
-   */
-  readonly threadListV2Enabled?: boolean;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -77,9 +70,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     codeFontSize?: number | null;
     codeWordBreak?: boolean;
     connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
-    collapsedProjectGroups?: readonly string[];
     projectGroupingEnabled?: boolean;
-    threadListV2Enabled?: boolean;
   } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
@@ -101,16 +92,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
       (account): account is string => typeof account === "string",
     );
   }
-  if (Array.isArray(parsed.collapsedProjectGroups)) {
-    preferences.collapsedProjectGroups = parsed.collapsedProjectGroups.filter(
-      (key): key is string => typeof key === "string",
-    );
-  }
   if (typeof parsed.projectGroupingEnabled === "boolean") {
     preferences.projectGroupingEnabled = parsed.projectGroupingEnabled;
-  }
-  if (typeof parsed.threadListV2Enabled === "boolean") {
-    preferences.threadListV2Enabled = parsed.threadListV2Enabled;
   }
   return preferences;
 }
