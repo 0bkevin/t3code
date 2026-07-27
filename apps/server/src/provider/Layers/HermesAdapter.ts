@@ -973,13 +973,14 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
           // offline) must not abort the sweep or fail shutdown. The session is
           // deliberately left in place rather than orphaned.
           adapter.stopSession(threadId).pipe(
-            Effect.catchTag("ProviderAdapterRequestError", (error) =>
-              Effect.logWarning("provider.hermes.stop-session-undeliverable", {
-                instanceId: input.instanceId,
-                threadId,
-                detail: error.detail,
-              }),
-            ),
+            Effect.catchTags({
+              ProviderAdapterRequestError: (error) =>
+                Effect.logWarning("provider.hermes.stop-session-undeliverable", {
+                  instanceId: input.instanceId,
+                  threadId,
+                  detail: error.detail,
+                }),
+            }),
           ),
         { discard: true },
       ),

@@ -77,7 +77,9 @@ export const HermesDriver: ProviderDriver<HermesSettings, HermesDriverEnv> = {
         const connected = yield* broker.isConnected(instanceId);
         const status = yield* broker
           .getInstanceStatus(instanceId)
-          .pipe(Effect.catchTag("HermesGatewayManagementError", () => Effect.succeed(undefined)));
+          .pipe(
+            Effect.catchTags({ HermesGatewayManagementError: () => Effect.succeed(undefined) }),
+          );
         // Read-only: a snapshot must never create the thread as a side effect
         // (this runs on every status tick). The handshake owns creation.
         // A settings read that fails degrades to "no designation" rather than
