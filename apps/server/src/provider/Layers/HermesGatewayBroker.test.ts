@@ -94,6 +94,21 @@ const makeBroker = (secrets: ServerSecretStore.ServerSecretStore["Service"]) =>
     Effect.provide(NodeServices.layer),
   );
 
+/**
+ * Broker over an explicitly supplied settings service, so a test can interpose
+ * on `getSettings` and hold a handshake at a chosen read while another
+ * operation runs to completion.
+ */
+const makeBrokerWith = (
+  secrets: ServerSecretStore.ServerSecretStore["Service"],
+  settingsService: ServerSettings.ServerSettingsService["Service"],
+) =>
+  makeHermesGatewayBroker.pipe(
+    Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+    Effect.provideService(ServerSettings.ServerSettingsService, settingsService),
+    Effect.provide(NodeServices.layer),
+  );
+
 /** Ambient layer: one settings service shared by the test and its brokers. */
 const testLayer = Layer.mergeAll(
   ServerSettings.layerTest({ providerInstances: hermesInstances }),
@@ -326,6 +341,141 @@ it.effect("redeems an enrollment token exactly once under concurrent redemption"
       rejected[0]?._tag === "Failure" ? rejected[0].failure.code : "",
       "enrollment-expired",
     );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+/**
+ * Secret store that can hold the *first* `set` — the credential write at the
+ * heart of the handshake — open until a test releases it. That is the exact
+ * point a competing enrollment or revocation used to be able to slip past a
+ * half-finished handshake.
+ */
+const gatedCredentialWriteSecretStore = () =>
+  Effect.gen(function* () {
+    const inner = makeSecretStore();
+    const reachedWrite = yield* Deferred.make<void>();
+    const releaseWrite = yield* Deferred.make<void>();
+    let gated = false;
+    const service: ServerSecretStore.ServerSecretStore["Service"] = {
+      ...inner,
+      set: (name, value) =>
+        Effect.suspend(() => {
+          if (gated) return inner.set(name, value);
+          gated = true;
+          return Deferred.succeed(reachedWrite, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseWrite)),
+            Effect.andThen(inner.set(name, value)),
+          );
+        }),
+    };
+    return { secrets: service, reachedWrite, releaseWrite } as const;
+  });
+
+// The credential write and the acceptance that follows it are the mutation
+// half of the handshake. Before they were fenced by the instance lock, a
+// `createEnrollment` could complete entirely inside that window: it removed the
+// outgoing credential and minted a replacement token, and then the suspended
+// handshake resumed and wrote a *fresh* credential for the enrollment that had
+// just been superseded — leaving the old enrollee able to authenticate forever.
+it.effect("does not resurrect a credential for an enrollment superseded mid-handshake", () =>
+  Effect.gen(function* () {
+    const { secrets, reachedWrite, releaseWrite } = yield* gatedCredentialWriteSecretStore();
+    const broker = yield* makeBrokerWith(secrets, yield* ServerSettings.ServerSettingsService);
+    const enrollment = yield* enroll(broker, instanceId, "Superseded Hermes");
+
+    const handshake = yield* broker
+      .registerConnection(
+        hello({ type: "enrollment-token", token: enrollment.oneTimeToken }),
+        recordingTransport().transport,
+      )
+      .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+    // The handshake is now parked with its token already consumed, holding the
+    // instance lock.
+    yield* Deferred.await(reachedWrite);
+
+    const replacement = yield* enroll(broker, instanceId, "Superseded Hermes").pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    // The replacement enrollment must not be able to interleave with the
+    // handshake's mutation section: it waits for the lock instead.
+    for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+    assert.isUndefined(
+      replacement.pollUnsafe(),
+      "a replacement enrollment must not run inside a handshake's mutation section",
+    );
+
+    yield* Deferred.succeed(releaseWrite, undefined);
+    const registered = yield* Fiber.join(handshake);
+    yield* Fiber.join(replacement);
+
+    // Whichever order they serialize in, the enrollment that ran last wins: the
+    // superseded enrollee's credential is gone from the store...
+    assert.isTrue(
+      Option.isNone(yield* secrets.get(hermesGatewayCredentialSecretName(instanceId))),
+      "the superseded enrollment's credential must not survive the replacement",
+    );
+    // ...and cannot be replayed to authenticate.
+    if (registered._tag === "Success" && registered.success.accepted.credential) {
+      const replayed = yield* Effect.flip(
+        broker.registerConnection(
+          hello({
+            type: "instance-credential",
+            instanceId,
+            credential: registered.success.accepted.credential,
+          }),
+          recordingTransport().transport,
+        ),
+      );
+      assert.equal(replayed.code, "invalid-authentication");
+    }
+  }).pipe(Effect.provide(testLayer)),
+);
+
+// The mirror of the above for revocation. `registerConnection` used to read a
+// non-revoked record, pause, and then call `connections.accept` after a
+// concurrent `revokeInstance` had already persisted `revoked: true` and cleared
+// the connection — re-establishing a live socket for a revoked instance that
+// nothing would reap until the next reconnect.
+it.effect("leaves no live connection when revocation races a handshake", () =>
+  Effect.gen(function* () {
+    const { secrets, reachedWrite, releaseWrite } = yield* gatedCredentialWriteSecretStore();
+    const broker = yield* makeBrokerWith(secrets, yield* ServerSettings.ServerSettingsService);
+    const enrollment = yield* enroll(broker, instanceId, "Revoked Race Hermes");
+    const { closes, transport } = recordingTransport();
+
+    const handshake = yield* broker
+      .registerConnection(
+        hello({ type: "enrollment-token", token: enrollment.oneTimeToken }),
+        transport,
+      )
+      .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(reachedWrite);
+
+    const revoke = yield* broker
+      .revokeInstance(instanceId)
+      .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+    for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+    assert.isUndefined(
+      revoke.pollUnsafe(),
+      "revocation must not run inside a handshake's mutation section",
+    );
+
+    yield* Deferred.succeed(releaseWrite, undefined);
+    yield* Fiber.join(handshake);
+    const revoked = yield* Fiber.join(revoke);
+    assert.equal(revoked._tag, "Success");
+
+    // Serializing the two is enough: the handshake may win the lock and be
+    // accepted, but revocation then runs to completion behind it and tears the
+    // socket down. What must never hold is a revoked instance with a live
+    // connection.
+    assert.equal((yield* broker.getInstanceStatus(instanceId)).status, "revoked");
+    assert.isFalse(
+      yield* broker.isConnected(instanceId),
+      "a revoked instance must not be left connected",
+    );
+    assert.deepEqual(closes, [4003]);
+    assert.isTrue(Option.isNone(yield* secrets.get(hermesGatewayCredentialSecretName(instanceId))));
   }).pipe(Effect.provide(testLayer)),
 );
 

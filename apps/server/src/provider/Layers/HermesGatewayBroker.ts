@@ -29,12 +29,17 @@
  *
  * Locking
  * -------
- * There is no global broker lock. Enrollment mutations serialize per-instance;
- * `registerConnection` takes no enrollment lock at all, so a slow credential
- * write during one instance's enrollment cannot block another instance's
- * WebSocket handshake. Where two writers could still race — token redemption,
- * connection replacement — correctness comes from compare-and-swap and
- * generation fencing rather than from a mutex.
+ * There is no global broker lock. Everything that mutates one instance's
+ * enrollment — `createEnrollment`, `revokeInstance`, `removeInstance`,
+ * `renameInstance`, and the state-changing half of `registerConnection` —
+ * serializes on that instance's lock, so a slow credential write during one
+ * instance's enrollment still cannot block another instance's WebSocket
+ * handshake. `registerConnection` authenticates *before* taking the lock, so an
+ * unauthenticated caller cannot queue on it, and then re-validates the durable
+ * record and the credential once inside — the pre-lock read is only a filter.
+ * Where two writers could still race within a locked section — token
+ * redemption, connection replacement — correctness comes from compare-and-swap
+ * and generation fencing rather than from the mutex.
  *
  * @module HermesGatewayBroker
  */
@@ -803,28 +808,25 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
       yield* probe.pipe(Effect.forever, Effect.ignoreCause({ log: true }));
     });
 
-  const registerConnection = (
-    hello: HermesGatewayConnectionHello,
-    transport: HermesGatewayTransport,
-  ) =>
+  /**
+   * Handshake authentication: prove the caller holds a live credential or a
+   * live enrollment token, and resolve the instance it is speaking for.
+   *
+   * Deliberately a pure read. Nothing here mutates broker state, which is what
+   * makes it safe to run twice — once before the instance lock is taken, so an
+   * unauthenticated caller never joins the lock queue, and again inside it, so
+   * the facts the mutation section acts on were re-read after every competing
+   * enrollment or revocation had to finish.
+   */
+  const authenticateHello = (hello: HermesGatewayConnectionHello) =>
     Effect.gen(function* () {
-      const strictCapabilities = isStrictCapabilities(hello.capabilities)
-        ? hello.capabilities
-        : undefined;
-
-      // ── Phase 1: authenticate. Nothing below this line mutates connection
-      // state, and nothing above it is allowed to. An earlier bug applied
-      // "incompatible version" state before checking the credential, letting
-      // an unauthenticated caller knock a healthy instance offline; the test
-      // "authenticates before applying incompatible connection state" guards
-      // this ordering.
       let instanceId: ProviderInstanceId;
-      let authenticatedEnrollment: PendingEnrollment | undefined;
+      let enrollment: PendingEnrollment | undefined;
 
       if (hello.authentication.type === "enrollment-token") {
         const authentication = hello.authentication;
-        const enrollment = yield* enrollmentStore.peek(authentication.token);
-        if (!enrollment) {
+        const pending = yield* enrollmentStore.peek(authentication.token);
+        if (!pending) {
           return yield* Effect.fail(
             rejection(
               hello.requestId,
@@ -833,8 +835,8 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
             ),
           );
         }
-        instanceId = enrollment.input.instanceId;
-        authenticatedEnrollment = enrollment;
+        instanceId = pending.input.instanceId;
+        enrollment = pending;
       } else {
         const authentication = hello.authentication;
         instanceId = authentication.instanceId;
@@ -888,155 +890,214 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
         );
       }
 
-      // ── Phase 2: the caller is authenticated. State changes may begin.
-      if (
-        hello.protocolVersion !== HERMES_GATEWAY_PROTOCOL_VERSION ||
-        strictCapabilities === undefined
-      ) {
-        const displaced = yield* connections.markUpgradeRequired({
-          instanceId,
-          upgradeRequired: {
-            pluginVersion: hello.pluginVersion,
-            hermesVersion: hello.hermesVersion,
-            protocolVersion: hello.protocolVersion,
-            model: hello.model ?? null,
-          },
-        });
-        if (displaced) {
-          yield* teardownConnection(
-            instanceId,
-            displaced.transport,
-            4004,
-            "The Hermes gateway plugin requires a protocol upgrade.",
-          );
-        }
-        yield* publishStatus(instanceId, record);
-        // Names the fix, not just the mismatch: the rejection text is what a
-        // v3 (pre-media) plugin's operator sees in its logs. A right-version
-        // hello can still land here when its capabilities don't satisfy the
-        // v4 contract (e.g. `attachments: false`), so say which it was.
-        return yield* Effect.fail(
-          rejection(
-            hello.requestId,
-            "version-incompatible",
-            hello.protocolVersion !== HERMES_GATEWAY_PROTOCOL_VERSION
-              ? `Expected protocol version ${HERMES_GATEWAY_PROTOCOL_VERSION}, received ${hello.protocolVersion}. Upgrade the T3 Code gateway plugin on the Hermes host to reconnect.`
-              : `The advertised capabilities do not satisfy the version ${HERMES_GATEWAY_PROTOCOL_VERSION} contract. Upgrade the T3 Code gateway plugin on the Hermes host to reconnect.`,
-          ),
-        );
-      }
+      return { instanceId, enrollment, record } as const;
+    });
 
-      let credential: HermesGatewayCredential | undefined;
-      if (hello.authentication.type === "enrollment-token" && authenticatedEnrollment) {
-        const authentication = hello.authentication;
-        const consumed = yield* enrollmentStore.consume(
-          authentication.token,
-          authenticatedEnrollment,
-        );
-        if (!consumed) {
-          return yield* Effect.fail(
-            rejection(
-              hello.requestId,
-              "enrollment-expired",
-              "The enrollment token is invalid, expired, or already used.",
-            ),
-          );
-        }
-        instanceId = consumed.input.instanceId;
-        credential = HermesGatewayCredential.make(
-          Encoding.encodeBase64Url(
-            yield* crypto
-              .randomBytes(CREDENTIAL_BYTES)
+  const registerConnection = (
+    hello: HermesGatewayConnectionHello,
+    transport: HermesGatewayTransport,
+  ) =>
+    Effect.gen(function* () {
+      const strictCapabilities = isStrictCapabilities(hello.capabilities)
+        ? hello.capabilities
+        : undefined;
+
+      // ── Phase 1: authenticate, unlocked. Nothing below this line mutates
+      // connection state, and nothing above it is allowed to. An earlier bug
+      // applied "incompatible version" state before checking the credential,
+      // letting an unauthenticated caller knock a healthy instance offline;
+      // the test "authenticates before applying incompatible connection state"
+      // guards this ordering. Running it before the lock also keeps a caller
+      // with a junk credential from queueing behind an in-flight enrollment.
+      const preliminary = yield* authenticateHello(hello);
+
+      // ── Phase 2: the caller is authenticated. State changes may begin —
+      // under the instance's enrollment lock, so `createEnrollment`,
+      // `revokeInstance`, and `removeInstance` cannot interleave with token
+      // redemption, credential persistence, or acceptance.
+      //
+      // Everything inside is bounded and takes no other lock: settings reads
+      // are a `Ref.get`, and `teardownConnection` only fails correlated
+      // requests and closes the *displaced* socket — never the one currently
+      // handshaking, which is not in the registry yet. So the WS accept path
+      // cannot deadlock against a displaced connection's teardown.
+      return yield* withInstanceLock(
+        preliminary.instanceId,
+        Effect.gen(function* () {
+          // Re-read every fact behind the lock. The pre-lock pass was only a
+          // filter: between it and here a `createEnrollment` may have removed
+          // the credential and superseded the token, or a `revokeInstance` may
+          // have marked the instance revoked and cleared its connection. Both
+          // are now visible, and both reject.
+          const {
+            instanceId,
+            enrollment: authenticatedEnrollment,
+            record,
+          } = yield* authenticateHello(hello);
+          if (instanceId !== preliminary.instanceId) {
+            // The lock we hold is the wrong one, so this cannot proceed
+            // safely. Only reachable if a token were re-pointed at another
+            // instance, which minting never does.
+            return yield* Effect.fail(
+              rejection(
+                hello.requestId,
+                "invalid-authentication",
+                "The Hermes gateway enrollment changed during the handshake.",
+              ),
+            );
+          }
+
+          if (
+            hello.protocolVersion !== HERMES_GATEWAY_PROTOCOL_VERSION ||
+            strictCapabilities === undefined
+          ) {
+            const displaced = yield* connections.markUpgradeRequired({
+              instanceId,
+              upgradeRequired: {
+                pluginVersion: hello.pluginVersion,
+                hermesVersion: hello.hermesVersion,
+                protocolVersion: hello.protocolVersion,
+                model: hello.model ?? null,
+              },
+            });
+            if (displaced) {
+              yield* teardownConnection(
+                instanceId,
+                displaced.transport,
+                4004,
+                "The Hermes gateway plugin requires a protocol upgrade.",
+              );
+            }
+            yield* publishStatus(instanceId, record);
+            // Names the fix, not just the mismatch: the rejection text is what
+            // a v3 (pre-media) plugin's operator sees in its logs. A
+            // right-version hello can still land here when its capabilities
+            // don't satisfy the v4 contract (e.g. `attachments: false`), so
+            // say which it was.
+            return yield* Effect.fail(
+              rejection(
+                hello.requestId,
+                "version-incompatible",
+                hello.protocolVersion !== HERMES_GATEWAY_PROTOCOL_VERSION
+                  ? `Expected protocol version ${HERMES_GATEWAY_PROTOCOL_VERSION}, received ${hello.protocolVersion}. Upgrade the T3 Code gateway plugin on the Hermes host to reconnect.`
+                  : `The advertised capabilities do not satisfy the version ${HERMES_GATEWAY_PROTOCOL_VERSION} contract. Upgrade the T3 Code gateway plugin on the Hermes host to reconnect.`,
+              ),
+            );
+          }
+
+          let credential: HermesGatewayCredential | undefined;
+          if (hello.authentication.type === "enrollment-token" && authenticatedEnrollment) {
+            const authentication = hello.authentication;
+            const consumed = yield* enrollmentStore.consume(
+              authentication.token,
+              authenticatedEnrollment,
+            );
+            if (!consumed) {
+              return yield* Effect.fail(
+                rejection(
+                  hello.requestId,
+                  "enrollment-expired",
+                  "The enrollment token is invalid, expired, or already used.",
+                ),
+              );
+            }
+            credential = HermesGatewayCredential.make(
+              Encoding.encodeBase64Url(
+                yield* crypto
+                  .randomBytes(CREDENTIAL_BYTES)
+                  .pipe(
+                    Effect.mapError(() =>
+                      rejection(
+                        hello.requestId,
+                        "internal-error",
+                        "Failed to generate the Hermes gateway credential.",
+                      ),
+                    ),
+                  ),
+              ),
+            );
+            yield* secretStore
+              .set(credentialSecretName(instanceId), textEncoder.encode(credential))
               .pipe(
                 Effect.mapError(() =>
                   rejection(
                     hello.requestId,
                     "internal-error",
-                    "Failed to generate the Hermes gateway credential.",
+                    "Failed to persist the Hermes gateway credential.",
                   ),
                 ),
-              ),
-          ),
-        );
-        yield* secretStore
-          .set(credentialSecretName(instanceId), textEncoder.encode(credential))
-          .pipe(
-            Effect.mapError(() =>
-              rejection(
-                hello.requestId,
-                "internal-error",
-                "Failed to persist the Hermes gateway credential.",
-              ),
-            ),
-          );
-      }
+              );
+          }
 
-      // ── Delivery connections: authenticated, but never the primary.
-      //
-      // An out-of-process cron run dials in only to hand over a `home.deliver`
-      // and leave. Registering it would displace the instance's live gateway
-      // socket ("replaced by a newer connection") and bump the generation,
-      // knocking the real plugin offline for the duration of a cron job. So it
-      // is accepted and then deliberately left out of the connection registry:
-      // no generation, no liveness ping, no status publish, nothing to
-      // disconnect. The existing primary is untouched.
-      if (hello.role === "delivery") {
-        return {
-          instanceId,
-          generation: null,
-          role: "delivery",
-          accepted: {
-            type: "connection.accepted",
-            requestId: hello.requestId,
-            protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+          // ── Delivery connections: authenticated, but never the primary.
+          //
+          // An out-of-process cron run dials in only to hand over a
+          // `home.deliver` and leave. Registering it would displace the
+          // instance's live gateway socket ("replaced by a newer connection")
+          // and bump the generation, knocking the real plugin offline for the
+          // duration of a cron job. So it is accepted and then deliberately
+          // left out of the connection registry: no generation, no liveness
+          // ping, no status publish, nothing to disconnect. The existing
+          // primary is untouched.
+          if (hello.role === "delivery") {
+            return {
+              instanceId,
+              generation: null,
+              role: "delivery",
+              accepted: {
+                type: "connection.accepted",
+                requestId: hello.requestId,
+                protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+                instanceId,
+                nickname: record.nickname,
+                ...(credential ? { credential } : {}),
+              },
+            } as const satisfies HermesGatewayConnectionRegistration;
+          }
+
+          const observed: HermesObservedConnection = {
+            pluginVersion: hello.pluginVersion,
+            hermesVersion: hello.hermesVersion,
+            capabilities: strictCapabilities,
+            model: hello.model ?? null,
+            connectedAt: DateTime.formatIso(yield* DateTime.now),
+            activeSessionCount: 0,
+          };
+          const accepted = yield* connections.accept({ instanceId, transport, observed });
+          if (accepted.displaced) {
+            yield* teardownConnection(
+              instanceId,
+              accepted.displaced.transport,
+              4001,
+              "The Hermes gateway connection was replaced by a newer connection.",
+            );
+          }
+
+          const registration = {
             instanceId,
-            nickname: record.nickname,
-            ...(credential ? { credential } : {}),
-          },
-        } as const satisfies HermesGatewayConnectionRegistration;
-      }
+            generation: accepted.generation,
+            role: "gateway",
+            accepted: {
+              type: "connection.accepted",
+              requestId: hello.requestId,
+              protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+              instanceId,
+              nickname: record.nickname,
+              ...(credential ? { credential } : {}),
+            },
+          } as const satisfies HermesGatewayConnectionRegistration;
 
-      const observed: HermesObservedConnection = {
-        pluginVersion: hello.pluginVersion,
-        hermesVersion: hello.hermesVersion,
-        capabilities: strictCapabilities,
-        model: hello.model ?? null,
-        connectedAt: DateTime.formatIso(yield* DateTime.now),
-        activeSessionCount: 0,
-      };
-      const accepted = yield* connections.accept({ instanceId, transport, observed });
-      if (accepted.displaced) {
-        yield* teardownConnection(
-          instanceId,
-          accepted.displaced.transport,
-          4001,
-          "The Hermes gateway connection was replaced by a newer connection.",
-        );
-      }
+          // Liveness probing belongs to this connection's scope, so it is
+          // interrupted the moment the connection is retired.
+          const liveness = yield* connections.liveness(instanceId);
+          if (liveness?.connection?.generation === accepted.generation) {
+            yield* pingLoop(registration, transport).pipe(Effect.forkIn(liveness.connection.scope));
+          }
 
-      const registration = {
-        instanceId,
-        generation: accepted.generation,
-        role: "gateway",
-        accepted: {
-          type: "connection.accepted",
-          requestId: hello.requestId,
-          protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
-          instanceId,
-          nickname: record.nickname,
-          ...(credential ? { credential } : {}),
-        },
-      } as const satisfies HermesGatewayConnectionRegistration;
-
-      // Liveness probing belongs to this connection's scope, so it is
-      // interrupted the moment the connection is retired.
-      const liveness = yield* connections.liveness(instanceId);
-      if (liveness?.connection?.generation === accepted.generation) {
-        yield* pingLoop(registration, transport).pipe(Effect.forkIn(liveness.connection.scope));
-      }
-
-      yield* publishStatus(instanceId, record);
-      return registration;
+          yield* publishStatus(instanceId, record);
+          return registration;
+        }),
+      );
     });
 
   const receive = (registration: HermesGatewayConnectionRegistration, message: PluginMessage) =>

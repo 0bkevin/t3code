@@ -61,11 +61,24 @@ export const makeRequestCorrelator = <Owner, Response>(
         const deferred = yield* Deferred.make<Response, ProviderAdapterRequestError>();
         const registeredAtMillis = yield* Clock.currentTimeMillis;
 
-        // Registration and the send must not be interruptible independently of
-        // the cleanup that removes the entry. `uninterruptibleMask` closes the
-        // window: the registration is applied, `restore` re-enables interrupts
-        // only inside the awaiting pipeline, and `ensuring` guarantees release
-        // regardless of how that pipeline exits.
+        // Registration must not be interruptible independently of the cleanup
+        // that removes the entry. `uninterruptibleMask` closes that window: the
+        // registration is applied uninterruptibly — so a response arriving the
+        // instant the request is written always finds an entry to complete —
+        // and `ensuring` guarantees release regardless of how the rest exits.
+        //
+        // Everything after registration — the send *and* the await — lives
+        // inside `restore`, with the timeout inside it too. Both placements
+        // matter:
+        //
+        //   - Send outside `restore`: a transport write that never returns is
+        //     unkillable, and the response timeout does not start counting
+        //     until the write returns, so a request over a wedged socket hangs
+        //     for as long as the socket does.
+        //   - Timeout outside `restore`: `Effect.timeout` races internally, and
+        //     that race inherits the surrounding uninterruptible region — so an
+        //     interrupt cannot land on the awaiting fiber even though the body
+        //     it wraps was restored.
         return yield* Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
             yield* Ref.update(pending, (current) =>
@@ -77,10 +90,12 @@ export const makeRequestCorrelator = <Owner, Response>(
               }),
             );
 
-            yield* input.send.pipe(Effect.tapError(() => release(input.requestId)));
-
-            return yield* restore(Deferred.await(deferred)).pipe(
-              Effect.timeout(input.timeout ?? options.timeout),
+            return yield* restore(
+              input.send.pipe(
+                Effect.andThen(Deferred.await(deferred)),
+                Effect.timeout(input.timeout ?? options.timeout),
+              ),
+            ).pipe(
               Effect.mapError((error) =>
                 error._tag === "TimeoutError"
                   ? requestError(input.method, `${options.provider} request timed out.`)
