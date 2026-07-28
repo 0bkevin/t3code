@@ -1,5 +1,5 @@
 import { DownloadIcon, FileIcon, FileTextIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import type { ChatAttachment } from "../../types";
@@ -91,10 +91,27 @@ export const MessageAttachments = memo(function MessageAttachments({
   onImageExpand: (preview: ExpandedImagePreview) => void;
   className?: string;
 }) {
+  // Signed asset URLs expire after an hour, and a thread left open past
+  // that renders dead <img>/<video> elements. Failures degrade to the
+  // download card — still labelled, still clickable (the click issues a
+  // fresh request) — rather than a broken glyph. Deliberately no automatic
+  // URL refresh loop: a remount (navigation, reload) re-mints tokens, and
+  // that is the common recovery path.
+  const [failedIds, setFailedIds] = useState<ReadonlySet<string>>(new Set());
+  const markFailed = (id: string) =>
+    setFailedIds((existing) => {
+      if (existing.has(id)) return existing;
+      const next = new Set(existing);
+      next.add(id);
+      return next;
+    });
+
   if (attachments.length === 0) return null;
 
-  const images = attachments.filter((a) => resolveAttachmentRenderKind(a) === "image");
-  const rest = attachments.filter((a) => resolveAttachmentRenderKind(a) !== "image");
+  const renderable = (attachment: ChatAttachment) =>
+    failedIds.has(attachment.id) ? "file" : resolveAttachmentRenderKind(attachment);
+  const images = attachments.filter((a) => renderable(a) === "image");
+  const rest = attachments.filter((a) => renderable(a) !== "image");
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-2", className)}>
@@ -120,6 +137,7 @@ export const MessageAttachments = memo(function MessageAttachments({
                     src={image.previewUrl}
                     alt={image.name}
                     className="block h-auto max-h-[220px] w-full object-cover"
+                    onError={() => markFailed(image.id)}
                   />
                 </button>
               ) : (
@@ -132,7 +150,7 @@ export const MessageAttachments = memo(function MessageAttachments({
         </div>
       ) : null}
       {rest.map((attachment) => {
-        const kind = resolveAttachmentRenderKind(attachment);
+        const kind = renderable(attachment);
         if (kind === "video" && attachment.previewUrl) {
           return (
             // eslint-disable-next-line jsx-a11y/media-has-caption -- agent-produced media carries no track
@@ -142,6 +160,7 @@ export const MessageAttachments = memo(function MessageAttachments({
               preload="metadata"
               src={attachment.previewUrl}
               className="max-h-[360px] max-w-[560px] rounded-lg border border-border/80 bg-black/40"
+              onError={() => markFailed(attachment.id)}
             />
           );
         }
