@@ -5,8 +5,7 @@ import {
 } from "@t3tools/contracts";
 import { memo, useEffect, useMemo, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
-import { Button, buttonVariants } from "../ui/button";
+import { buttonVariants } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -18,6 +17,7 @@ import {
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
+import { ComposerControl, ComposerControlChevron } from "./ComposerControl";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   /**
@@ -147,14 +147,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   };
 
   const triggerContents = (
-    <span className="flex min-w-0 flex-1 items-center gap-2">
+    <span className="flex min-w-0 flex-1 items-center gap-1.5">
       {activeEntry ? (
         <ProviderInstanceIcon
           driverKind={activeEntry.driverKind}
           displayName={activeEntry.displayName}
           accentColor={activeEntry.accentColor}
           showBadge={showInstanceBadge}
-          className={showInstanceBadge ? "size-5" : "size-4"}
+          className="size-4"
           iconClassName={cn("size-4", props.activeProviderIconClassName)}
           indicatorBackground="var(--input)"
           badgeClassName={cn(
@@ -178,13 +178,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         data-chat-provider-model-picker="true"
         data-static="true"
         className={cn(
-          // Mirrors the interactive trigger's size="sm" Button metrics —
-          // height (h-8 sm:h-7), type (text-base sm:text-sm, font-medium) and
-          // the 1px transparent border that insets the Button's content — so
-          // a Home thread's chip is pixel-identical to every other thread's,
-          // minus only the chevron it deliberately drops.
-          "flex h-8 min-w-0 items-center whitespace-nowrap rounded-lg border border-transparent px-2 font-medium text-base text-muted-foreground/70 sm:h-7 sm:text-sm",
-          props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
+          // Mirrors the interactive trigger's ComposerControl metrics —
+          // height (h-7), padding (px-2.5), type (text-base sm:text-sm,
+          // font-medium) and the 1px transparent border that insets the
+          // Button's content — so a Home thread's chip is pixel-identical to
+          // every other thread's, minus only the chevron it deliberately
+          // drops. Revisit if composerControlClassName changes.
+          "flex h-7 min-h-7 min-w-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-transparent px-2.5 font-medium text-base text-muted-foreground/70 sm:text-sm",
+          props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56",
           props.triggerClassName,
         )}
       >
@@ -206,14 +207,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     >
       <PopoverTrigger
         render={
-          <Button
+          <ComposerControl
             aria-label={props.triggerAriaLabel}
-            size="sm"
             variant={props.triggerVariant ?? "ghost"}
             data-chat-provider-model-picker="true"
             className={cn(
-              "min-w-0 justify-between whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80",
-              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
+              "min-w-0 justify-between whitespace-nowrap",
+              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56",
               props.triggerClassName,
             )}
             disabled={props.disabled}
@@ -222,7 +222,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       >
         {triggerContents}
         <span aria-hidden="true" className="flex items-center">
-          <ChevronDownIcon aria-hidden="true" className="!ms-0 !-me-1 size-3 shrink-0 opacity-60" />
+          <ComposerControlChevron />
         </span>
       </PopoverTrigger>
       <PopoverPopup

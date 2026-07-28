@@ -5,6 +5,7 @@ import type { ComponentType } from "react";
 import { useState } from "react";
 import { useAssetUrl } from "../assets/assetUrls";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
+import { cn } from "~/lib/utils";
 
 const loadedProjectFaviconSrcs = new Set<string>();
 
@@ -65,7 +66,7 @@ function ProjectFaviconFallback({
   readonly className?: string | undefined;
   readonly icon: ComponentType<{ className?: string }>;
 }) {
-  return <Icon className={`size-3.5 shrink-0 text-muted-foreground/50 ${className ?? ""}`} />;
+  return <Icon className={cn("size-3.5 shrink-0 text-muted-foreground/50", className)} />;
 }
 
 function ProjectFaviconImage({
@@ -89,7 +90,11 @@ function ProjectFaviconImage({
       <img
         src={src}
         alt=""
-        className={`size-3.5 shrink-0 rounded-sm object-contain ${status === "loaded" ? "" : "hidden"} ${className ?? ""}`}
+        className={cn(
+          "size-3.5 shrink-0 rounded-sm object-contain",
+          status !== "loaded" && "hidden",
+          className,
+        )}
         onLoad={() => {
           loadedProjectFaviconSrcs.add(src);
           setStatus("loaded");
