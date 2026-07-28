@@ -142,6 +142,16 @@ export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 10 * 1024 * 1024;
+/**
+ * Ceiling for a *persisted* file attachment row, distinct from the 10MB
+ * send-turn bound above: outbound Hermes media arrives up to 25MB per frame
+ * (`HERMES_MEDIA_MAX_BYTES`) and lands as one of these rows, so the persisted
+ * schema must admit what the wire ceiling admits or the event log becomes
+ * undecodable for a delivery the server already accepted. Inbound uploads
+ * stay bounded by the tighter limit on the Upload variant.
+ */
+export const CHAT_ATTACHMENT_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
@@ -174,9 +184,39 @@ const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+/**
+ * Any non-image file riding a message: video, PDF, archive, arbitrary bytes.
+ *
+ * One generic variant on purpose — the rendering kind (video player, PDF
+ * card, download card) is derived from `mimeType` client-side rather than
+ * encoded here, so a new renderable type never needs a schema change. The
+ * mime is deliberately unconstrained beyond length: files flow between the
+ * user and their own agent, and the asset route already serves with
+ * `nosniff` + extension-derived content types.
+ */
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(CHAT_ATTACHMENT_MAX_FILE_BYTES)),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+
+const UploadChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
+  dataUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS),
+  ),
+});
+export type UploadChatFileAttachment = typeof UploadChatFileAttachment.Type;
+
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatFileAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadChatFileAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -951,6 +991,15 @@ const ThreadNotificationDeliverCommand = Schema.Struct({
   kind: Schema.Literals(["cron", "message", "lifecycle", "handoff", "other"]),
   label: TrimmedNonEmptyString,
   text: Schema.String,
+  /**
+   * Media deliveries reuse this command rather than getting a sibling: they
+   * need exactly the notification machinery — `deliveryId` dedupe, provenance,
+   * the lifecycle reset — plus a file on the row. The web renders the
+   * notification header only when `turnId` is absent, so turn-scoped media
+   * reads as a plain assistant message inside its turn.
+   */
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  turnId: Schema.optional(TurnId),
   /** When the agent produced the content, which may predate its arrival. */
   createdAt: IsoDateTime,
 });
@@ -1257,15 +1306,30 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
  * A proactive agent delivery, materialized as an assistant message row.
  *
  * It is a real transcript message — selectable, copyable, part of history —
- * distinguished only by carrying `notification` provenance. It has no
- * `turnId`: nothing about it belongs to a turn, and attributing it to the
- * thread's live turn would fold it away behind that turn's "Worked for …".
+ * distinguished only by carrying `notification` provenance. A proactive
+ * delivery has no `turnId`: nothing about it belongs to a turn, and
+ * attributing it to the thread's live turn would fold it away behind that
+ * turn's "Worked for …". The exception is turn-scoped media (below), which
+ * genuinely belongs to a live turn and names it.
  */
 export const ThreadNotificationDeliveredPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   text: Schema.String,
   notification: OrchestrationMessageNotification,
+  /**
+   * Media riding the delivery. Same shape and same projection column as a
+   * turn message's attachments — media deliveries reuse this event rather
+   * than adding a sibling, so the dedupe/provenance/lifecycle behavior above
+   * applies to them unchanged.
+   */
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  /**
+   * Present only on turn-scoped media: it sequences the row next to its
+   * turn's text, and its presence is what suppresses the notification header
+   * client-side. Proactive deliveries stay turnless (see the doc above).
+   */
+  turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

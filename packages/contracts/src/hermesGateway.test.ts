@@ -80,7 +80,7 @@ describe("Hermes gateway management contracts", () => {
         activity: true,
         approvals: true,
         userInput: true,
-        attachments: false,
+        attachments: true,
       },
     });
     expect(connected.status).toBe("connected");
@@ -117,7 +117,7 @@ describe("Hermes gateway handshake", () => {
         activity: true,
         approvals: true,
         userInput: true,
-        attachments: false,
+        attachments: true,
       },
       authentication: {
         type: "enrollment-token",
@@ -141,7 +141,7 @@ describe("Hermes gateway handshake", () => {
         activity: true,
         approvals: true,
         userInput: true,
-        attachments: false,
+        attachments: true,
       },
       model: "gpt-5.6-terra",
       authentication: {
@@ -171,7 +171,7 @@ describe("Hermes gateway handshake", () => {
         activity: true,
         approvals: true,
         userInput: true,
-        attachments: false,
+        attachments: true,
       },
       authentication: {
         type: "instance-credential",
@@ -183,10 +183,12 @@ describe("Hermes gateway handshake", () => {
     expect(hello.model).toBeUndefined();
   });
 
-  it("decodes a future-version hello so the broker can reject it explicitly", () => {
+  it("decodes an other-version hello so the broker can reject it explicitly", () => {
+    // A v3 plugin (pre-media) must reach the broker's structured
+    // `version-incompatible` rejection rather than dying in the frame decoder.
     const hello = decodeHello({
       type: "connection.hello",
-      requestId: "hello-future",
+      requestId: "hello-other-version",
       protocolVersion: 3,
       pluginVersion: "0.3.0",
       hermesVersion: "2.0.0",
@@ -196,7 +198,7 @@ describe("Hermes gateway handshake", () => {
         activity: true,
         approvals: true,
         userInput: true,
-        attachments: true,
+        attachments: false,
       },
       authentication: {
         type: "enrollment-token",
@@ -208,7 +210,9 @@ describe("Hermes gateway handshake", () => {
     expect(hello.capabilities.protocolVersion).toBe(3);
   });
 
-  it("reserves attachments for a future protocol version", () => {
+  it("requires attachments as part of the v4 contract itself", () => {
+    // Not a negotiated option: a v4 plugin that cannot handle attachments is
+    // a v3 plugin, and belongs at the version gate instead.
     expect(() =>
       decodeCapabilities({
         protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
@@ -216,7 +220,7 @@ describe("Hermes gateway handshake", () => {
         activity: true,
         approvals: true,
         userInput: true,
-        attachments: true,
+        attachments: false,
       }),
     ).toThrow();
   });
@@ -334,7 +338,7 @@ describe("T3 to Hermes messages", () => {
         activity: true,
         approvals: true,
         userInput: true,
-        attachments: false,
+        attachments: true,
       },
       authentication: { type: "instance-credential", instanceId: "hermes", credential: "secret" },
     });
@@ -408,6 +412,60 @@ describe("Hermes home deliveries", () => {
 
   it("rejects empty delivery text", () => {
     expect(() => decodePluginMessage({ ...delivery, text: "" })).toThrow();
+  });
+});
+
+describe("Hermes media deliveries", () => {
+  const media = {
+    type: "media.deliver",
+    protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+    deliveryId: "media-1",
+    threadId: "thread-home-1",
+    kind: "cron",
+    label: "Cron: daily-digest",
+    name: "digest-chart.png",
+    mimeType: "image/png",
+    sizeBytes: 4,
+    data: "AAAA",
+    createdAt: "2026-07-27T12:00:00.000Z",
+  } as const;
+
+  it("decodes turnless media, turn-scoped media, and the acknowledgement", () => {
+    const proactive = decodePluginMessage(media);
+    expect(proactive.type).toBe("media.deliver");
+    if (proactive.type === "media.deliver") {
+      expect(proactive.turnId).toBeUndefined();
+      expect(proactive.kind).toBe("cron");
+    }
+
+    const turnScoped = decodePluginMessage({ ...media, turnId: "turn-1", caption: "Today's run" });
+    if (turnScoped.type === "media.deliver") {
+      expect(turnScoped.turnId).toBe("turn-1");
+      expect(turnScoped.caption).toBe("Today's run");
+    }
+
+    const ack = decodeT3Message({
+      type: "media.deliver.ack",
+      protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+      deliveryId: "media-1",
+    });
+    expect(ack.type).toBe("media.deliver.ack");
+  });
+
+  it("requires a delivery id, since it is the dedupe key for retries", () => {
+    expect(() => decodePluginMessage({ ...media, deliveryId: "" })).toThrow();
+  });
+
+  it("rejects empty payloads and zero-byte sizes", () => {
+    expect(() => decodePluginMessage({ ...media, data: "" })).toThrow();
+    expect(() => decodePluginMessage({ ...media, sizeBytes: 0 })).toThrow();
+  });
+
+  it("bounds the base64 payload at the frame ceiling", () => {
+    // One character past the ceiling for a 25MB file must fail at decode,
+    // before anything buffers or writes.
+    const overCeiling = "A".repeat(Math.ceil((25 * 1024 * 1024) / 3) * 4 + 8);
+    expect(() => decodePluginMessage({ ...media, data: overCeiling })).toThrow();
   });
 });
 

@@ -461,6 +461,64 @@ it.effect("decodes thread archived and unarchived events", () =>
   }),
 );
 
+it.effect("decodes notification deliveries with and without media fields", () =>
+  Effect.gen(function* () {
+    const base = {
+      sequence: 3,
+      eventId: "event-notify-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.notification-delivered",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-notify-1",
+      causationEventId: null,
+      correlationId: "cmd-notify-1",
+      metadata: {},
+    } as const;
+    const payloadBase = {
+      threadId: "thread-1",
+      messageId: "message-1",
+      text: "Digest ready.",
+      notification: { kind: "cron", label: "Cron: daily-digest", deliveryId: "delivery-1" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+
+    // Text deliveries persisted before media shipped carry neither field and
+    // must keep decoding unchanged.
+    const textOnly = yield* decodeOrchestrationEvent({ ...base, payload: payloadBase });
+    if (textOnly.type !== "thread.notification-delivered") {
+      assert.fail(`Expected thread.notification-delivered, received ${textOnly.type}.`);
+    }
+    assert.isUndefined(textOnly.payload.attachments);
+    assert.isUndefined(textOnly.payload.turnId);
+
+    const media = yield* decodeOrchestrationEvent({
+      ...base,
+      payload: {
+        ...payloadBase,
+        attachments: [
+          {
+            type: "file",
+            id: "thread-1-2c8b3f1e-0000-4000-8000-000000000001",
+            name: "chart.mp4",
+            mimeType: "video/mp4",
+            // The 25MB wire ceiling must be persistable — above the 10MB
+            // inbound-upload bound on purpose.
+            sizeBytes: 20 * 1024 * 1024,
+          },
+        ],
+        turnId: "turn-live",
+      },
+    });
+    if (media.type !== "thread.notification-delivered") {
+      assert.fail(`Expected thread.notification-delivered, received ${media.type}.`);
+    }
+    assert.strictEqual(media.payload.attachments?.[0]?.type, "file");
+    assert.strictEqual(media.payload.turnId, "turn-live");
+  }),
+);
+
 it.effect("decodes thread settled and unsettled events", () =>
   Effect.gen(function* () {
     const settled = yield* decodeOrchestrationEvent({

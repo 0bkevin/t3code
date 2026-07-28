@@ -22,7 +22,19 @@ import { ProviderApprovalDecision, ProviderUserInputAnswers } from "./orchestrat
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { CanonicalItemType, CanonicalRequestType, UserInputQuestion } from "./providerRuntime.ts";
 
-export const HERMES_GATEWAY_PROTOCOL_VERSION = 3 as const;
+export const HERMES_GATEWAY_PROTOCOL_VERSION = 4 as const;
+
+/**
+ * Base64 payload ceiling for a single media frame, both directions.
+ *
+ * 25MB of raw bytes is ~34MB of base64; the schema bound is on the encoded
+ * string so an oversized frame fails at decode rather than after buffering.
+ * Deliberately no chunking protocol — a file that does not fit does not
+ * send, with a clear error. Chunking is the escape hatch if that ceiling
+ * ever genuinely hurts.
+ */
+export const HERMES_MEDIA_MAX_BYTES = 25 * 1024 * 1024;
+const HERMES_MEDIA_MAX_BASE64_CHARS = Math.ceil(HERMES_MEDIA_MAX_BYTES / 3) * 4 + 4;
 
 export const HermesGatewayProtocolVersion = Schema.Literal(HERMES_GATEWAY_PROTOCOL_VERSION);
 export type HermesGatewayProtocolVersion = typeof HermesGatewayProtocolVersion.Type;
@@ -79,7 +91,10 @@ export const HermesGatewayCapabilities = Schema.Struct({
   activity: Schema.Boolean,
   approvals: Schema.Boolean,
   userInput: Schema.Boolean,
-  attachments: Schema.Literal(false),
+  // Literal by design: attachments are part of the v4 contract itself, not a
+  // negotiated option. A plugin speaking v4 must handle them; one that cannot
+  // is a v3 plugin and is rejected at the version gate.
+  attachments: Schema.Literal(true),
 });
 export type HermesGatewayCapabilities = typeof HermesGatewayCapabilities.Type;
 
@@ -362,6 +377,23 @@ const HermesGatewayTurnText = Schema.String.check(
   Schema.isMaxLength(120_000),
 );
 
+/**
+ * A file riding a turn frame toward the plugin. Inline base64 on the frame
+ * itself: no side-channel fetch (the plugin may be on another machine with
+ * no authenticated route back), no chunking. The adapter enforces the
+ * per-turn total; the schema bounds each file.
+ */
+export const HermesGatewayTurnAttachment = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: PositiveInt,
+  data: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(HERMES_MEDIA_MAX_BASE64_CHARS),
+  ),
+});
+export type HermesGatewayTurnAttachment = typeof HermesGatewayTurnAttachment.Type;
+
 export const HermesGatewaySessionEnsure = Schema.Struct({
   type: Schema.Literal("session.ensure"),
   protocolVersion: HermesGatewayProtocolVersion,
@@ -377,6 +409,7 @@ export const HermesGatewayTurnStart = Schema.Struct({
   requestId: HermesGatewayRequestId,
   ...HermesGatewayTurnContext.fields,
   text: HermesGatewayTurnText,
+  attachments: Schema.optional(Schema.Array(HermesGatewayTurnAttachment)),
 });
 export type HermesGatewayTurnStart = typeof HermesGatewayTurnStart.Type;
 
@@ -386,6 +419,7 @@ export const HermesGatewayTurnSteer = Schema.Struct({
   requestId: HermesGatewayRequestId,
   ...HermesGatewayTurnContext.fields,
   text: HermesGatewayTurnText,
+  attachments: Schema.optional(Schema.Array(HermesGatewayTurnAttachment)),
 });
 export type HermesGatewayTurnSteer = typeof HermesGatewayTurnSteer.Type;
 
@@ -726,6 +760,58 @@ export const HermesGatewayHomeDeliverAck = Schema.Struct({
 });
 export type HermesGatewayHomeDeliverAck = typeof HermesGatewayHomeDeliverAck.Type;
 
+/**
+ * Hermes-initiated media (an image, video, PDF, or arbitrary file) delivered
+ * as its own message rather than folded into a streaming turn.
+ *
+ * Shaped like `home.deliver` on purpose: self-contained, idempotent on
+ * `deliveryId`, acked only after the bytes are durably written, so the
+ * plugin's queued copy survives every disconnect between send and ack.
+ *
+ * Scope is carried by which ids are present:
+ * - `turnId` set — media produced during a live turn; lands in that thread
+ *   sequenced next to the turn's text.
+ * - `turnId` absent — proactive media (a cron job's chart, an artifact from
+ *   an agent-initiated task). `threadId` is advisory the same way it is for
+ *   `home.deliver`: the server re-resolves the instance's home thread and
+ *   refuses to write anywhere else, so a confused plugin cannot spray files
+ *   into arbitrary threads. `kind`/`label` provenance renders the same
+ *   notification header a text delivery gets.
+ */
+export const HermesGatewayMediaDeliver = Schema.Struct({
+  type: Schema.Literal("media.deliver"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  deliveryId: HermesGatewayDeliveryId,
+  threadId: ThreadId,
+  turnId: Schema.optional(TurnId),
+  kind: HermesGatewayHomeDeliveryKind,
+  /** Human source label rendered as the badge — "Cron: daily-digest". */
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: PositiveInt,
+  /** Optional caption rendered under the media in the same message row. */
+  caption: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
+  data: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(HERMES_MEDIA_MAX_BASE64_CHARS),
+  ),
+  /** When Hermes produced the media, not when it reached T3. */
+  createdAt: IsoDateTime,
+});
+export type HermesGatewayMediaDeliver = typeof HermesGatewayMediaDeliver.Type;
+
+/**
+ * Sent only after the media's bytes and its message row are durably written —
+ * the same pessimistic-ack contract as `home.deliver.ack`.
+ */
+export const HermesGatewayMediaDeliverAck = Schema.Struct({
+  type: Schema.Literal("media.deliver.ack"),
+  protocolVersion: HermesGatewayProtocolVersion,
+  deliveryId: HermesGatewayDeliveryId,
+});
+export type HermesGatewayMediaDeliverAck = typeof HermesGatewayMediaDeliverAck.Type;
+
 export const HermesGatewayProtocolErrorCode = Schema.Literals([
   "invalid-message",
   "unsupported-message",
@@ -760,6 +846,7 @@ export const HermesGatewayT3ToPluginMessage = Schema.Union([
   HermesGatewaySkillBodyRequest,
   HermesGatewayPing,
   HermesGatewayHomeDeliverAck,
+  HermesGatewayMediaDeliverAck,
 ]);
 export type HermesGatewayT3ToPluginMessage = typeof HermesGatewayT3ToPluginMessage.Type;
 
@@ -785,6 +872,7 @@ export const HermesGatewayPluginToT3Message = Schema.Union([
   HermesGatewayPong,
   HermesGatewayProtocolError,
   HermesGatewayHomeDeliver,
+  HermesGatewayMediaDeliver,
 ]);
 export type HermesGatewayPluginToT3Message = typeof HermesGatewayPluginToT3Message.Type;
 
