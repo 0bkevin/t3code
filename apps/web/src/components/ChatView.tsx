@@ -224,6 +224,7 @@ import { threadEnvironment } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
+  resolveThreadDetailRef,
   useProject,
   useProjects,
   useThreadProjection,
@@ -1214,10 +1215,21 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const composerDraftTarget: ScopedThreadRef | DraftId =
     routeKind === "server" ? routeThreadRef : props.draftId;
+  const draftThread = useComposerDraftStore((store) =>
+    routeKind === "server"
+      ? store.getDraftSessionByRef(routeThreadRef)
+      : draftId
+        ? store.getDraftSession(draftId)
+        : null,
+  );
   const serverThread = useThreadShell(routeThreadRef);
-  const serverThreadProjection = useThreadProjection(routeThreadRef);
+  const routeThreadDetailRef = resolveThreadDetailRef(routeThreadRef, {
+    shellExists: serverThread !== null,
+    waitForShell: draftThread !== null,
+  });
+  const serverThreadProjection = useThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;
-  const serverVisibleTurnItems = useThreadVisibleTurnItems(routeThreadRef);
+  const serverVisibleTurnItems = useThreadVisibleTurnItems(routeThreadDetailRef);
   const committedServerMessageIds = useMemo(
     () => deriveCommittedServerUserMessageIds(serverVisibleTurnItems),
     [serverVisibleTurnItems],
@@ -1273,13 +1285,6 @@ function ChatViewContent(props: ChatViewProps) {
   const getDraftSession = useComposerDraftStore((store) => store.getDraftSession);
   const setLogicalProjectDraftThreadId = useComposerDraftStore(
     (store) => store.setLogicalProjectDraftThreadId,
-  );
-  const draftThread = useComposerDraftStore((store) =>
-    routeKind === "server"
-      ? store.getDraftSessionByRef(routeThreadRef)
-      : draftId
-        ? store.getDraftSession(draftId)
-        : null,
   );
   const promptRef = useRef("");
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
