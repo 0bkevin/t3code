@@ -61,6 +61,7 @@ import {
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
+import { MessageAttachments } from "./MessageAttachments";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
@@ -911,37 +912,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-accent p-3">
         {regularImages.length > 0 && (
-          <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
-              <div
-                key={image.id}
-                className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
-              >
-                {image.previewUrl ? (
-                  <button
-                    type="button"
-                    className="h-full w-full cursor-zoom-in"
-                    aria-label={`Preview ${image.name}`}
-                    onClick={() => {
-                      const preview = buildExpandedImagePreview(regularImages, image.id);
-                      if (!preview) return;
-                      ctx.onImageExpand(preview);
-                    }}
-                  >
-                    <img
-                      src={image.previewUrl}
-                      alt={image.name}
-                      className="block h-auto max-h-[220px] w-full object-cover"
-                    />
-                  </button>
-                ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
-                    {image.name}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+          <MessageAttachments
+            attachments={regularImages}
+            onImageExpand={ctx.onImageExpand}
+            className="mb-2"
+          />
         )}
         {previewAnnotations.map((annotation, index) => (
           <UserMessagePreviewAnnotationCard
@@ -1093,8 +1068,18 @@ function AssistantTimelineRow({
   isFirst: boolean;
 }) {
   const ctx = use(TimelineRowCtx);
-  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
-  const notificationBadge = resolveNotificationBadge(row.message.notification);
+  const hasAttachments = Boolean(row.message.attachments && row.message.attachments.length > 0);
+  // A captionless media message is complete as-is — "(empty response)" is
+  // for a turn that produced nothing, not for one that produced a file.
+  const messageText =
+    row.message.text || (row.message.streaming || hasAttachments ? "" : "(empty response)");
+  // Turn-scoped media rides a conversation the user is already in: it reads
+  // as part of the reply, not as an arrival, so it carries no delivery
+  // header even though it flows through the notification machinery for
+  // dedupe. Provenance headers are for things that land while you're away.
+  const notificationBadge = row.message.turnId
+    ? null
+    : resolveNotificationBadge(row.message.notification);
 
   return (
     <>
@@ -1118,6 +1103,15 @@ function AssistantTimelineRow({
               row.message.updatedAt,
               ctx.timestampFormat,
             )}
+          />
+        ) : null}
+        {row.message.attachments && row.message.attachments.length > 0 ? (
+          <MessageAttachments
+            attachments={row.message.attachments}
+            onImageExpand={ctx.onImageExpand}
+            // Media above, caption (the message text) below — the text is
+            // subordinate to what it annotates.
+            className="mb-2"
           />
         ) : null}
         <ChatMarkdown
