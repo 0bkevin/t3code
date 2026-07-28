@@ -611,6 +611,14 @@ async def standalone_send(
     that T3 will always reject would sit in the outbox forever. `force_document`
     remains signature parity only: T3 derives rendering from `mimeType`, so
     there is no document/photo distinction to force.
+
+    Every success result carries additive accounting keys alongside the
+    unchanged `message_id`: `delivery_ids` (every frame this call minted, text
+    and media), `media_count`, `acked_count`, and — when media was sent — a
+    `note` naming the delivered file count. Upstream consumers read this dict by
+    specific key and otherwise `json.dumps` it wholesale, so extra keys are
+    inert there while giving an agent reading the tool output direct evidence
+    against core's unconditional "MEDIA attachments were omitted" warning.
     """
     del force_document
 
@@ -643,6 +651,7 @@ async def standalone_send(
 
     kind, label, _certain = classify_delivery(message, None)
     frames: list[dict[str, Any]] = []
+    media_ids: list[str] = []
     skipped: list[str] = []
     # The text frame is skipped only when media makes the send non-empty
     # anyway; a bare text send keeps today's behaviour (empty text normalizes
@@ -654,13 +663,11 @@ async def standalone_send(
     for entry in media_files or []:
         media_path = entry[0] if isinstance(entry, (tuple, list)) else entry
         try:
-            frames.append(
-                build_media_delivery(
-                    thread_id=target,
-                    path=str(media_path),
-                    kind=kind,
-                    label=label,
-                )
+            media_frame = build_media_delivery(
+                thread_id=target,
+                path=str(media_path),
+                kind=kind,
+                label=label,
             )
         except Exception as exc:  # noqa: BLE001 - one bad file must not sink the send
             # Never queued: a frame T3 will always reject (unreadable then,
@@ -669,12 +676,45 @@ async def standalone_send(
                 "T3 standalone send skipping media file %s: %s", media_path, exc
             )
             skipped.append(f"{media_path}: {exc}")
+        else:
+            frames.append(media_frame)
+            media_ids.append(str(media_frame["deliveryId"]))
     if not frames:
         return {
             "error": "T3 standalone send: no deliverable content "
             + "; ".join(skipped)
         }
     delivery = str(frames[0]["deliveryId"])
+    all_ids = [str(frame["deliveryId"]) for frame in frames]
+
+    def _observed(
+        result: dict[str, Any], acked_ids: set[str], *, queued_only: bool
+    ) -> dict[str, Any]:
+        """Attach the additive delivery-accounting keys to a success result.
+
+        `message_id` is deliberately untouched — upstream reads that key by
+        name. Everything here is new, and exists as **counter-evidence**: core
+        appends a hard-coded "MEDIA attachments were omitted for t3" warning to
+        any successful generic-path send (`tools/send_message_tool.py:1108` @
+        v0.19.0) without ever asking whether the sender delivered them. The
+        `coreshim` module strips that warning when it can, but if it has failed
+        open the numbers below still sit in the same JSON blob the agent reads,
+        so "2 media file(s) delivered and acknowledged" contradicts the stale
+        warning directly rather than leaving the agent to guess.
+        """
+        acked_media = [entry for entry in media_ids if entry in acked_ids]
+        result["delivery_ids"] = list(all_ids)
+        result["media_count"] = len(media_ids)
+        result["acked_count"] = len(acked_ids)
+        if media_ids:
+            verb = "queued for delivery" if queued_only else "delivered"
+            count = len(media_ids) if queued_only else len(acked_media)
+            note = f"{count} media file(s) {verb}"
+            if not queued_only:
+                note += " and acknowledged"
+            existing = str(result.get("note") or "").strip()
+            result["note"] = f"{existing}; {note}" if existing else note
+        return result
 
     queue = HomeDeliveryQueue()
     queued = all(queue.append(frame) for frame in frames)
@@ -689,12 +729,16 @@ async def standalone_send(
     except Exception as exc:  # noqa: BLE001 - cron delivery must not raise
         logger.debug("T3 standalone send raised", exc_info=True)
         if queued:
-            return {
-                "success": True,
-                "message_id": delivery,
-                "queued": True,
-                "detail": f"T3 unreachable ({exc}); queued for the next connect",
-            }
+            return _observed(
+                {
+                    "success": True,
+                    "message_id": delivery,
+                    "queued": True,
+                    "detail": f"T3 unreachable ({exc}); queued for the next connect",
+                },
+                set(),
+                queued_only=True,
+            )
         return {"error": f"T3 standalone send failed: {exc}"}
 
     for acked_id in acked:
@@ -704,17 +748,21 @@ async def standalone_send(
         result: dict[str, Any] = {"success": True, "message_id": delivery}
         if result_detail:
             result["detail"] = result_detail
-        return result
+        return _observed(result, acked, queued_only=False)
     if queued:
-        return {
-            "success": True,
-            "message_id": delivery,
-            "queued": True,
-            "detail": (
-                "T3 did not acknowledge every delivery; queued for retry"
-                + (f" ({result_detail})" if result_detail else "")
-            ),
-        }
+        return _observed(
+            {
+                "success": True,
+                "message_id": delivery,
+                "queued": True,
+                "detail": (
+                    "T3 did not acknowledge every delivery; queued for retry"
+                    + (f" ({result_detail})" if result_detail else "")
+                ),
+            },
+            acked,
+            queued_only=len(acked) == 0,
+        )
     return {"error": "T3 standalone send: the delivery was neither acked nor queued"}
 
 

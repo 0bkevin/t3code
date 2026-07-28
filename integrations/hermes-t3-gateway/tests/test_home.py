@@ -565,6 +565,72 @@ class StandaloneSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(media["mimeType"], "image/png")
         # Both frames were acked, so nothing stays queued.
         self.assertEqual(home.HomeDeliveryQueue().entries(), [])
+        # Counter-evidence against core's unconditional "MEDIA attachments were
+        # omitted" warning: the accounting keys sit in the same result dict.
+        self.assertEqual(result["media_count"], 1)
+        self.assertEqual(result["acked_count"], 2)
+        self.assertEqual(
+            result["delivery_ids"],
+            [message["deliveryId"] for message in server.sent[1:]],
+        )
+        self.assertIn("1 media file(s) delivered and acknowledged", result["note"])
+        # `message_id` keeps pointing at the first frame — upstream reads it.
+        self.assertEqual(result["message_id"], server.sent[1]["deliveryId"])
+
+    async def test_a_text_only_send_reports_no_media(self):
+        """The accounting keys are always present; only the note is conditional."""
+        server = MockDeliveryServer()
+        with self._serve(server):
+            result = await home.standalone_send(None, "home-thread", "Just text")
+
+        self.assertEqual(result["media_count"], 0)
+        self.assertEqual(result["acked_count"], 1)
+        self.assertEqual(result["delivery_ids"], [result["message_id"]])
+        self.assertNotIn("note", result)
+
+    async def test_a_media_only_send_delivers_without_a_text_frame(self):
+        """`MEDIA:/tmp/x.png` with no prose is a normal send, not an error.
+
+        Core rejects this outright for `t3`
+        (`tools/send_message_tool.py:1101-1107` @ v0.19.0); `coreshim` routes it
+        here instead, so the sender has to handle an empty message.
+        """
+        chart = pathlib.Path(self._tmp.name) / "chart.png"
+        chart.write_bytes(b"\x89PNG fake bytes")
+        server = MockDeliveryServer()
+        with self._serve(server):
+            result = await home.standalone_send(
+                None, "home-thread", "", media_files=[(str(chart), False)]
+            )
+
+        self.assertTrue(result["success"])
+        # No empty text frame rides along.
+        self.assertEqual(
+            [message["type"] for message in server.sent],
+            ["connection.hello", "media.deliver"],
+        )
+        self.assertEqual(result["media_count"], 1)
+        self.assertEqual(result["acked_count"], 1)
+        self.assertIn("1 media file(s) delivered and acknowledged", result["note"])
+
+    async def test_media_counts_exclude_a_skipped_file(self):
+        """A file that could not be read is not counted as delivered."""
+        good = pathlib.Path(self._tmp.name) / "good.png"
+        good.write_bytes(b"\x89PNG fake bytes")
+        missing = pathlib.Path(self._tmp.name) / "gone.png"
+        server = MockDeliveryServer()
+        with self._serve(server), self.assertLogs(home.logger, level="WARNING"):
+            result = await home.standalone_send(
+                None,
+                "home-thread",
+                "Two charts, one dead",
+                media_files=[(str(good), False), (str(missing), False)],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["media_count"], 1)
+        self.assertIn("1 media file(s) delivered and acknowledged", result["note"])
+        self.assertIn("skipped", result["detail"])
 
     async def test_standalone_send_skips_an_unreadable_media_file(self):
         """One bad file must not sink the brief — and must never be queued."""
@@ -610,6 +676,12 @@ class StandaloneSenderTests(unittest.IsolatedAsyncioTestCase):
         # The queued media frame is self-contained: bytes, not a path.
         self.assertEqual(queued[1]["name"], "chart.png")
         self.assertTrue(queued[1]["data"])
+        # Nothing was acked, so the note must not claim delivery — but it must
+        # still contradict "omitted", because the file is durably on its way.
+        self.assertEqual(result["media_count"], 1)
+        self.assertEqual(result["acked_count"], 0)
+        self.assertIn("1 media file(s) queued for delivery", result["note"])
+        self.assertNotIn("acknowledged", result["note"])
 
 
 class DesignationTests(unittest.TestCase):

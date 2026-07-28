@@ -10,6 +10,7 @@ from .adapter import (
     validate_config,
 )
 from .cli import register_cli, t3_command
+from .coreshim import apply as apply_core_shim
 from .home import HOME_CHANNEL_ENV, standalone_send
 
 
@@ -89,6 +90,16 @@ def register(ctx) -> None:
     )
     ctx.register_hook("pre_tool_call", _pre_tool_call)
     ctx.register_hook("post_tool_call", _post_tool_call)
+    # Compensate two upstream `send_message` media defects in-process (see
+    # `coreshim.py` for the file:line analysis). Applied after the platform is
+    # registered because the Bug B wrapper routes through `standalone_send`,
+    # which resolves the same enrollment the entry above advertises. This runs
+    # in every process that loads plugins — `hermes gateway`, `hermes cron`, and
+    # the `hermes send` CLI, which reaches `register()` via
+    # `tools/send_message_tool.py:399` -> `gateway/config.py:2530` well before
+    # it routes a send. Never raises: on any mismatch it logs one warning and
+    # leaves core untouched.
+    apply_core_shim()
 
 
 __all__ = ["register"]

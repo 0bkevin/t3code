@@ -84,6 +84,14 @@ registered as the instance's primary connection, so it cannot disturb a running
 `hermes gateway`. If T3 is unreachable the delivery is queued and the cron job
 still reports success.
 
+Attachments ride the same queue-then-ack durability as text: one `media.deliver`
+frame per file, each carrying the file's bytes rather than its path, so a
+delivery that flushes after an outage still works when the original temp file is
+long gone. The raw ceiling is 25MiB per file. A file that cannot be read or that
+exceeds the ceiling is reported in the result's `detail` and skipped rather than
+queued — a frame T3 would reject forever must not sit in the outbox forever.
+Every send result also reports `media_count`, `acked_count`, and `delivery_ids`.
+
 ## Initial scope
 
 - Text input and live assistant streaming
@@ -98,12 +106,57 @@ still reports success.
 
 - Proactive delivery into the Home thread: cron, `send_message`, lifecycle
   notices, `/handoff` — with a durable queue and out-of-process cron support
+- Inbound attachments: files sent from T3 ride `turn.start` / `turn.steer` and
+  reach Hermes as ordinary media on the message event
+- Outbound attachments: `MEDIA:` files from cron, `send_message`, and `/handoff`
+  are delivered as `media.deliver` frames
 
 Non-home T3 threads remain session-only: Hermes cannot message them unprompted,
 and an unsolicited send to one still fails with `no active T3 turn`.
 
-Attachments intentionally advertise `false`. Adding bounded image/file input is
-the first post-stability feature and should not reuse arbitrary raw payloads.
+Attachments are pinned to `true`. It is part of the v4 contract rather than a
+negotiated option — T3's schema fixes the capability at that literal, so a plugin
+that cannot handle attachments is by definition a v3 plugin and is rejected at
+the version gate. Inbound files arrive on `turn.start` / `turn.steer` and are
+materialized to private temp files before the turn starts; outbound files leave
+as `media.deliver` frames.
+
+## Upstream core bugs this plugin works around
+
+Hermes core decides media support for `send_message` from a hard-coded list of
+platform names rather than from a platform capability, so a plugin platform that
+delivers media perfectly well is still treated as if it cannot. Two consequences,
+both against **v0.19.0**:
+
+- **A false warning.** `tools/send_message_tool.py:1108` builds `"MEDIA
+  attachments were omitted for t3; ..."` whenever a send carries files and the
+  platform is off that list, and line 1154 appends it to *any* successful result
+  without checking whether anything was actually dropped. Left alone, the tool
+  output tells the agent the files were lost immediately after T3 acknowledged
+  them — which is exactly how a live agent came to report a delivery failure for
+  files the user could already see.
+- **A silent drop.** `tools/send_message_tool.py:711`, taken when the gateway is
+  co-resident with the caller, invokes `adapter.send(chat_id, content, metadata)`
+  and returns. `media_files` is never passed, and the `MEDIA:` directives were
+  already stripped out of `content` upstream at line 442, so the attachments are
+  simply gone — no error, no warning. Out-of-process sends escape this only
+  because they fall through to the plugin's standalone sender instead.
+
+`coreshim.py` compensates for both in-process at plugin load: co-resident `t3`
+sends carrying media are rerouted through the plugin's own sender, media-only
+sends are rescued from the related hard error at line 1101, and the false warning
+is stripped by stable prefix. Everything else — every other platform, every
+text-only send — reaches the original untouched.
+
+**Residual caveat.** The shim is deliberately fail-open: it feature-detects each
+target function and, on any signature or shape mismatch, logs one warning and
+leaves core alone rather than risking a crash on an upstream upgrade. When that
+happens the two bugs return as described above. The accounting keys on every
+send result (`media_count`, `acked_count`, and a note naming the delivered file
+count) are the backstop — they sit in the same JSON as any stale warning and
+contradict it directly. Grep the logs for `leaving it unpatched` to detect it.
+The whole module is removable once upstream drives media handling from platform
+capabilities instead of the hard-coded list.
 
 See [COMPATIBILITY.md](./COMPATIBILITY.md) for public Hermes extension-surface
 limitations.
