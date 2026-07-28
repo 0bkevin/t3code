@@ -281,7 +281,11 @@ export function HermesGatewayInstanceSection(props: {
             </p>
           </div>
           <div className="flex min-w-0 items-center gap-2">
-            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-muted px-2 py-1.5 text-[11px]">
+            {/* Native horizontal scrollbar hidden, matching the composer's
+                pending strip: the command still scrolls (wheel/trackpad/drag)
+                but the copy button is the intended affordance — a fat track
+                under a one-line secret-bearing command reads as clutter. */}
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-muted px-2 py-1.5 text-[11px] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {enrollment.command}
             </code>
             <Button
