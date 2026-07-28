@@ -1,5 +1,6 @@
 import {
   type ApprovalRequestId,
+  DEFAULT_HERMES_MODEL,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
   type EnvironmentId,
@@ -180,6 +181,7 @@ import { buildDraftThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerAttachment,
   type DraftThreadEnvMode,
+  hydrateImagesFromPersisted,
   useComposerDraftStore,
   type DraftId,
 } from "../composerDraftStore";
@@ -1142,6 +1144,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const routeThreadKey = useMemo(() => scopedThreadKey(routeThreadRef), [routeThreadRef]);
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
+  const ensureAgentProject = useAtomCommand(serverEnvironment.providerEnsureAgentProject, {
+    reportFailure: false,
+  });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
   });
@@ -1416,10 +1421,22 @@ function ChatViewContent(props: ChatViewProps) {
         ? buildLocalDraftThread(
             threadId,
             draftThread,
-            fallbackDraftProject?.defaultModelSelection ?? NO_PROVIDER_MODEL_SELECTION,
+            // A draft in an agent's synthetic project is born bound to that
+            // agent. The pin cannot rely on the project's
+            // `defaultModelSelection` — agent projects are created with it
+            // null — and must beat the carried-over selection from the
+            // previously viewed thread.
+            fallbackDraftProject?.agentInstanceId
+              ? { instanceId: fallbackDraftProject.agentInstanceId, model: DEFAULT_HERMES_MODEL }
+              : (fallbackDraftProject?.defaultModelSelection ?? NO_PROVIDER_MODEL_SELECTION),
           )
         : undefined,
-    [draftThread, fallbackDraftProject?.defaultModelSelection, threadId],
+    [
+      draftThread,
+      fallbackDraftProject?.agentInstanceId,
+      fallbackDraftProject?.defaultModelSelection,
+      threadId,
+    ],
   );
   // Promotion is data-driven: the draft route keeps rendering while the
   // server thread (same pre-allocated ref) starts, so live state must not
@@ -1589,6 +1606,10 @@ function ChatViewContent(props: ChatViewProps) {
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
   const activeProject = useProject(activeProjectRef);
+  // Non-null iff the thread lives in an agent's synthetic project. Every
+  // thread there is bound to that one agent instance, so the composer's
+  // model picker locks to it and drafts can never route elsewhere.
+  const activeProjectAgentInstanceId = activeProject?.agentInstanceId ?? null;
   const handleNewThreadInActiveProject = useCallback(() => {
     startNewThreadForProject(activeProjectRef, handleNewThread);
   }, [activeProjectRef, handleNewThread]);
@@ -5392,6 +5413,61 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread, providerStatuses],
   );
 
+  // Picking an agent from the model picker is a navigation, not a model
+  // change: agent threads only live in the agent's own synthetic project, so
+  // the selection jumps there (mirroring AgentPage's "New thread" flow) and
+  // carries the typed draft along. Sticky model state is deliberately left
+  // untouched — the agent selection lives only inside the agent project, so
+  // new threads in ordinary projects keep the previous non-agent model.
+  const jumpToAgentProjectDraft = useCallback(
+    async (instanceId: ProviderInstanceId) => {
+      const agentEnvironmentId = primaryEnvironment?.environmentId ?? null;
+      if (agentEnvironmentId === null) return;
+      // Get-or-create, never assume: the synthetic project may not exist yet,
+      // or may have been soft-deleted, and this call heals either case.
+      const result = await ensureAgentProject({
+        environmentId: agentEnvironmentId,
+        input: { instanceId },
+      });
+      if (result._tag !== "Success") {
+        toastManager.add({
+          type: "error",
+          title: "Could not open the agent's project",
+          description: "The agent project could not be created. Check the agent in Settings.",
+        });
+        return;
+      }
+      const agentProjectRef = scopeProjectRef(agentEnvironmentId, result.value.projectId);
+      const draftStore = useComposerDraftStore.getState();
+      const sourceDraft = draftStore.getComposerDraft(composerDraftTarget);
+      const carriedPrompt = sourceDraft?.prompt ?? "";
+      const carriedAttachments = sourceDraft?.persistedAttachments ?? [];
+      await handleNewThread(agentProjectRef);
+      const targetSession = useComposerDraftStore
+        .getState()
+        .getDraftSessionByProjectRef(agentProjectRef);
+      if (!targetSession) return;
+      // Seed the agent draft with what the user had typed, but never clobber
+      // text already sitting in the agent project's own draft. Attachments
+      // ride over via their persisted (data-URL) form so the copies share no
+      // revocable blob URLs with the source draft.
+      const targetDraft = useComposerDraftStore.getState().getComposerDraft(targetSession.draftId);
+      const targetIsEmpty =
+        (targetDraft?.prompt ?? "").trim().length === 0 && (targetDraft?.images.length ?? 0) === 0;
+      const hasCarriedContent = carriedPrompt.trim().length > 0 || carriedAttachments.length > 0;
+      if (!targetIsEmpty || !hasCarriedContent) return;
+      const store = useComposerDraftStore.getState();
+      if (carriedPrompt.trim().length > 0) {
+        store.setPrompt(targetSession.draftId, carriedPrompt);
+      }
+      if (carriedAttachments.length > 0) {
+        store.addImages(targetSession.draftId, hydrateImagesFromPersisted(carriedAttachments));
+      }
+      store.clearComposerPromptAndImages(composerDraftTarget);
+    },
+    [composerDraftTarget, ensureAgentProject, handleNewThread, primaryEnvironment?.environmentId],
+  );
+
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
       if (!activeThread) return;
@@ -5400,6 +5476,25 @@ function ChatViewContent(props: ChatViewProps) {
       // are rejected by returning early; the server remains authoritative too.
       const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
       const resolvedDriverKind = entry?.driver ?? null;
+      // An agent project is bound to exactly one instance. The chip renders
+      // static there so the picker can't normally fire, but keybindings and
+      // programmatic paths still land here — the binding is absolute.
+      if (activeProjectAgentInstanceId !== null && instanceId !== activeProjectAgentInstanceId) {
+        scheduleComposerFocus();
+        return;
+      }
+      // Choosing an agent while drafting in an ordinary project jumps to the
+      // agent's own project instead of retargeting this draft. Started
+      // threads never take this path — `requiresNewThreadForModelChange`
+      // already blocks them below.
+      if (
+        resolvedDriverKind === "hermes" &&
+        activeProjectAgentInstanceId === null &&
+        isLocalDraftThread
+      ) {
+        void jumpToAgentProjectDraft(instanceId);
+        return;
+      }
       if (
         lockedProvider !== null &&
         resolvedDriverKind !== null &&
@@ -5459,7 +5554,10 @@ function ChatViewContent(props: ChatViewProps) {
       scheduleComposerFocus();
     },
     [
+      activeProjectAgentInstanceId,
       activeThread,
+      isLocalDraftThread,
+      jumpToAgentProjectDraft,
       lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
@@ -5865,6 +5963,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeProjectDefaultModelSelection={
                               activeProject?.defaultModelSelection
                             }
+                            activeProjectAgentInstanceId={activeProjectAgentInstanceId}
                             activeThreadModelSelection={activeThread?.modelSelection}
                             activeThreadActivities={activeThread?.activities}
                             resolvedTheme={resolvedTheme}

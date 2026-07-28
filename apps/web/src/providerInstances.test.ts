@@ -129,6 +129,62 @@ describe("Hermes composer availability", () => {
       }),
     ).toContain("hermes-research");
   });
+
+  it("pins the composer to an agent project's bound instance over drafts and fallbacks", () => {
+    const boundAgent = ProviderInstanceId.make("hermes-siva");
+    const otherAgent = ProviderInstanceId.make("hermes-lab");
+    const entries = deriveProviderInstanceEntries([
+      provider({ provider: ProviderDriverKind.make("hermes"), instanceId: otherAgent }),
+      provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),
+    ]);
+
+    // Wins over a draft pick carried from the previously viewed thread.
+    expect(
+      resolveComposerProviderInstanceId({
+        entries,
+        draftInstanceId: ProviderInstanceId.make("codex"),
+        threadInstanceId: undefined,
+        threadModelInstanceId: undefined,
+        projectInstanceId: undefined,
+        projectAgentInstanceId: boundAgent,
+        requestedDriverKind: ProviderDriverKind.make("codex"),
+        lockedProvider: null,
+        lockedContinuationGroupKey: null,
+      }),
+    ).toBe(boundAgent);
+
+    // Holds while the bound instance is absent from the snapshot: the
+    // project stays bound, never rerouted to another connected gateway.
+    expect(
+      resolveComposerProviderInstanceId({
+        entries,
+        draftInstanceId: null,
+        threadInstanceId: undefined,
+        threadModelInstanceId: undefined,
+        projectInstanceId: otherAgent,
+        projectAgentInstanceId: boundAgent,
+        requestedDriverKind: ProviderDriverKind.make("hermes"),
+        lockedProvider: null,
+        lockedContinuationGroupKey: null,
+      }),
+    ).toBe(boundAgent);
+
+    // A thread whose session started on a different instance keeps its own
+    // binding — the project lock applies to new work, not history.
+    expect(
+      resolveComposerProviderInstanceId({
+        entries,
+        draftInstanceId: null,
+        threadInstanceId: otherAgent,
+        threadModelInstanceId: otherAgent,
+        projectInstanceId: undefined,
+        projectAgentInstanceId: boundAgent,
+        requestedDriverKind: ProviderDriverKind.make("hermes"),
+        lockedProvider: ProviderDriverKind.make("hermes"),
+        lockedContinuationGroupKey: null,
+      }),
+    ).toBe(otherAgent);
+  });
 });
 
 describe("isProviderInstancePickerVisible", () => {

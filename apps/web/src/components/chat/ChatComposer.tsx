@@ -670,6 +670,13 @@ export interface ChatComposerProps {
   lockedProvider: ProviderDriverKind | null;
   providerStatuses: ServerProvider[];
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
+  /**
+   * `agentInstanceId` of the thread's project when it is an agent's
+   * synthetic project. Non-null binds the composer to that instance: the
+   * model chip renders static (like a Home thread) and the selection always
+   * resolves to the bound agent regardless of draft or sticky state.
+   */
+  activeProjectAgentInstanceId: ProviderInstanceId | null;
   activeThreadModelSelection: ModelSelection | null | undefined;
 
   // Context window
@@ -765,6 +772,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     lockedProvider,
     providerStatuses,
     activeProjectDefaultModelSelection,
+    activeProjectAgentInstanceId,
     activeThreadModelSelection,
     activeThreadActivities,
     resolvedTheme,
@@ -915,11 +923,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       threadInstanceId: activeThread?.session?.providerInstanceId,
       threadModelInstanceId: activeThreadModelSelection?.instanceId,
       projectInstanceId: activeProjectDefaultModelSelection?.instanceId,
+      projectAgentInstanceId: activeProjectAgentInstanceId,
       requestedDriverKind,
       lockedProvider,
       lockedContinuationGroupKey,
     });
   }, [
+    activeProjectAgentInstanceId,
     activeProjectDefaultModelSelection?.instanceId,
     activeThread?.session?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
@@ -940,9 +950,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const noProviderAvailable =
     selectedProviderEntry === undefined ||
     !isProviderInstanceComposerAvailable(selectedProviderEntry);
+  // An agent project's binding survives the instance disappearing from the
+  // snapshot (agent removed / not yet re-enrolled), so it feeds the same
+  // "restore it in Settings" message a started Hermes thread gets.
   const missingBoundHermesInstanceId =
-    selectedProviderEntry === undefined && lockedProvider === "hermes"
-      ? (activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId)
+    selectedProviderEntry === undefined
+      ? lockedProvider === "hermes"
+        ? (activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId)
+        : (activeProjectAgentInstanceId ?? undefined)
       : undefined;
   const providerUnavailableMessage = getProviderInstanceComposerUnavailableMessage(
     selectedProviderEntry,
@@ -968,7 +983,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // `thread.create` fixes both, and Hermes sets
   // `requiresNewThreadForModelChange`. A picker there would offer a choice
   // that cannot be taken, so the chip renders as a static label instead.
+  // The same is true for every thread in an agent's synthetic project: the
+  // project itself is the binding, so drafts there are equally choiceless.
   const isHomeThread = isHomeThreadId(providerStatuses, activeThread?.id);
+  const isAgentBoundComposer = activeProjectAgentInstanceId !== null;
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,
@@ -3350,7 +3368,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     compact={isComposerFooterCompact}
                     activeInstanceId={selectedInstanceId}
                     model={selectedModelForPickerWithCustomFallback}
-                    staticLabel={isHomeThread}
+                    staticLabel={isHomeThread || isAgentBoundComposer}
                     lockedProvider={lockedProvider}
                     lockedContinuationGroupKey={lockedContinuationGroupKey}
                     instanceEntries={providerInstanceEntries}

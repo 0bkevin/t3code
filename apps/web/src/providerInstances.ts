@@ -358,10 +358,27 @@ export function resolveComposerProviderInstanceId(input: {
   readonly threadInstanceId: ProviderInstanceId | undefined;
   readonly threadModelInstanceId: ProviderInstanceId | undefined;
   readonly projectInstanceId: ProviderInstanceId | undefined;
+  /**
+   * The `agentInstanceId` of the thread's project when that project is an
+   * agent's synthetic project. Every thread in such a project belongs to
+   * that one agent, so the binding wins over draft picks, sticky state, and
+   * fallbacks alike — and holds even while the instance is offline, exactly
+   * like a started Hermes thread's session binding.
+   */
+  readonly projectAgentInstanceId?: ProviderInstanceId | null;
   readonly requestedDriverKind: ProviderDriverKind;
   readonly lockedProvider: ProviderDriverKind | null;
   readonly lockedContinuationGroupKey: string | null;
 }): ProviderInstanceId {
+  if (
+    input.projectAgentInstanceId &&
+    // A thread already started on another instance keeps its own binding —
+    // agent projects lock *new* work to the agent; historical mismatches
+    // (threads created before the lock existed) are left exactly as-is.
+    (!input.threadInstanceId || input.threadInstanceId === input.projectAgentInstanceId)
+  ) {
+    return input.projectAgentInstanceId;
+  }
   const boundThreadInstanceId = input.threadInstanceId ?? input.threadModelInstanceId;
   if (input.lockedProvider === "hermes" && boundThreadInstanceId) {
     return boundThreadInstanceId;
