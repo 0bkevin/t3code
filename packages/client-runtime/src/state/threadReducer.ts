@@ -327,15 +327,21 @@ export function applyThreadDetailEvent(
 
     case "thread.notification-delivered": {
       // A proactive delivery is an ordinary transcript message carrying
-      // provenance. It binds to no turn, so latestTurn and the checkpoint
-      // rebinding that `thread.message-sent` performs are deliberately
-      // untouched — attributing it to the live turn would fold it away
-      // behind that turn's summary.
+      // provenance. latestTurn and the checkpoint rebinding that
+      // `thread.message-sent` performs are deliberately untouched —
+      // attributing a delivery to the live turn would fold it away behind
+      // that turn's summary. Turn-scoped media is the one exception: its
+      // payload names the turn it rode in on (sequencing only), and dropping
+      // it here made the live-streamed delivery render without its file
+      // while a reload — which reads the projection row — showed it.
       const message: OrchestrationMessage = {
         id: event.payload.messageId,
         role: "assistant",
         text: event.payload.text,
-        turnId: null,
+        ...(event.payload.attachments !== undefined
+          ? { attachments: event.payload.attachments }
+          : {}),
+        turnId: event.payload.turnId ?? null,
         streaming: false,
         notification: event.payload.notification,
         createdAt: event.payload.createdAt,

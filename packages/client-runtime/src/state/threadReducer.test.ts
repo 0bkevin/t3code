@@ -490,6 +490,46 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("carries turn-scoped media's attachments and turn id into the live message", () => {
+      // The live repro: turn-scoped media streamed in without its file (this
+      // reducer dropped attachments/turnId), while a reload — which reads the
+      // projection row — showed it. The two views must agree.
+      const mediaEvent = {
+        ...deliveryEvent,
+        payload: {
+          ...deliveryEvent.payload,
+          messageId: MessageId.make("msg-media"),
+          text: "",
+          turnId: TurnId.make("turn-media"),
+          attachments: [
+            {
+              type: "image" as const,
+              id: "thread-1-attachment-1",
+              name: "chart.png",
+              mimeType: "image/png",
+              sizeBytes: 1024,
+            },
+          ],
+          notification: {
+            kind: "message" as const,
+            label: "Hermes",
+            deliveryId: "delivery-media-1",
+          },
+        },
+      } as const;
+
+      const result = applyThreadDetailEvent(baseThread, mediaEvent);
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages[0]).toMatchObject({
+          id: "msg-media",
+          turnId: "turn-media",
+          attachments: [{ id: "thread-1-attachment-1", name: "chart.png" }],
+        });
+      }
+    });
+
     it("leaves an unrelated live turn untouched", () => {
       // A delivery can land mid-turn; attributing it to that turn would fold
       // it away behind the turn's summary and mis-settle the turn state.
