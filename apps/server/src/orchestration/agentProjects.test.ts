@@ -69,6 +69,7 @@ const makeQueryLayer = (
     getFullThreadDiffContext: () => Effect.die("unused"),
     getThreadShellById: () => Effect.die("unused"),
     getThreadArchiveStateById: () => Effect.die("unused"),
+    hasThreadNotificationDelivery: () => Effect.die("unused"),
     getThreadDetailById: () => Effect.die("unused"),
     getThreadDetailSnapshot: () => Effect.die("unused"),
   });

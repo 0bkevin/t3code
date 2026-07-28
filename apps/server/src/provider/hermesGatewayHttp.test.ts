@@ -11,7 +11,6 @@ import {
   type HermesGatewayMediaDeliver,
   type HermesGatewayT3ToPluginMessage,
   type OrchestrationCommand,
-  type OrchestrationThread,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -67,24 +66,6 @@ const mediaFrame = (
     ...overrides,
   }) as HermesGatewayMediaDeliver;
 
-/** A thread detail carrying one already-written delivery, for dedupe reads. */
-const threadWithDelivery = (threadId: ThreadId, deliveryId: string) =>
-  ({
-    id: threadId,
-    messages: [
-      {
-        id: "message-existing",
-        role: "assistant",
-        text: "already here",
-        turnId: null,
-        streaming: false,
-        notification: { kind: "cron", label: "Cron: daily-digest", deliveryId },
-        createdAt: CREATED_AT,
-        updatedAt: CREATED_AT,
-      },
-    ],
-  }) as unknown as OrchestrationThread;
-
 /**
  * The handlers only reach `adapter.hasSession` on the turn-scoped path, so
  * everything else can stay unimplemented.
@@ -101,6 +82,8 @@ const makeHarness = (options?: {
   readonly existingDeliveries?: ReadonlyArray<{ threadId: ThreadId; deliveryId: string }>;
   readonly trackedThreadId?: ThreadId;
   readonly failDispatch?: boolean;
+  /** Archive state of the designated home thread, as the projection sees it. */
+  readonly homeThreadArchivedAt?: string;
 }) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -134,17 +117,19 @@ const makeHarness = (options?: {
     });
 
     const queryLayer = Layer.mock(ProjectionSnapshotQuery)({
-      getThreadDetailById: (threadId) =>
+      // Row-level, and deliberately indifferent to archive state — the whole
+      // point of the lookup under test. `getThreadDetailById` is left
+      // unimplemented so a regression back to it fails loudly here.
+      hasThreadNotificationDelivery: ({ threadId, deliveryId }) =>
         Effect.succeed(
-          Option.fromUndefinedOr(
-            options?.existingDeliveries
-              ?.filter((entry) => entry.threadId === threadId)
-              .map((entry) => threadWithDelivery(entry.threadId, entry.deliveryId))[0],
+          (options?.existingDeliveries ?? []).some(
+            (entry) => entry.threadId === threadId && entry.deliveryId === deliveryId,
           ),
         ),
       // The home thread is designated in settings and exists, so home-thread
       // resolution takes the fast path without dispatching a thread.create.
-      getThreadArchiveStateById: () => Effect.succeed(Option.some({ archivedAt: null })),
+      getThreadArchiveStateById: () =>
+        Effect.succeed(Option.some({ archivedAt: options?.homeThreadArchivedAt ?? null })),
     });
 
     const registryLayer = Layer.mock(ProviderInstanceRegistry)({
@@ -249,6 +234,24 @@ it.effect("acks a duplicate deliveryId without dispatching a second message", ()
     // Still acked: the plugin's queue purges only on the ack, and the row is
     // already durably written.
     assert.equal(harness.sent.length, 1);
+    assert.equal(harness.sent[0]?.type, "media.deliver.ack");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("dedupes a delivery into an ARCHIVED home thread", () =>
+  Effect.gen(function* () {
+    // The retry loop this guards against: the dedupe read used to go through
+    // `getThreadDetailById`, which filters `archived_at IS NULL`. A home
+    // thread the user archived therefore reported every delivery as new, so a
+    // failed un-archive (best-effort by design) turned each of the plugin's
+    // retries into another appended row — all of them acked.
+    const harness = yield* makeHarness({
+      homeThreadArchivedAt: CREATED_AT,
+      existingDeliveries: [{ threadId: HOME_THREAD_ID, deliveryId: "media-delivery-1" }],
+    });
+    yield* harness.deliverMedia(registration, mediaFrame(), harness.transport);
+
+    assert.equal(dispatchedDeliveries(yield* Ref.get(harness.dispatched)).length, 0);
     assert.equal(harness.sent[0]?.type, "media.deliver.ack");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

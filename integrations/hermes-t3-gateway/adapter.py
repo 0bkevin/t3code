@@ -461,19 +461,29 @@ class T3PlatformAdapter(BasePlatformAdapter):
         # socket dies between here and the ack, the entry survives to be
         # replayed on the next connect, and T3's `deliveryId` dedupe makes the
         # replay harmless.
-        self._home_queue.append(delivery)
+        queued = self._home_queue.append(delivery)
+        sent = True
         try:
             await self._send_frame(delivery)
         except Exception as exc:  # noqa: BLE001 - adapter send must return SendResult
+            sent = False
             logger.warning(
                 "T3 home delivery %s could not be sent (%s); it is queued for "
                 "the next connect",
                 delivery_id_value,
                 exc,
             )
-        # Reported successful either way: the delivery is durably queued, and
-        # failing the send would make a cron job report an error for output
-        # that will in fact arrive.
+        # Success needs EITHER leg to have held. Queued-and-unsent arrives on
+        # the next connect; sent-but-unqueued is already at T3 (the ack simply
+        # finds nothing to purge). Neither means the content is gone, and
+        # reporting success then would tell a cron job its brief was delivered
+        # when nothing on this machine still holds it.
+        if not (queued or sent):
+            return SendResult(
+                success=False,
+                message_id=delivery_id_value,
+                error="T3 home delivery could not be sent or queued",
+            )
         return SendResult(success=True, message_id=delivery_id_value)
 
     async def _handle_connection_accepted(self, accepted: dict[str, Any]) -> None:
@@ -721,15 +731,28 @@ class T3PlatformAdapter(BasePlatformAdapter):
             logger.warning("T3 media delivery for %s failed to build: %s", path, exc)
             return SendResult(success=False, error=str(exc))
         delivery_id_value = str(delivery["deliveryId"])
-        self._home_queue.append(delivery)
+        queued = self._home_queue.append(delivery)
+        sent = True
         try:
             await self._send_frame(delivery)
         except Exception as exc:  # noqa: BLE001 - adapter send must return SendResult
+            sent = False
             logger.warning(
                 "T3 media delivery %s could not be sent (%s); it is queued for "
                 "the next connect",
                 delivery_id_value,
                 exc,
+            )
+        # Neither queued nor sent means the file is gone — the only copy was
+        # the bytes in this frame, and Hermes' temp file may be reaped before
+        # anyone could retry. Fail before the completion below, so the turn is
+        # not closed on media that never arrived. See `_deliver_to_home` for
+        # why either leg alone is honest success.
+        if not (queued or sent):
+            return SendResult(
+                success=False,
+                message_id=delivery_id_value,
+                error="T3 media delivery could not be sent or queued",
             )
         # The same notify-completion contract `send()` honors for text. The
         # base adapter notify-marks every send of a reply's FINAL delivery
@@ -1101,31 +1124,44 @@ class T3PlatformAdapter(BasePlatformAdapter):
             request_id=str(message["requestId"]),
         )
         self._active_turns[thread_id] = turn
-        await self._send_frame(
-            frame(
-                "turn.started",
-                requestId=turn.request_id,
-                threadId=thread_id,
-                sessionId=session_id,
-                turnId=turn.turn_id,
+        # Roll the registration back if starting the turn raises. Without this
+        # a failed `turn.started` send (a socket that dropped between the
+        # decode and the write) leaves a phantom turn no completion path will
+        # ever reach, and the `thread_id in self._active_turns` guard above
+        # then rejects every future `turn.start` on this thread for the life of
+        # the process. Guarded on identity: an error handler that already
+        # replaced the entry owns it now, and clobbering that would strand the
+        # replacement instead.
+        try:
+            await self._send_frame(
+                frame(
+                    "turn.started",
+                    requestId=turn.request_id,
+                    threadId=thread_id,
+                    sessionId=session_id,
+                    turnId=turn.turn_id,
+                )
             )
-        )
-        await self._send_status()
-        await self.handle_message(
-            MessageEvent(
-                text=str(message["text"]),
-                message_type=(
-                    MessageType.COMMAND
-                    if str(message["text"]).lstrip().startswith("/")
-                    else MessageType.TEXT
-                ),
-                source=self._source(thread_id, turn.request_id),
-                message_id=turn.request_id,
-                metadata={"t3_turn_id": turn.turn_id},
-                media_urls=media_paths,
-                media_types=media_types,
+            await self._send_status()
+            await self.handle_message(
+                MessageEvent(
+                    text=str(message["text"]),
+                    message_type=(
+                        MessageType.COMMAND
+                        if str(message["text"]).lstrip().startswith("/")
+                        else MessageType.TEXT
+                    ),
+                    source=self._source(thread_id, turn.request_id),
+                    message_id=turn.request_id,
+                    metadata={"t3_turn_id": turn.turn_id},
+                    media_urls=media_paths,
+                    media_types=media_types,
+                )
             )
-        )
+        except BaseException:
+            if self._active_turns.get(thread_id) is turn:
+                del self._active_turns[thread_id]
+            raise
 
     async def _steer_turn(self, message: dict[str, Any]) -> None:
         turn = self._active_turns.get(str(message["threadId"]))

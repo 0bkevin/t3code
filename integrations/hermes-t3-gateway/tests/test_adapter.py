@@ -1589,6 +1589,69 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m["type"] for m in fallback_frames], ["item.started"])
         self.assertEqual(fallback_frames[0]["threadId"], "thread-live")
 
+    async def test_a_failed_turn_start_leaves_no_phantom_turn_behind(self):
+        """A turn that never started must not wedge its thread forever.
+
+        `_active_turns[thread_id]` is registered before `turn.started` goes out,
+        so a socket that drops in that window used to leave an entry no
+        completion path could ever reach — and the duplicate-turn guard then
+        rejected every future `turn.start` on that thread for the life of the
+        process. One dropped frame permanently silenced the thread.
+        """
+        await self.adapter._handle_server_frame(
+            {
+                "type": "session.ensure",
+                "protocolVersion": 4,
+                "requestId": "ensure-wedged",
+                "threadId": "thread-wedged",
+            }
+        )
+        session_id = self.adapter._sessions["thread-wedged"]
+
+        original_send = self.connection.send
+
+        async def drop_the_turn_started(message):
+            if message.get("type") == "turn.started":
+                raise ConnectionError("socket dropped mid-handshake")
+            await original_send(message)
+
+        with unittest.mock.patch.object(
+            self.connection, "send", drop_the_turn_started
+        ):
+            await self.adapter._handle_server_frame(
+                {
+                    "type": "turn.start",
+                    "protocolVersion": 4,
+                    "requestId": "start-wedged",
+                    "threadId": "thread-wedged",
+                    "sessionId": session_id,
+                    "turnId": "turn-wedged",
+                    "text": "Start",
+                }
+            )
+
+        # Rolled back, and the failure was reported against its own request.
+        self.assertEqual(self.adapter._active_turns, {})
+        self.assertEqual(self.connection.messages[-1]["type"], "protocol.error")
+        self.assertEqual(self.connection.messages[-1]["requestId"], "start-wedged")
+
+        # The thread is usable again on the very next attempt.
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 4,
+                "requestId": "start-recovered",
+                "threadId": "thread-wedged",
+                "sessionId": session_id,
+                "turnId": "turn-recovered",
+                "text": "Try again",
+            }
+        )
+        self.assertEqual(
+            self.adapter._active_turns["thread-wedged"].turn_id, "turn-recovered"
+        )
+        self.assertEqual(self.adapter.messages[-1].text, "Try again")
+
 
 class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
     """The proactive `home.deliver` branch and its durable queue."""
@@ -1866,6 +1929,40 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 "protocolVersion": 4,
                 "deliveryId": offline.message_id,
             }
+        )
+        self.assertEqual(self.queue.entries(), [])
+
+    async def test_a_delivery_that_is_neither_queued_nor_sent_reports_failure(self):
+        """Success is a claim about durability, so it needs one leg to hold.
+
+        A queue write that failed used to be ignored: an offline socket then
+        produced "delivered" for content held nowhere, and the cron job that
+        wrote it logged a success for output that will never appear.
+        """
+
+        class DeadConnection:
+            connected = False
+
+            async def send(self, message):
+                raise ConnectionError("T3 Code gateway is offline")
+
+        self.adapter._connection = DeadConnection()
+        with unittest.mock.patch.object(
+            self.queue, "append", return_value=False
+        ), self.assertLogs(adapter_module.logger, level="WARNING"):
+            result = await self.adapter.send(self.HOME, "Held nowhere at all")
+
+        self.assertFalse(result.success)
+        self.assertIn("queued", result.error)
+
+    async def test_a_delivery_that_reached_t3_is_honest_success_unqueued(self):
+        """T3 has it; the ack will simply find nothing to purge."""
+        with unittest.mock.patch.object(self.queue, "append", return_value=False):
+            result = await self.adapter.send(self.HOME, "Sent but not queued")
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [frame["type"] for frame in self.connection.messages], ["home.deliver"]
         )
         self.assertEqual(self.queue.entries(), [])
 
@@ -2603,6 +2700,59 @@ class MediaDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(
             "media.deliver",
             [frame["type"] for frame in self.connection.messages],
+        )
+
+    async def test_media_that_is_neither_queued_nor_sent_reports_failure(self):
+        """An unpersisted delivery must not be reported as durable.
+
+        Success here used to be unconditional on the queue write, so a full
+        disk plus a dead socket produced "delivered" for a file that exists
+        nowhere — and, on a notify-marked send, completed the turn on it. The
+        bytes are the only copy: Hermes' temp file is reaped and nothing can
+        replay a frame that was never written.
+        """
+
+        class DeadConnection:
+            connected = False
+
+            async def send(self, message):
+                raise ConnectionError("T3 Code gateway is offline")
+
+        thread = "thread-nowhere-to-go"
+        await self._start_turn(thread, "turn-nowhere")
+        self.adapter._connection = DeadConnection()
+
+        with unittest.mock.patch.object(
+            self.queue, "append", return_value=False
+        ), self.assertLogs(adapter_module.logger, level="WARNING"):
+            result = await self.adapter.send_image_file(
+                thread,
+                str(self.chart),
+                metadata={"thread_id": thread, "notify": True},
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("queued", result.error)
+        # The turn is NOT completed on media that went nowhere.
+        self.assertIn(thread, self.adapter._active_turns)
+
+    async def test_media_that_reached_t3_is_honest_success_without_the_queue(self):
+        """The other branch: the live send held, so T3 has the file.
+
+        The queue's only remaining job would be a replay T3 does not need, and
+        the ack simply finds nothing to purge.
+        """
+        thread = "thread-sent-not-queued"
+        await self._start_turn(thread, "turn-sent-not-queued")
+        frames_before = len(self.connection.messages)
+
+        with unittest.mock.patch.object(self.queue, "append", return_value=False):
+            result = await self.adapter.send_image_file(thread, str(self.chart))
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [frame["type"] for frame in self.connection.messages[frames_before:]],
+            ["media.deliver"],
         )
 
     async def test_audio_rides_the_same_media_frame_instead_of_the_fallback(self):

@@ -819,6 +819,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Dedupe, not display: deliberately no join to `projection_threads` and so
+  // no archive/delete filter. A delivery written into a thread the user later
+  // archived is still written, and treating it as absent would re-append it on
+  // every retry. `json_extract` rather than a LIKE over the blob, so a
+  // deliveryId occurring inside some other field cannot false-positive.
+  const findThreadNotificationDeliveryRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, deliveryId: Schema.String }),
+    Result: Schema.Struct({ messageId: Schema.String }),
+    execute: ({ threadId, deliveryId }) =>
+      sql`
+        SELECT message_id AS "messageId"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+          AND json_extract(notification_json, '$.deliveryId') = ${deliveryId}
+        LIMIT 1
+      `,
+  });
+
   const getActiveThreadRowById = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadDbRowSchema,
@@ -2063,6 +2081,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies OrchestrationThreadShell);
     });
 
+  const hasThreadNotificationDelivery: ProjectionSnapshotQueryShape["hasThreadNotificationDelivery"] =
+    (input) =>
+      findThreadNotificationDeliveryRow(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.hasThreadNotificationDelivery:query",
+            "ProjectionSnapshotQuery.hasThreadNotificationDelivery:decodeRow",
+          ),
+        ),
+        Effect.map(Option.isSome),
+      );
+
   const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
     Effect.gen(function* () {
       const [
@@ -2249,6 +2279,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getFullThreadDiffContext,
     getThreadShellById,
     getThreadArchiveStateById,
+    hasThreadNotificationDelivery,
     getThreadDetailById,
     getThreadDetailSnapshot,
   } satisfies ProjectionSnapshotQueryShape;

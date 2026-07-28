@@ -74,17 +74,17 @@ export const makeHermesDeliveryHandlers = Effect.fn("makeHermesDeliveryHandlers"
   // `projection_thread_messages`, where the delivery actually lives, so
   // it is the check that holds across a restart — exactly the case the
   // plugin's durable queue exists to produce.
+  //
+  // Deliberately NOT `getThreadDetailById`: that read filters `archived_at
+  // IS NULL`, so an archived Home reported every delivery as new. Combined
+  // with a failed un-archive (best-effort by design in `getOrCreateHomeThread`)
+  // that turned the plugin's retry loop into an append loop — one row per
+  // reconnect, all acked. This is the only durable dedupe after a restart, so
+  // it has to be archive-independent.
   const alreadyDelivered = (threadId: ThreadId, deliveryId: string) =>
-    query.getThreadDetailById(threadId).pipe(
-      Effect.map(
-        Option.match({
-          onNone: () => false,
-          onSome: (thread) =>
-            thread.messages.some((candidate) => candidate.notification?.deliveryId === deliveryId),
-        }),
-      ),
-      Effect.orElseSucceed(() => false),
-    );
+    query
+      .hasThreadNotificationDelivery({ threadId, deliveryId })
+      .pipe(Effect.orElseSucceed(() => false));
 
   /**
    * Write one proactive delivery into the instance's home thread and ack it.

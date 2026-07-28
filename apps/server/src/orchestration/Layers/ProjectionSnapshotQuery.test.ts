@@ -1552,6 +1552,128 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(shellSnapshot.threads.length, 0);
     }),
   );
+
+  it.effect("finds a notification delivery in an archived thread", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-archived-home',
+          'project-1',
+          'Home',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          0,
+          0,
+          0,
+          '2026-04-07T00:00:00.000Z',
+          '2026-04-07T00:00:01.000Z',
+          '2026-04-07T00:00:02.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          notification_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        VALUES
+          (
+            'message-delivered',
+            'thread-archived-home',
+            NULL,
+            'assistant',
+            'Nightly brief',
+            NULL,
+            '{"kind":"cron","label":"Cron: nightly","deliveryId":"delivery-abc"}',
+            0,
+            '2026-04-07T00:00:03.000Z',
+            '2026-04-07T00:00:03.000Z'
+          ),
+          (
+            'message-ordinary',
+            'thread-archived-home',
+            NULL,
+            'user',
+            'delivery-abc appears in this body, but not as provenance',
+            NULL,
+            NULL,
+            0,
+            '2026-04-07T00:00:04.000Z',
+            '2026-04-07T00:00:04.000Z'
+          )
+      `;
+
+      // Archiving parks a thread; it does not unwrite what is in it. The
+      // thread-detail read filters archived rows, so a dedupe check built on
+      // it reports every delivery as new and the plugin's retries append a
+      // duplicate per reconnect.
+      const detail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-archived-home"),
+      );
+      assert.equal(detail._tag, "None");
+
+      assert.isTrue(
+        yield* snapshotQuery.hasThreadNotificationDelivery({
+          threadId: ThreadId.make("thread-archived-home"),
+          deliveryId: "delivery-abc",
+        }),
+      );
+      // Matched on the provenance field, not a substring of the row: a
+      // deliveryId a user happened to type must not suppress a real delivery.
+      assert.isFalse(
+        yield* snapshotQuery.hasThreadNotificationDelivery({
+          threadId: ThreadId.make("thread-archived-home"),
+          deliveryId: "delivery-never-written",
+        }),
+      );
+      // Scoped to the thread — one instance's delivery id cannot mask another's.
+      assert.isFalse(
+        yield* snapshotQuery.hasThreadNotificationDelivery({
+          threadId: ThreadId.make("thread-elsewhere"),
+          deliveryId: "delivery-abc",
+        }),
+      );
+    }),
+  );
 });
 
 it.effect(

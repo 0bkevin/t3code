@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -138,6 +139,74 @@ class QueueTests(unittest.TestCase):
             [item["deliveryId"] for item in reopened.entries()],
             [entry["deliveryId"]],
         )
+
+    def test_a_read_error_never_costs_the_entries_already_on_disk(self):
+        """The queue's worst failure mode, guarded.
+
+        `append` normally rewrites the whole file to enforce the entry cap. A
+        read that failed used to report an empty queue, so that rewrite
+        replaced every unacked delivery on disk with the one being appended.
+        A transient EIO destroyed the outbox. The rewrite is skipped entirely
+        when the read fails: the cap goes briefly unenforced (recoverable on
+        the next successful read), the entries do not (not recoverable at all).
+        """
+        first = make_delivery("already-queued")
+        second = make_delivery("also-queued")
+        self.queue.append(first)
+        self.queue.append(second)
+        arriving = make_delivery("arrives-during-the-outage")
+
+        real_read_text = pathlib.Path.read_text
+
+        def fail_reading_the_queue(path_self, *args, **kwargs):
+            if path_self == self.path:
+                raise OSError("simulated I/O error")
+            return real_read_text(path_self, *args, **kwargs)
+
+        with unittest.mock.patch.object(
+            pathlib.Path, "read_text", fail_reading_the_queue
+        ), self.assertLogs(home.logger, level="WARNING"):
+            self.assertTrue(self.queue.append(arriving))
+
+        # Every pre-existing delivery survived, and the new one joined them.
+        self.assertEqual(
+            [entry["text"] for entry in self.queue.entries()],
+            ["already-queued", "also-queued", "arrives-during-the-outage"],
+        )
+
+    def test_a_read_error_leaves_an_acked_entry_for_a_deduped_replay(self):
+        """Purge only rewrites, so an unreadable queue means doing nothing."""
+        entry = make_delivery("acked")
+        self.queue.append(entry)
+
+        real_read_text = pathlib.Path.read_text
+
+        def fail_reading_the_queue(path_self, *args, **kwargs):
+            if path_self == self.path:
+                raise OSError("simulated I/O error")
+            return real_read_text(path_self, *args, **kwargs)
+
+        with unittest.mock.patch.object(
+            pathlib.Path, "read_text", fail_reading_the_queue
+        ), self.assertLogs(home.logger, level="WARNING"):
+            self.assertFalse(self.queue.purge(entry["deliveryId"]))
+
+        self.assertEqual(
+            [item["deliveryId"] for item in self.queue.entries()],
+            [entry["deliveryId"]],
+        )
+
+    @unittest.skipIf(os.name != "posix", "POSIX file modes only")
+    def test_the_queue_is_readable_only_by_its_owner(self):
+        """Entries carry message text and base64 media — not other users' business."""
+        self.queue.append(make_delivery("private"))
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.path.parent.stat().st_mode & 0o777, 0o700)
+
+        # And it stays private across the rewrite paths, not just on creation.
+        self.queue.append(make_delivery("still private"))
+        self.queue.purge(self.queue.entries()[0]["deliveryId"])
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_the_queue_lives_under_the_active_hermes_home(self):
         """Profile-scoped: a second profile must not replay the first's output."""

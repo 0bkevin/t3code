@@ -186,18 +186,25 @@ class HomeDeliveryQueue:
         return self._path if self._path is not None else queue_path()
 
     def _ensure_parent(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # 0700: queued frames carry message text and base64 media, so the
+        # outbox must not be readable by other users of the machine. Only a
+        # directory this call creates is affected — an existing `gateway/` is
+        # shared with Hermes' own plugin state and is not re-permissioned here.
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def _read_lines(self) -> list[dict[str, Any]]:
+        """Parse every queued entry. Raises `OSError` when the file is unreadable.
+
+        The distinction callers depend on: a MISSING file is an empty queue,
+        while an unreadable one is an unknown queue. Collapsing the two into
+        `[]` is what would let a rewrite-based caller overwrite live entries it
+        merely failed to read.
+        """
         path = self.path
         if not path.exists():
             return []
         entries: list[dict[str, Any]] = []
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError:
-            logger.warning("Could not read the T3 home delivery queue", exc_info=True)
-            return []
+        raw = path.read_text(encoding="utf-8")
         for line in raw.splitlines():
             line = line.strip()
             if not line:
@@ -212,15 +219,38 @@ class HomeDeliveryQueue:
                 entries.append(entry)
         return entries
 
+    @staticmethod
+    def _encode(entry: dict[str, Any]) -> str:
+        return json.dumps(entry, separators=(",", ":"), ensure_ascii=False) + "\n"
+
     def _write_all(self, entries: list[dict[str, Any]]) -> None:
         self._ensure_parent()
-        payload = "".join(
-            json.dumps(entry, separators=(",", ":"), ensure_ascii=False) + "\n"
-            for entry in entries
-        )
+        payload = "".join(self._encode(entry) for entry in entries)
         temporary = self.path.with_suffix(".jsonl.tmp")
-        temporary.write_text(payload, encoding="utf-8")
+        # 0600 on the TEMP file, before the replace: `os.replace` carries the
+        # source's mode over, so permissioning here is what makes the queue
+        # private without a window where it is world-readable.
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.chmod(temporary, 0o600)  # A pre-existing temp file keeps its mode.
         temporary.replace(self.path)
+
+    def _append_line(self, entry: dict[str, Any]) -> None:
+        """Append one entry without reading or rewriting the file.
+
+        The fallback when the queue could not be read: a single `O_APPEND`
+        write cannot destroy entries it cannot see, where the rewrite path
+        would replace all of them with this one.
+        """
+        self._ensure_parent()
+        descriptor = os.open(
+            self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+        )
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            handle.write(self._encode(entry))
 
     def _file_lock(self):
         """Advisory cross-process lock, or a no-op where unavailable."""
@@ -237,7 +267,7 @@ class HomeDeliveryQueue:
 
         queue = self.path
         try:
-            queue.parent.mkdir(parents=True, exist_ok=True)
+            queue.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         except OSError:
             return _NoLock()
 
@@ -248,7 +278,13 @@ class HomeDeliveryQueue:
 
             def __enter__(self):
                 try:
-                    self._handle = open(self._lock_path, "a+")  # noqa: SIM115
+                    # 0600 like the queue itself: the sidecar carries no
+                    # payload, but a world-writable lock is a way to stall
+                    # another user's deliveries.
+                    descriptor = os.open(
+                        self._lock_path, os.O_RDWR | os.O_CREAT, 0o600
+                    )
+                    self._handle = os.fdopen(descriptor, "a+")
                     fcntl.flock(self._handle, fcntl.LOCK_EX)
                 except OSError:
                     if self._handle is not None:
@@ -272,7 +308,33 @@ class HomeDeliveryQueue:
         if not isinstance(frame, dict) or not frame.get("deliveryId"):
             return False
         with self._lock, self._file_lock():
-            entries = self._read_lines()
+            try:
+                entries = self._read_lines()
+            except OSError:
+                # The rewrite path is off the table: it would replace every
+                # entry we failed to read with just this one, destroying an
+                # arbitrary number of unacked deliveries over a transient
+                # error. Append blind instead. The costs are bounded and both
+                # self-correct — the cap goes unenforced until the next
+                # successful read (a too-long queue is trimmed then), and a
+                # duplicate of an entry already on disk is deduped by T3 on
+                # `deliveryId`.
+                logger.warning(
+                    "Could not read the T3 home delivery queue at %s; appending "
+                    "without rewriting it",
+                    self.path,
+                    exc_info=True,
+                )
+                try:
+                    self._append_line(dict(frame))
+                except OSError:
+                    logger.error(
+                        "Could not persist a T3 home delivery to %s",
+                        self.path,
+                        exc_info=True,
+                    )
+                    return False
+                return True
             if any(
                 entry.get("deliveryId") == frame["deliveryId"] for entry in entries
             ):
@@ -300,9 +362,22 @@ class HomeDeliveryQueue:
         return True
 
     def entries(self) -> list[dict[str, Any]]:
-        """Every unacknowledged delivery, oldest first."""
+        """Every unacknowledged delivery, oldest first.
+
+        An unreadable queue reports empty rather than raising: the callers are
+        the flush loop and `__len__`, and skipping a flush cycle costs one
+        reconnect's delay while the entries stay on disk.
+        """
         with self._lock:
-            return self._read_lines()
+            try:
+                return self._read_lines()
+            except OSError:
+                logger.warning(
+                    "Could not read the T3 home delivery queue at %s",
+                    self.path,
+                    exc_info=True,
+                )
+                return []
 
     def purge(self, delivery_id_value: str) -> bool:
         """Remove one acknowledged delivery. Returns True when it was present."""
@@ -310,7 +385,20 @@ class HomeDeliveryQueue:
         if not target:
             return False
         with self._lock, self._file_lock():
-            entries = self._read_lines()
+            try:
+                entries = self._read_lines()
+            except OSError:
+                # Purge only ever rewrites, so an unreadable queue means doing
+                # nothing. The entry stays and is replayed once — harmless,
+                # because T3 acked it and therefore dedupes the replay.
+                logger.warning(
+                    "Could not read the T3 home delivery queue at %s to purge "
+                    "%s; it will be replayed and deduped",
+                    self.path,
+                    target,
+                    exc_info=True,
+                )
+                return False
             remaining = [
                 entry for entry in entries if entry.get("deliveryId") != target
             ]

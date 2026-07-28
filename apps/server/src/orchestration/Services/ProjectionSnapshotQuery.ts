@@ -184,6 +184,21 @@ export interface ProjectionSnapshotQueryShape {
   >;
 
   /**
+   * Answer "has this proactive delivery already been written to this thread",
+   * independent of archive state.
+   *
+   * The idempotency check behind `deliveryId` dedupe, kept off the detail read
+   * for the same reason `getThreadArchiveStateById` exists: `archived_at IS
+   * NULL` would make an archived thread report every delivery as absent, and
+   * each retry of one delivery would then append another copy. Reads only the
+   * provenance column, so it costs nothing near the message bodies.
+   */
+  readonly hasThreadNotificationDelivery: (input: {
+    readonly threadId: ThreadId;
+    readonly deliveryId: string;
+  }) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  /**
    * Read a single active thread detail snapshot by id.
    */
   readonly getThreadDetailById: (
