@@ -370,16 +370,19 @@ export function resolveComposerProviderInstanceId(input: {
   readonly lockedProvider: ProviderDriverKind | null;
   readonly lockedContinuationGroupKey: string | null;
 }): ProviderInstanceId {
+  const boundThreadInstanceId = input.threadInstanceId ?? input.threadModelInstanceId;
   if (
     input.projectAgentInstanceId &&
-    // A thread already started on another instance keeps its own binding —
+    // A thread already bound to another instance keeps its own binding —
     // agent projects lock *new* work to the agent; historical mismatches
     // (threads created before the lock existed) are left exactly as-is.
-    (!input.threadInstanceId || input.threadInstanceId === input.projectAgentInstanceId)
+    // The model-selection binding counts too: a Hermes thread can have no
+    // session (Home threads never open one; sessions drop on restart) and
+    // then `modelSelection.instanceId` is its only remaining binding.
+    (!boundThreadInstanceId || boundThreadInstanceId === input.projectAgentInstanceId)
   ) {
     return input.projectAgentInstanceId;
   }
-  const boundThreadInstanceId = input.threadInstanceId ?? input.threadModelInstanceId;
   if (input.lockedProvider === "hermes" && boundThreadInstanceId) {
     return boundThreadInstanceId;
   }

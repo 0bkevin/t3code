@@ -184,6 +184,23 @@ describe("Hermes composer availability", () => {
         lockedContinuationGroupKey: null,
       }),
     ).toBe(otherAgent);
+
+    // Same when only the model-selection binding remains (no session — Home
+    // threads never open one, and sessions drop on restart): the persisted
+    // instance id is still a binding, not a fallback to override.
+    expect(
+      resolveComposerProviderInstanceId({
+        entries,
+        draftInstanceId: null,
+        threadInstanceId: undefined,
+        threadModelInstanceId: otherAgent,
+        projectInstanceId: undefined,
+        projectAgentInstanceId: boundAgent,
+        requestedDriverKind: ProviderDriverKind.make("hermes"),
+        lockedProvider: null,
+        lockedContinuationGroupKey: null,
+      }),
+    ).toBe(otherAgent);
   });
 });
 
