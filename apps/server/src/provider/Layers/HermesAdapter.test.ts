@@ -460,9 +460,7 @@ const makeReconnectHarness = (options: {
    * Runs before each one-way send is recorded, so a test can land a broker
    * event in the middle of an adapter operation.
    */
-  readonly onSend?: (
-    message: HermesGatewayT3ToPluginMessage,
-  ) => Effect.Effect<void, never, never>;
+  readonly onSend?: (message: HermesGatewayT3ToPluginMessage) => Effect.Effect<void, never, never>;
 }) =>
   Effect.gen(function* () {
     const sent: Array<HermesGatewayT3ToPluginMessage> = [];
