@@ -216,7 +216,7 @@ class FrameTests(unittest.TestCase):
             created_at="2026-07-26T00:00:00Z",
         )
         self.assertEqual(frame["type"], "home.deliver")
-        self.assertEqual(frame["protocolVersion"], 3)
+        self.assertEqual(frame["protocolVersion"], 4)
         self.assertEqual(frame["deliveryId"], "delivery-1")
         self.assertEqual(frame["threadId"], "home-thread")
         self.assertEqual(frame["kind"], "cron")
@@ -241,8 +241,49 @@ class FrameTests(unittest.TestCase):
         self.assertTrue(len(frame["text"]) >= 1)
 
     def test_home_deliver_ack_is_an_accepted_server_command(self):
-        message = {"type": "home.deliver.ack", "protocolVersion": 3}
+        message = {"type": "home.deliver.ack", "protocolVersion": 4}
         self.assertEqual(protocol.validate_server_frame(message), message)
+
+    def test_build_media_delivery_reads_the_file_and_guesses_the_mime(self):
+        import base64
+
+        with tempfile.TemporaryDirectory() as tmp:
+            chart = pathlib.Path(tmp) / "chart.png"
+            chart.write_bytes(b"\x89PNG fake bytes")
+            frame = home.build_media_delivery(
+                thread_id="home-thread",
+                path=str(chart),
+                kind="cron",
+                label="Cron: nightly",
+                caption="Nightly chart",
+            )
+        self.assertEqual(frame["type"], "media.deliver")
+        self.assertEqual(frame["kind"], "cron")
+        self.assertEqual(frame["name"], "chart.png")
+        self.assertEqual(frame["mimeType"], "image/png")
+        self.assertEqual(frame["sizeBytes"], len(b"\x89PNG fake bytes"))
+        self.assertEqual(base64.b64decode(frame["data"]), b"\x89PNG fake bytes")
+        self.assertEqual(frame["caption"], "Nightly chart")
+        self.assertTrue(frame["deliveryId"])
+        # Self-contained on disk: the frame carries the bytes, not the path,
+        # so a queued copy survives the source temp file being reaped.
+        self.assertNotIn("path", frame)
+
+    def test_build_media_delivery_fails_loudly_on_unreadable_or_oversized_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(OSError):
+                home.build_media_delivery(
+                    thread_id="home-thread",
+                    path=str(pathlib.Path(tmp) / "missing.png"),
+                )
+            empty = pathlib.Path(tmp) / "empty.bin"
+            empty.write_bytes(b"")
+            # An empty or oversized payload must never reach the durable
+            # queue: T3 would reject it on every flush, forever.
+            with self.assertRaises(ValueError):
+                home.build_media_delivery(
+                    thread_id="home-thread", path=str(empty)
+                )
 
     def test_hello_declares_its_connection_role(self):
         gateway = protocol.connection_hello(
@@ -291,11 +332,15 @@ class MockDeliveryServer:
                     }
                 )
             )
-        elif message.get("type") == "home.deliver" and self.ack:
+        elif message.get("type") in {"home.deliver", "media.deliver"} and self.ack:
             self._outbox.append(
                 json.dumps(
                     {
-                        "type": "home.deliver.ack",
+                        "type": (
+                            "media.deliver.ack"
+                            if message["type"] == "media.deliver"
+                            else "home.deliver.ack"
+                        ),
                         "protocolVersion": protocol.PROTOCOL_VERSION,
                         "deliveryId": message["deliveryId"],
                     }
@@ -362,7 +407,7 @@ class StandaloneSenderTests(unittest.IsolatedAsyncioTestCase):
         )
         hello, delivery = server.sent
         self.assertEqual(hello["role"], "delivery")
-        self.assertEqual(hello["protocolVersion"], 3)
+        self.assertEqual(hello["protocolVersion"], 4)
         self.assertEqual(
             hello["authentication"],
             {
@@ -399,7 +444,7 @@ class StandaloneSenderTests(unittest.IsolatedAsyncioTestCase):
         """No ack, no purge — the live gateway retries it on the next connect."""
         server = MockDeliveryServer(ack=False)
         with self._serve(server), unittest.mock.patch.object(
-            home, "_deliver_over_short_lived_socket", return_value=False
+            home, "_deliver_over_short_lived_socket", return_value=set()
         ):
             result = await home.standalone_send(None, "home-thread", "Unacked brief")
 
@@ -423,6 +468,79 @@ class StandaloneSenderTests(unittest.IsolatedAsyncioTestCase):
             result = await home.standalone_send(None, "", "Brief with no chat id")
         self.assertTrue(result["success"])
         self.assertEqual(server.sent[1]["threadId"], "home-thread")
+
+    async def test_standalone_send_delivers_media_files_as_media_frames(self):
+        """`deliver=t3` cron output with files rides the v4 media framing."""
+        chart = pathlib.Path(self._tmp.name) / "chart.png"
+        chart.write_bytes(b"\x89PNG fake bytes")
+        server = MockDeliveryServer()
+        with self._serve(server):
+            result = await home.standalone_send(
+                None,
+                "home-thread",
+                "Cronjob Response: nightly\n(job_id: nightly)\n-------------\n\nDone.",
+                media_files=[(str(chart), False)],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            [message["type"] for message in server.sent],
+            ["connection.hello", "home.deliver", "media.deliver"],
+        )
+        media = server.sent[2]
+        # Media inherits the text's provenance so the chart gets the same
+        # badge as the brief it accompanies.
+        self.assertEqual(media["kind"], "cron")
+        self.assertEqual(media["label"], "Cron: nightly")
+        self.assertEqual(media["name"], "chart.png")
+        self.assertEqual(media["mimeType"], "image/png")
+        # Both frames were acked, so nothing stays queued.
+        self.assertEqual(home.HomeDeliveryQueue().entries(), [])
+
+    async def test_standalone_send_skips_an_unreadable_media_file(self):
+        """One bad file must not sink the brief — and must never be queued."""
+        server = MockDeliveryServer()
+        with self._serve(server), self.assertLogs(home.logger, level="WARNING"):
+            result = await home.standalone_send(
+                None,
+                "home-thread",
+                "Brief with a dead attachment",
+                media_files=[(str(pathlib.Path(self._tmp.name) / "gone.png"), False)],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertIn("skipped", result["detail"])
+        self.assertEqual(
+            [message["type"] for message in server.sent],
+            ["connection.hello", "home.deliver"],
+        )
+        self.assertEqual(home.HomeDeliveryQueue().entries(), [])
+
+    async def test_unacked_media_stays_queued_for_the_next_connect(self):
+        """The durable lifecycle applies to media exactly as it does to text."""
+        chart = pathlib.Path(self._tmp.name) / "chart.png"
+        chart.write_bytes(b"\x89PNG fake bytes")
+
+        async def _refuse(_url):
+            raise ConnectionRefusedError("T3 is down")
+
+        with unittest.mock.patch.object(connection, "_open_socket", _refuse):
+            result = await home.standalone_send(
+                None,
+                "home-thread",
+                "Nightly brief",
+                media_files=[(str(chart), False)],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["queued"])
+        queued = home.HomeDeliveryQueue().entries()
+        self.assertEqual(
+            [entry["type"] for entry in queued], ["home.deliver", "media.deliver"]
+        )
+        # The queued media frame is self-contained: bytes, not a path.
+        self.assertEqual(queued[1]["name"], "chart.png")
+        self.assertTrue(queued[1]["data"])
 
 
 class DesignationTests(unittest.TestCase):

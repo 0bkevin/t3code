@@ -66,7 +66,7 @@ def fake_hermes_skills(skills_list=None, skill_view=None):
 
 
 class ProtocolTests(unittest.TestCase):
-    def test_hello_matches_v3_contract(self):
+    def test_hello_matches_v4_contract(self):
         hello = protocol.connection_hello(
             hermes_version="0.19.0",
             authentication={"type": "enrollment-token", "token": "once"},
@@ -75,8 +75,10 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(hello["type"], "connection.hello")
         self.assertEqual(hello["requestId"], "request-1")
-        self.assertEqual(hello["protocolVersion"], 3)
-        self.assertFalse(hello["capabilities"]["attachments"])
+        self.assertEqual(hello["protocolVersion"], 4)
+        # v4 pins `attachments` to the literal true — it is part of the
+        # contract, not a negotiated option.
+        self.assertTrue(hello["capabilities"]["attachments"])
         self.assertTrue(hello["capabilities"]["streaming"])
         self.assertEqual(hello["model"], "gpt-5.6-terra")
 
@@ -125,15 +127,15 @@ class ProtocolTests(unittest.TestCase):
 
     def test_server_frame_validation_is_closed(self):
         with self.assertRaisesRegex(ValueError, "unsupported"):
-            protocol.validate_server_frame({"type": "made.up", "protocolVersion": 3})
+            protocol.validate_server_frame({"type": "made.up", "protocolVersion": 4})
         with self.assertRaisesRegex(ValueError, "version"):
-            # Protocol v2 peers must upgrade before sending runtime frames.
-            protocol.validate_server_frame({"type": "ping", "protocolVersion": 2})
+            # Protocol v3 peers must upgrade before sending runtime frames.
+            protocol.validate_server_frame({"type": "ping", "protocolVersion": 3})
 
     def test_describe_frames_are_accepted_server_commands(self):
         for frame_type in ("describe.request", "skill.body.request"):
             with self.subTest(frame_type=frame_type):
-                message = {"type": frame_type, "protocolVersion": 3}
+                message = {"type": frame_type, "protocolVersion": 4}
                 self.assertEqual(protocol.validate_server_frame(message), message)
 
     # ── describe.response ──────────────────────────────────────────────
@@ -151,13 +153,13 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(response["type"], "describe.response")
         self.assertEqual(response["requestId"], "describe-1")
-        self.assertEqual(response["protocolVersion"], 3)
+        self.assertEqual(response["protocolVersion"], 4)
         self.assertEqual(response["pluginVersion"], protocol.PLUGIN_VERSION)
         self.assertEqual(response["hermesVersion"], "0.19.0")
         self.assertEqual(response["model"], "gpt-5.6-terra")
         self.assertEqual(response["reasoningEffort"], "medium")
         self.assertEqual(response["skills"], skills)
-        self.assertFalse(response["capabilities"]["attachments"])
+        self.assertTrue(response["capabilities"]["attachments"])
         self.assertTrue(response["describedAt"].endswith("Z"))
         # Skill dicts are copied out: mutating the reply must not reach back
         # into whatever the caller passed in.
@@ -282,7 +284,7 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(response["type"], "skill.body.response")
         self.assertEqual(response["requestId"], "body-1")
-        self.assertEqual(response["protocolVersion"], 3)
+        self.assertEqual(response["protocolVersion"], 4)
         self.assertEqual(response["skillName"], "codex")
         self.assertEqual(response["markdown"], "# Codex\n\nDelegate coding.")
 
@@ -372,6 +374,165 @@ class ProtocolTests(unittest.TestCase):
                 "custom_vendor_tool", {"credential": "must-not-cross"}
             )
         )
+
+    # ── media.deliver ──────────────────────────────────────────────────
+
+    def test_media_deliver_encodes_the_payload_and_applies_every_wire_bound(self):
+        import base64
+
+        payload = b"\x89PNG fake bytes"
+        frame = protocol.media_deliver(
+            delivery_id_value="media-1",
+            thread_id="home-thread",
+            kind="cron",
+            label="  " + "L" * 400 + "  ",
+            name="chart.png",
+            mime_type="image/png",
+            data=payload,
+            turn_id="turn-9",
+            caption="c" * (protocol.MAX_MEDIA_CAPTION_CHARS + 50),
+            created_at="2026-07-27T00:00:00Z",
+        )
+        self.assertEqual(frame["type"], "media.deliver")
+        self.assertEqual(frame["protocolVersion"], 4)
+        self.assertEqual(frame["deliveryId"], "media-1")
+        self.assertEqual(frame["threadId"], "home-thread")
+        self.assertEqual(frame["turnId"], "turn-9")
+        self.assertEqual(frame["kind"], "cron")
+        self.assertEqual(len(frame["label"]), protocol.MAX_HOME_DELIVERY_LABEL_CHARS)
+        self.assertEqual(frame["name"], "chart.png")
+        self.assertEqual(frame["mimeType"], "image/png")
+        # `sizeBytes` and `data` are derived from the same bytes, so they can
+        # never disagree — and the payload round-trips exactly.
+        self.assertEqual(frame["sizeBytes"], len(payload))
+        self.assertEqual(base64.b64decode(frame["data"]), payload)
+        self.assertEqual(len(frame["caption"]), protocol.MAX_MEDIA_CAPTION_CHARS)
+        self.assertEqual(frame["createdAt"], "2026-07-27T00:00:00Z")
+
+    def test_media_deliver_omits_optional_fields_rather_than_sending_empty(self):
+        frame = protocol.media_deliver(
+            delivery_id_value="media-2",
+            thread_id="home-thread",
+            kind="message",
+            label="Hermes",
+            name="brief.pdf",
+            mime_type="application/pdf",
+            data=b"%PDF",
+        )
+        self.assertNotIn("turnId", frame)
+        self.assertNotIn("caption", frame)
+
+    def test_media_deliver_degrades_provenance_but_never_the_payload_shape(self):
+        frame = protocol.media_deliver(
+            delivery_id_value="media-3",
+            thread_id="home-thread",
+            kind="not-a-kind",
+            label="   ",
+            name="   ",
+            mime_type="",
+            data=b"x",
+        )
+        # A misclassification must cost a badge, never a server rejection of a
+        # delivery the plugin has already queued.
+        self.assertEqual(frame["kind"], "other")
+        self.assertEqual(frame["label"], "Hermes")
+        self.assertEqual(frame["name"], "attachment.bin")
+        self.assertEqual(frame["mimeType"], "application/octet-stream")
+
+    def test_media_deliver_requires_a_delivery_id(self):
+        with self.assertRaisesRegex(ValueError, "deliveryId"):
+            protocol.media_deliver(
+                delivery_id_value="   ",
+                thread_id="home-thread",
+                kind="message",
+                label="Hermes",
+                name="a.bin",
+                mime_type="application/octet-stream",
+                data=b"x",
+            )
+
+    def test_media_deliver_rejects_an_empty_or_oversized_payload(self):
+        # Truncation would corrupt the file, so unlike text these fail loudly
+        # instead of being clamped — and never reach the durable queue.
+        for data, pattern in (
+            (b"", "non-empty"),
+            (b"x" * (protocol.MAX_MEDIA_BYTES + 1), "ceiling"),
+        ):
+            with self.subTest(size=len(data)):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    protocol.media_deliver(
+                        delivery_id_value="media-4",
+                        thread_id="home-thread",
+                        kind="message",
+                        label="Hermes",
+                        name="big.bin",
+                        mime_type="application/octet-stream",
+                        data=data,
+                    )
+
+    def test_media_deliver_ack_is_an_accepted_server_command(self):
+        message = {"type": "media.deliver.ack", "protocolVersion": 4}
+        self.assertEqual(protocol.validate_server_frame(message), message)
+
+    # ── inbound turn attachments ───────────────────────────────────────
+
+    def test_turn_attachments_decode_base64_to_bytes(self):
+        import base64
+
+        message = {
+            "type": "turn.start",
+            "attachments": [
+                {
+                    "name": "notes.txt",
+                    "mimeType": "text/plain",
+                    "sizeBytes": 5,
+                    "data": base64.b64encode(b"hello").decode("ascii"),
+                },
+                {"name": "blob", "data": base64.b64encode(b"\x00\x01").decode()},
+            ],
+        }
+        decoded = protocol.turn_attachments(message)
+        self.assertEqual(
+            decoded,
+            [
+                {"name": "notes.txt", "mimeType": "text/plain", "data": b"hello"},
+                # A missing MIME degrades to octet-stream, never empty.
+                {
+                    "name": "blob",
+                    "mimeType": "application/octet-stream",
+                    "data": b"\x00\x01",
+                },
+            ],
+        )
+
+    def test_a_frame_without_attachments_decodes_to_an_empty_list(self):
+        self.assertEqual(protocol.turn_attachments({"type": "turn.start"}), [])
+
+    def test_malformed_turn_attachments_raise_rather_than_dropping_files(self):
+        # T3 validates against its schema before sending, so a bad entry here
+        # is version drift; silently losing a user's file is worse than a
+        # correlated protocol.error they can see.
+        for attachments in (
+            "not-a-list",
+            [{"mimeType": "text/plain", "data": "aGk="}],  # no name
+            [{"name": "x.txt"}],  # no data
+            [{"name": "x.txt", "data": "!!! not base64 !!!"}],
+            [{"name": "x.txt", "data": ""}],
+        ):
+            with self.subTest(attachments=attachments):
+                with self.assertRaises(ValueError):
+                    protocol.turn_attachments({"attachments": attachments})
+
+    def test_an_oversized_turn_attachment_is_rejected(self):
+        import base64
+
+        oversized = base64.b64encode(
+            b"x" * (protocol.MAX_MEDIA_BYTES + 1)
+        ).decode("ascii")
+        with self.assertRaisesRegex(ValueError, "ceiling"):
+            protocol.turn_attachments(
+                {"attachments": [{"name": "huge.bin", "data": oversized}]}
+            )
 
 
 if __name__ == "__main__":

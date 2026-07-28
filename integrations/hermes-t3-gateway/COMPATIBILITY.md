@@ -66,11 +66,14 @@ Home-channel surfaces, added for protocol v3:
 | `HERMES_SESSION_USER_ID` binding           | `gateway/run.py:17372`             |
 | Session-context lifetime around a turn     | `gateway/run.py:12972` → `:14626`  |
 
-This inventory describes gateway wire protocol v3. Protocol v2 added active-turn
+This inventory describes gateway wire protocol v4. Protocol v2 added active-turn
 recovery in `session.ready` and authoritative `content.snapshot` replacement; v3
-adds `role` on `connection.hello`, `homeThreadId` on `connection.accepted`, and
-the `home.deliver` / `home.deliver.ack` pair. Older server/plugin pairs are
-rejected during the handshake — the version policy stays fail-closed.
+added `role` on `connection.hello`, `homeThreadId` on `connection.accepted`, and
+the `home.deliver` / `home.deliver.ack` pair; v4 adds media — optional inline
+`attachments` on `turn.start` / `turn.steer`, the `media.deliver` /
+`media.deliver.ack` pair, and the `attachments` capability flipping to the
+literal `true`. Older server/plugin pairs are rejected during the handshake —
+the version policy stays fail-closed.
 
 ## Mapped in the initial scope
 
@@ -228,12 +231,21 @@ rejected during the handshake — the version policy stays fail-closed.
   `skillName` cannot be answered, because the response echoes the name back
   and the wire type is non-empty. That takes the ordinary correlated
   `protocol.error` path.
-- Attachments are not accepted. They are the first planned post-stability
-  feature; the capability is reserved and fixed to `false` in protocol v3. The
-  `standalone_sender_fn` signature accepts `media_files` / `force_document` for
-  parity with `gateway/platform_registry.py:150-158`, but the v3 wire contract
-  has no attachment framing, so both are ignored (logged, not silently
-  dropped).
+- Attachments are part of protocol v4; the capability is fixed to `true`
+  (T3's schema pins the literal, so a plugin that cannot handle them is a v3
+  plugin and is rejected at the version gate). Inbound, `turn.start` /
+  `turn.steer` may carry inline base64 files (≤25MB each): turn-start files
+  are written to private temp files and ride `MessageEvent.media_urls` /
+  `media_types` into Hermes' own enrichment pipeline; steer files are
+  appended to the injected `/steer` text as path notes, because Hermes'
+  steer handler injects only text between tool iterations
+  (`gateway/run.py:11254`). Outbound, the adapter overrides
+  `send_image_file` / `send_video` / `send_voice` / `send_document` to emit
+  `media.deliver` frames (raw bytes ≤25MB, base64 on the wire) with the same
+  durable queue-then-ack lifecycle as `home.deliver`; the
+  `standalone_sender_fn` sends `media_files` the same way, and
+  `force_document` remains signature parity only — T3 derives rendering from
+  `mimeType`, so there is no document/photo distinction to force.
 - **Kind/label classification is heuristic.** `adapter.send()` carries no
   structured "this is a cron delivery" marker on every path, so the plugin
   reads what does exist (see "Home-channel delivery" below). A

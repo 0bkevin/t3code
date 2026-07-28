@@ -4,7 +4,7 @@ Experimental Hermes platform plugin for connecting one already-running Hermes
 process to T3 Code. The plugin makes an outbound WebSocket connection; Hermes
 does not need to listen on a public port.
 
-The gateway wire protocol is v3. The T3 server and Hermes plugin must be updated
+The gateway wire protocol is v4. The T3 server and Hermes plugin must be updated
 together; mismatched versions fail the connection handshake closed.
 
 Each T3 thread maps deterministically to one Hermes gateway session. A new T3

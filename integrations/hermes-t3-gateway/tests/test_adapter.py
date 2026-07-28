@@ -44,6 +44,10 @@ class MessageEvent:
     source: object
     message_id: str
     metadata: dict
+    # Media attachments, defaulted exactly like upstream
+    # (`gateway/platforms/base.py:1801`): local file paths plus aligned MIMEs.
+    media_urls: list = dataclasses.field(default_factory=list)
+    media_types: list = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -219,7 +223,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": f"ensure-{thread_id}",
                 "threadId": thread_id,
             }
@@ -228,7 +232,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": f"start-{thread_id}",
                 "threadId": thread_id,
                 "sessionId": session_id,
@@ -242,7 +246,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "ensure-1",
                 "threadId": "thread-1",
             }
@@ -255,7 +259,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "start-1",
                 "threadId": "thread-1",
                 "sessionId": ready["sessionId"],
@@ -835,7 +839,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "ensure-reconnect",
                 "threadId": "thread-reconnect",
                 "resumeSessionId": session_id,
@@ -851,7 +855,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "ensure-2",
                 "threadId": "thread-2",
             }
@@ -860,7 +864,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "start-2",
                 "threadId": "thread-2",
                 "sessionId": session_id,
@@ -879,7 +883,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "steer-2",
                 "threadId": "thread-2",
                 "sessionId": session_id,
@@ -951,7 +955,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "steer-race",
                 "threadId": "thread-steer-race",
                 "sessionId": session_id,
@@ -1000,7 +1004,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "steer-edit",
                 "threadId": "thread-steer-edit",
                 "sessionId": session_id,
@@ -1019,7 +1023,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "ensure-rejected-steer",
                 "threadId": "thread-rejected-steer",
             }
@@ -1028,7 +1032,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "start-rejected-steer",
                 "threadId": "thread-rejected-steer",
                 "sessionId": session_id,
@@ -1045,7 +1049,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "steer-rejected",
                 "threadId": "thread-rejected-steer",
                 "sessionId": session_id,
@@ -1092,7 +1096,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "ensure-failed-steer",
                 "threadId": "thread-failed-steer",
             }
@@ -1101,7 +1105,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "start-failed-steer",
                 "threadId": "thread-failed-steer",
                 "sessionId": session_id,
@@ -1118,7 +1122,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.steer",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "steer-failed",
                 "threadId": "thread-failed-steer",
                 "sessionId": session_id,
@@ -1206,7 +1210,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "ensure-3",
                 "threadId": "thread-3",
             }
@@ -1216,7 +1220,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.stop",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "stop-3",
                 "threadId": "thread-3",
                 "sessionId": session_id,
@@ -1237,7 +1241,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "describe.request",
-                    "protocolVersion": 3,
+                    "protocolVersion": 4,
                     "requestId": "describe-1",
                 }
             )
@@ -1246,7 +1250,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply["type"], "describe.response")
         # Correlation, exactly like ping -> pong.
         self.assertEqual(reply["requestId"], "describe-1")
-        self.assertEqual(reply["protocolVersion"], 3)
+        self.assertEqual(reply["protocolVersion"], 4)
         self.assertEqual(reply["hermesVersion"], "0.19.0")
         self.assertIsInstance(reply["skills"], list)
         self.assertIn("capabilities", reply)
@@ -1260,7 +1264,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "describe.request",
-                    "protocolVersion": 3,
+                    "protocolVersion": 4,
                     "requestId": "describe-degraded",
                 }
             )
@@ -1277,7 +1281,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "skill.body.request",
-                    "protocolVersion": 3,
+                    "protocolVersion": 4,
                     "requestId": "body-degraded",
                     "skillName": "codex",
                 }
@@ -1295,7 +1299,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_server_frame(
                 {
                     "type": "skill.body.request",
-                    "protocolVersion": 3,
+                    "protocolVersion": 4,
                     "requestId": "body-1",
                     "skillName": "codex",
                 }
@@ -1312,7 +1316,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "skill.body.request",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "body-2",
                 "skillName": "does-not-exist",
             }
@@ -1332,7 +1336,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "skill.body.request",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "body-3",
             }
         )
@@ -1346,12 +1350,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         for message in (
             {
                 "type": "describe.request",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "describe-no-error",
             },
             {
                 "type": "skill.body.request",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "body-no-error",
                 "skillName": "codex",
             },
@@ -1631,7 +1635,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "session.ensure",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": f"ensure-{thread_id}",
                 "threadId": thread_id,
             }
@@ -1640,7 +1644,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "turn.start",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": f"start-{thread_id}",
                 "threadId": thread_id,
                 "sessionId": session_id,
@@ -1662,7 +1666,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         frames = self.connection.messages[frames_before:]
         self.assertEqual([frame["type"] for frame in frames], ["home.deliver"])
         delivery = frames[0]
-        self.assertEqual(delivery["protocolVersion"], 3)
+        self.assertEqual(delivery["protocolVersion"], 4)
         self.assertEqual(delivery["threadId"], self.HOME)
         self.assertEqual(delivery["kind"], "cron")
         self.assertEqual(delivery["label"], "Cron: nightly")
@@ -1811,7 +1815,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "home.deliver.ack",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "deliveryId": delivery_id,
             }
         )
@@ -1841,7 +1845,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_connection_accepted(
             {
                 "type": "connection.accepted",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "hello-1",
                 "instanceId": "instance",
                 "nickname": "Hermes",
@@ -1859,7 +1863,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_server_frame(
             {
                 "type": "home.deliver.ack",
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "deliveryId": offline.message_id,
             }
         )
@@ -1896,7 +1900,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_connection_accepted(
                 {
                     "type": "connection.accepted",
-                    "protocolVersion": 3,
+                    "protocolVersion": 4,
                     "requestId": "hello-1",
                     "instanceId": "instance",
                     "nickname": "Hermes",
@@ -1913,7 +1917,7 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter._handle_connection_accepted(
                 {
                     "type": "connection.accepted",
-                    "protocolVersion": 3,
+                    "protocolVersion": 4,
                     "requestId": "hello-1",
                     "instanceId": "instance",
                     "nickname": "Hermes",
@@ -1924,11 +1928,454 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_nameless_ack_is_a_correlated_protocol_error(self):
         await self.adapter._handle_server_frame(
-            {"type": "home.deliver.ack", "protocolVersion": 3, "requestId": "ack-1"}
+            {"type": "home.deliver.ack", "protocolVersion": 4, "requestId": "ack-1"}
         )
         reply = self.connection.messages[-1]
         self.assertEqual(reply["type"], "protocol.error")
         self.assertEqual(reply["code"], "unsupported-message")
+
+
+class InboundAttachmentTests(unittest.IsolatedAsyncioTestCase):
+    """v4 turn attachments: base64 on the frame → temp files → media_urls."""
+
+    async def asyncSetUp(self):
+        self.adapter = adapter_module.T3PlatformAdapter(
+            PlatformConfig(
+                extra={
+                    "url": "wss://t3.example/api/hermes-gateway/ws",
+                    "instance_id": "instance",
+                    "credential": "credential",
+                }
+            )
+        )
+        self.connection = FakeConnection()
+        self.adapter._connection = self.connection
+
+    async def _ensure(self, thread_id: str) -> str:
+        await self.adapter._handle_server_frame(
+            {
+                "type": "session.ensure",
+                "protocolVersion": 4,
+                "requestId": f"ensure-{thread_id}",
+                "threadId": thread_id,
+            }
+        )
+        return self.adapter._sessions[thread_id]
+
+    async def test_turn_attachments_land_as_local_files_on_the_message_event(self):
+        import base64
+
+        session_id = await self._ensure("thread-attach")
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 4,
+                "requestId": "start-attach",
+                "threadId": "thread-attach",
+                "sessionId": session_id,
+                "turnId": "turn-attach",
+                "text": "Describe this image",
+                "attachments": [
+                    {
+                        "name": "photo.png",
+                        "mimeType": "image/png",
+                        "sizeBytes": 9,
+                        "data": base64.b64encode(b"PNG bytes").decode("ascii"),
+                    },
+                    {
+                        "name": "notes.txt",
+                        "mimeType": "text/plain",
+                        "sizeBytes": 5,
+                        "data": base64.b64encode(b"hello").decode("ascii"),
+                    },
+                ],
+            }
+        )
+
+        event = self.adapter.messages[-1]
+        self.assertEqual(event.text, "Describe this image")
+        # Aligned pairs, exactly the shape Hermes' enrichment pipeline reads.
+        self.assertEqual(event.media_types, ["image/png", "text/plain"])
+        self.assertEqual(len(event.media_urls), 2)
+        for path, payload in zip(event.media_urls, [b"PNG bytes", b"hello"]):
+            self.addCleanup(
+                lambda p=path: pathlib.Path(p).unlink(missing_ok=True)
+            )
+            self.assertEqual(pathlib.Path(path).read_bytes(), payload)
+            # Secure perms: owner-only file in an owner-only directory.
+            self.assertEqual(pathlib.Path(path).stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                pathlib.Path(path).parent.stat().st_mode & 0o777, 0o700
+            )
+        # The extension survives — Hermes routes files by suffix in several
+        # places (audio-vs-document, the text-document allowlist).
+        self.assertTrue(event.media_urls[0].endswith(".png"))
+        self.assertTrue(event.media_urls[1].endswith(".txt"))
+
+    async def test_a_hostile_attachment_name_cannot_escape_the_temp_directory(self):
+        import base64
+
+        session_id = await self._ensure("thread-hostile")
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 4,
+                "requestId": "start-hostile",
+                "threadId": "thread-hostile",
+                "sessionId": session_id,
+                "turnId": "turn-hostile",
+                "text": "Look at this",
+                "attachments": [
+                    {
+                        "name": "../../etc/passwd",
+                        "mimeType": "text/plain",
+                        "sizeBytes": 4,
+                        "data": base64.b64encode(b"evil").decode("ascii"),
+                    }
+                ],
+            }
+        )
+        event = self.adapter.messages[-1]
+        path = pathlib.Path(event.media_urls[0])
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        self.assertTrue(
+            path.parent.name.startswith("hermes-t3-attachments-"),
+            path,
+        )
+        self.assertNotIn("..", path.name)
+
+    async def test_a_turn_without_attachments_carries_no_media(self):
+        session_id = await self._ensure("thread-plain")
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 4,
+                "requestId": "start-plain",
+                "threadId": "thread-plain",
+                "sessionId": session_id,
+                "turnId": "turn-plain",
+                "text": "Just text",
+            }
+        )
+        event = self.adapter.messages[-1]
+        self.assertEqual(event.media_urls, [])
+        self.assertEqual(event.media_types, [])
+
+    async def test_a_malformed_attachment_errors_before_any_turn_starts(self):
+        session_id = await self._ensure("thread-bad-attach")
+        frames_before = len(self.connection.messages)
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 4,
+                "requestId": "start-bad",
+                "threadId": "thread-bad-attach",
+                "sessionId": session_id,
+                "turnId": "turn-bad",
+                "text": "With a broken file",
+                "attachments": [{"name": "x.bin", "data": "!!! not base64 !!!"}],
+            }
+        )
+        frames = self.connection.messages[frames_before:]
+        self.assertEqual([frame["type"] for frame in frames], ["protocol.error"])
+        self.assertEqual(frames[0]["requestId"], "start-bad")
+        # No half-started turn to clean up, and nothing reached Hermes.
+        self.assertNotIn("thread-bad-attach", self.adapter._active_turns)
+        self.assertEqual(
+            [event.text for event in self.adapter.messages
+             if getattr(event, "message_id", "") == "start-bad"],
+            [],
+        )
+
+    async def test_steer_attachments_ride_the_injected_text_as_path_notes(self):
+        import base64
+
+        session_id = await self._ensure("thread-steer-attach")
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 4,
+                "requestId": "start-steer-attach",
+                "threadId": "thread-steer-attach",
+                "sessionId": session_id,
+                "turnId": "turn-steer-attach",
+                "text": "Start",
+            }
+        )
+
+        async def accept_steer(_event):
+            return "⏩ Steer queued — arrives after the next tool call"
+
+        self.adapter._message_handler = accept_steer
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.steer",
+                "protocolVersion": 4,
+                "requestId": "steer-attach",
+                "threadId": "thread-steer-attach",
+                "sessionId": session_id,
+                "turnId": "turn-steer-attach",
+                "text": "Use this file",
+                "attachments": [
+                    {
+                        "name": "data.csv",
+                        "mimeType": "text/csv",
+                        "sizeBytes": 3,
+                        "data": base64.b64encode(b"a,b").decode("ascii"),
+                    }
+                ],
+            }
+        )
+        steer_event = self.adapter.messages[-1]
+        # Hermes' /steer handler injects only text between tool iterations
+        # (`gateway/run.py:11254`), so the file rides the command as a path
+        # note the mid-turn agent can open with its tools.
+        self.assertTrue(steer_event.text.startswith("/steer Use this file\n"))
+        self.assertIn("[The user attached a file (text/csv): ", steer_event.text)
+        path = steer_event.text.rsplit(": ", 1)[1].rstrip("]")
+        self.addCleanup(lambda: pathlib.Path(path).unlink(missing_ok=True))
+        self.assertEqual(pathlib.Path(path).read_bytes(), b"a,b")
+
+
+class MediaDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    """Outbound `media.deliver`: turn scoping plus the durable ack lifecycle."""
+
+    HOME = "home-thread"
+
+    async def asyncSetUp(self):
+        self.adapter = adapter_module.T3PlatformAdapter(
+            PlatformConfig(
+                extra={
+                    "url": "wss://t3.example/api/hermes-gateway/ws",
+                    "instance_id": "instance",
+                    "credential": "credential",
+                }
+            )
+        )
+        self.connection = FakeConnection()
+        self.adapter._connection = self.connection
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        queue_file = pathlib.Path(self._tmp.name) / "gateway" / "queue.jsonl"
+        self.queue = home_module.HomeDeliveryQueue(path=queue_file)
+        self.adapter._home_queue = self.queue
+
+        self.chart = pathlib.Path(self._tmp.name) / "chart.png"
+        self.chart.write_bytes(b"\x89PNG fake bytes")
+
+        environment = unittest.mock.patch.dict(
+            adapter_module.os.environ,
+            {home_module.HOME_CHANNEL_ENV: self.HOME},
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+
+        for name in ("_gateway_session_key", "_session_user_id"):
+            patch = unittest.mock.patch.object(
+                adapter_module.T3PlatformAdapter, name, staticmethod(lambda: "")
+            )
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    async def _start_turn(self, thread_id: str, turn_id: str) -> str:
+        await self.adapter._handle_server_frame(
+            {
+                "type": "session.ensure",
+                "protocolVersion": 4,
+                "requestId": f"ensure-{thread_id}",
+                "threadId": thread_id,
+            }
+        )
+        session_id = self.adapter._sessions[thread_id]
+        await self.adapter._handle_server_frame(
+            {
+                "type": "turn.start",
+                "protocolVersion": 4,
+                "requestId": f"start-{thread_id}",
+                "threadId": thread_id,
+                "sessionId": session_id,
+                "turnId": turn_id,
+                "text": "Start",
+            }
+        )
+        return session_id
+
+    async def test_turn_media_is_delivered_turn_scoped(self):
+        await self._start_turn("thread-media", "turn-media")
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send_image_file(
+            "thread-media", str(self.chart), caption="A chart"
+        )
+
+        frames = self.connection.messages[frames_before:]
+        self.assertEqual([frame["type"] for frame in frames], ["media.deliver"])
+        delivery = frames[0]
+        self.assertEqual(delivery["protocolVersion"], 4)
+        self.assertEqual(delivery["threadId"], "thread-media")
+        self.assertEqual(delivery["turnId"], "turn-media")
+        self.assertEqual(delivery["name"], "chart.png")
+        self.assertEqual(delivery["mimeType"], "image/png")
+        self.assertEqual(delivery["caption"], "A chart")
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, delivery["deliveryId"])
+        # Media never touches the turn machinery: the turn is still live and
+        # no turn/item frame was emitted for the file.
+        self.assertIn("thread-media", self.adapter._active_turns)
+
+    async def test_reply_media_arriving_just_after_completion_keeps_its_turn(self):
+        """The base adapter sends a reply's text BEFORE its media files
+        (`gateway/platforms/base.py:5326` then `:5383+`), and the notify-marked
+        text completes the T3 turn — so a reply's chart routinely arrives
+        moments after its turn closed and must still land turn-scoped."""
+        session_id = await self._start_turn("thread-late-media", "turn-late")
+        with unittest.mock.patch.object(
+            adapter_module.T3PlatformAdapter,
+            "_gateway_session_key",
+            staticmethod(lambda: session_id),
+        ):
+            await self.adapter.send(
+                "thread-late-media", "Here is the chart", metadata={"notify": True}
+            )
+            self.assertNotIn("thread-late-media", self.adapter._active_turns)
+            frames_before = len(self.connection.messages)
+
+            result = await self.adapter.send_image_file(
+                "thread-late-media", str(self.chart)
+            )
+
+        self.assertTrue(result.success)
+        delivery = self.connection.messages[frames_before:][0]
+        self.assertEqual(delivery["type"], "media.deliver")
+        self.assertEqual(delivery["turnId"], "turn-late")
+
+    async def test_proactive_media_to_home_is_turnless_with_provenance(self):
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send_document(
+            self.HOME,
+            str(self.chart),
+            caption=(
+                "Cronjob Response: nightly\n(job_id: nightly)\n"
+                "-------------\n\nDone."
+            ),
+        )
+
+        frames = self.connection.messages[frames_before:]
+        self.assertEqual([frame["type"] for frame in frames], ["media.deliver"])
+        delivery = frames[0]
+        self.assertNotIn("turnId", delivery)
+        self.assertEqual(delivery["kind"], "cron")
+        self.assertEqual(delivery["label"], "Cron: nightly")
+        self.assertTrue(result.success)
+        self.assertEqual(self.adapter._active_turns, {})
+
+    async def test_media_to_a_non_home_thread_without_a_turn_errors(self):
+        """"Send media to any thread unprompted" stays out of scope."""
+        result = await self.adapter.send_document(
+            "some-other-thread", str(self.chart)
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "no active T3 turn")
+        self.assertEqual(self.connection.messages, [])
+        self.assertEqual(self.queue.entries(), [])
+
+    async def test_media_is_queued_before_it_is_sent_and_purged_only_on_ack(self):
+        result = await self.adapter.send_video(self.HOME, str(self.chart))
+        delivery_id = result.message_id
+        self.assertEqual(
+            [entry["deliveryId"] for entry in self.queue.entries()], [delivery_id]
+        )
+
+        # A home.deliver.ack for some OTHER delivery purges nothing.
+        await self.adapter._handle_server_frame(
+            {
+                "type": "media.deliver.ack",
+                "protocolVersion": 4,
+                "deliveryId": "unrelated",
+            }
+        )
+        self.assertEqual(len(self.queue.entries()), 1)
+
+        await self.adapter._handle_server_frame(
+            {
+                "type": "media.deliver.ack",
+                "protocolVersion": 4,
+                "deliveryId": delivery_id,
+            }
+        )
+        self.assertEqual(self.queue.entries(), [])
+
+    async def test_queued_media_survives_a_dead_socket_and_flushes_on_reconnect(self):
+        class DeadConnection:
+            connected = False
+
+            async def send(self, message):
+                raise ConnectionError("T3 Code gateway is offline")
+
+        self.adapter._connection = DeadConnection()
+        with self.assertLogs(adapter_module.logger, level="WARNING"):
+            offline = await self.adapter.send_document(self.HOME, str(self.chart))
+        # Reported successful: durably queued, WILL arrive.
+        self.assertTrue(offline.success)
+        self.assertEqual(len(self.queue.entries()), 1)
+
+        self.adapter._connection = self.connection
+        await self.adapter._handle_connection_accepted(
+            {
+                "type": "connection.accepted",
+                "protocolVersion": 4,
+                "requestId": "hello-1",
+                "instanceId": "instance",
+                "nickname": "Hermes",
+                "homeThreadId": self.HOME,
+            }
+        )
+        flushed = self.connection.messages
+        self.assertEqual([frame["type"] for frame in flushed], ["media.deliver"])
+        self.assertEqual(flushed[0]["deliveryId"], offline.message_id)
+        self.assertEqual(flushed[0]["name"], "chart.png")
+        # Still queued — only the ack purges it.
+        self.assertEqual(len(self.queue.entries()), 1)
+
+        await self.adapter._handle_server_frame(
+            {
+                "type": "media.deliver.ack",
+                "protocolVersion": 4,
+                "deliveryId": offline.message_id,
+            }
+        )
+        self.assertEqual(self.queue.entries(), [])
+
+    async def test_an_unreadable_file_fails_the_send_and_queues_nothing(self):
+        """A frame T3 would reject forever must never enter the outbox."""
+        await self._start_turn("thread-bad-file", "turn-bad-file")
+        with self.assertLogs(adapter_module.logger, level="WARNING"):
+            result = await self.adapter.send_image_file(
+                "thread-bad-file", str(pathlib.Path(self._tmp.name) / "gone.png")
+            )
+        self.assertFalse(result.success)
+        self.assertEqual(self.queue.entries(), [])
+        self.assertNotIn(
+            "media.deliver",
+            [frame["type"] for frame in self.connection.messages],
+        )
+
+    async def test_audio_rides_the_same_media_frame_instead_of_the_fallback(self):
+        """T3 renders audio as a download card — still strictly better than
+        the base class's "couldn't deliver the audio attachment" notice."""
+        audio = pathlib.Path(self._tmp.name) / "reply.mp3"
+        audio.write_bytes(b"ID3 fake audio")
+        await self._start_turn("thread-audio", "turn-audio")
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send_voice("thread-audio", str(audio))
+
+        self.assertTrue(result.success)
+        delivery = self.connection.messages[frames_before:][0]
+        self.assertEqual(delivery["type"], "media.deliver")
+        self.assertEqual(delivery["mimeType"], "audio/mpeg")
 
 
 class EnvEnablementTests(unittest.TestCase):

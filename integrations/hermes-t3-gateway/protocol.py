@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-PROTOCOL_VERSION = 3
-PLUGIN_VERSION = "0.3.0"
+PROTOCOL_VERSION = 4
+PLUGIN_VERSION = "0.4.0"
 WEBSOCKET_PATH = "/api/hermes-gateway/ws"
 
 # What a connecting socket intends to be. `gateway` is the instance's one live
@@ -24,9 +26,10 @@ CAPABILITIES = {
     "activity": True,
     "approvals": True,
     "userInput": True,
-    # First post-stability feature: advertise false until binary/media framing
-    # and bounded attachment transfer are implemented end to end.
-    "attachments": False,
+    # Part of the v4 contract itself, not a negotiated option: the T3 schema
+    # pins `attachments` to the literal `true`, so a plugin that cannot handle
+    # them is a v3 plugin and is rejected at the version gate.
+    "attachments": True,
 }
 
 SERVER_COMMANDS = frozenset(
@@ -42,6 +45,7 @@ SERVER_COMMANDS = frozenset(
         "describe.request",
         "skill.body.request",
         "home.deliver.ack",
+        "media.deliver.ack",
     }
 )
 
@@ -60,6 +64,21 @@ MAX_HOME_DELIVERY_TEXT_CHARS = 120_000
 # human-authored documentation, not data: 512 KiB is far past any real
 # SKILL.md while still bounding a pathological file from stalling the socket.
 MAX_SKILL_BODY_CHARS = 512_000
+
+# Raw-byte ceiling for a single `media.deliver` frame, and for each attachment
+# riding an inbound turn frame. Mirrors `HERMES_MEDIA_MAX_BYTES` in the T3
+# contract: 25MB of raw bytes is ~34MB of base64, and the schema bound there is
+# on the encoded string so an oversized frame fails at decode. Deliberately no
+# chunking — a file that does not fit does not send, with a clear error.
+MAX_MEDIA_BYTES = 25 * 1024 * 1024
+
+# Wire bounds from the T3 contract (`HermesGatewayMediaDeliver`): `name` is a
+# trimmed non-empty string of at most 255 chars, `mimeType` at most 100, and
+# `caption` at most 2000. Enforced here for the same reason as the
+# `home.deliver` bounds: a queued frame must already be wire-valid on disk.
+MAX_MEDIA_NAME_CHARS = 255
+MAX_MEDIA_MIME_CHARS = 100
+MAX_MEDIA_CAPTION_CHARS = 2_000
 
 
 def request_id() -> str:
@@ -362,6 +381,136 @@ def home_deliver(
         text=normalized_text,
         createdAt=created_at or iso_now(),
     )
+
+
+def media_deliver(
+    *,
+    delivery_id_value: str,
+    thread_id: str,
+    kind: str,
+    label: str,
+    name: str,
+    mime_type: str,
+    data: bytes,
+    turn_id: str | None = None,
+    caption: str | None = None,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a `media.deliver` frame with every wire bound already applied.
+
+    Mirrors `home_deliver`: normalizing here rather than at the call sites
+    means a queued delivery is already wire-valid on disk, so a flush after a
+    plugin upgrade cannot resurrect a payload the server will reject — the
+    plugin would purge it only on an ack that never comes.
+
+    The clamp-vs-reject split follows what each field can survive. Provenance
+    (`kind`, `label`) and presentation (`caption`) degrade exactly like
+    `home_deliver`'s — a wrong badge or a shortened caption is the documented
+    worst case. The payload itself cannot degrade: truncated bytes are a
+    corrupt file, so an empty payload, a payload over `MAX_MEDIA_BYTES`, or a
+    missing `deliveryId` raises `ValueError` instead — better a loud send-time
+    failure than a poisoned queue entry T3 rejects forever.
+
+    `data` is raw bytes; base64 encoding happens here so no call site can get
+    the wire encoding wrong, and `sizeBytes` is derived from the same bytes so
+    the two can never disagree.
+    """
+    if not str(delivery_id_value or "").strip():
+        raise ValueError("media.deliver requires a deliveryId")
+    if not isinstance(data, (bytes, bytearray)):
+        raise TypeError("media.deliver data must be bytes")
+    if len(data) == 0:
+        raise ValueError("media.deliver requires a non-empty payload")
+    if len(data) > MAX_MEDIA_BYTES:
+        raise ValueError(
+            f"media.deliver payload is {len(data)} bytes; "
+            f"the wire ceiling is {MAX_MEDIA_BYTES} bytes (25MB)"
+        )
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind not in HOME_DELIVERY_KINDS:
+        normalized_kind = "other"
+    normalized_label = str(label or "").strip()[:MAX_HOME_DELIVERY_LABEL_CHARS].strip()
+    if not normalized_label:
+        normalized_label = "Hermes"
+    normalized_name = str(name or "").strip()[:MAX_MEDIA_NAME_CHARS].strip()
+    if not normalized_name:
+        normalized_name = "attachment.bin"
+    normalized_mime = str(mime_type or "").strip()[:MAX_MEDIA_MIME_CHARS].strip()
+    if not normalized_mime:
+        normalized_mime = "application/octet-stream"
+    payload: dict[str, Any] = {
+        "deliveryId": delivery_id_value,
+        "threadId": str(thread_id),
+        "kind": normalized_kind,
+        "label": normalized_label,
+        "name": normalized_name,
+        "mimeType": normalized_mime,
+        "sizeBytes": len(data),
+        "data": base64.b64encode(bytes(data)).decode("ascii"),
+        "createdAt": created_at or iso_now(),
+    }
+    # Optional on the wire: omit rather than send null/empty, matching the
+    # T3 schema's `Schema.optional` fields.
+    if turn_id:
+        payload["turnId"] = str(turn_id)
+    normalized_caption = str(caption or "")[:MAX_MEDIA_CAPTION_CHARS]
+    if normalized_caption:
+        payload["caption"] = normalized_caption
+    return frame("media.deliver", **payload)
+
+
+def turn_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Decode the optional `attachments` on a `turn.start` / `turn.steer`.
+
+    Returns `[{"name", "mimeType", "data": bytes}, ...]` with the base64
+    already decoded and each payload bounded by `MAX_MEDIA_BYTES`. The wire
+    `sizeBytes` is advisory — the decoded length is the truth, so it is what
+    callers get.
+
+    A malformed entry raises `ValueError` rather than being skipped: T3
+    validates these frames against its own schema before sending, so a bad
+    entry here means version drift, and silently dropping a file the user
+    attached is worse than a correlated `protocol.error` they can see.
+    """
+    raw = message.get("attachments")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("turn attachments must be a list")
+    attachments: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"turn attachment {index} must be an object")
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"turn attachment {index} is missing a name")
+        encoded = entry.get("data")
+        if not isinstance(encoded, str) or not encoded:
+            raise ValueError(f"turn attachment {name!r} carries no data")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(
+                f"turn attachment {name!r} is not valid base64"
+            ) from exc
+        if len(data) == 0:
+            raise ValueError(f"turn attachment {name!r} decoded to zero bytes")
+        if len(data) > MAX_MEDIA_BYTES:
+            raise ValueError(
+                f"turn attachment {name!r} is {len(data)} bytes; "
+                f"the wire ceiling is {MAX_MEDIA_BYTES} bytes (25MB)"
+            )
+        mime = str(entry.get("mimeType") or "").strip()
+        attachments.append(
+            {
+                "name": name,
+                "mimeType": mime or "application/octet-stream",
+                "data": data,
+            }
+        )
+    return attachments
+
+
 def protocol_error(
     code: str,
     message: str,

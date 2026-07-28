@@ -6,10 +6,13 @@ import asyncio
 import contextvars
 import logging
 import os
+import re
+import tempfile
 import uuid
 import weakref
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from gateway.config import Platform, PlatformConfig
@@ -28,6 +31,7 @@ from .home import (
     MAX_FLUSH_PER_CONNECT,
     HomeDeliveryQueue,
     build_delivery,
+    build_media_delivery,
     classify_delivery,
     home_thread_id,
     save_home_thread_id,
@@ -42,6 +46,7 @@ from .protocol import (
     protocol_error,
     skill_body,
     skill_body_response,
+    turn_attachments,
     validate_server_frame,
 )
 
@@ -70,6 +75,56 @@ def _hermes_version() -> str:
         return str(__version__)
     except Exception:  # noqa: BLE001 - version discovery must not block loading
         return "unknown"
+
+
+# Characters allowed to survive from a client-supplied filename into a temp
+# file name. Everything else is dropped: the name arrived over the wire and
+# must never influence the directory the file lands in.
+_ATTACHMENT_NAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _materialize_attachments(
+    attachments: list[dict[str, Any]],
+) -> tuple[list[str], list[str]]:
+    """Write inbound turn attachments to private temp files.
+
+    Returns `(paths, mime_types)` aligned by index — the exact shape
+    `MessageEvent.media_urls` / `media_types` expect.
+
+    Each turn gets its own `mkdtemp` directory (mode 0700) and each file is
+    created with `mkstemp` (mode 0600), so nothing is readable by other users
+    even mid-write. The extension is preserved from the wire `name` — after
+    sanitizing, because that name is client-supplied — since Hermes routes
+    files by suffix in several places (`should_send_media_as_audio`, the
+    text-document allowlist). The files are deliberately not deleted here:
+    Hermes reads them asynchronously during the turn (vision, STT, terminal
+    tools), there is no turn-end hook on this surface, and the OS tmp reaper
+    is the documented cleanup — the same pre-existing no-GC stance as T3's
+    attachment store.
+    """
+    if not attachments:
+        return [], []
+    directory = tempfile.mkdtemp(prefix="hermes-t3-attachments-")
+    paths: list[str] = []
+    mime_types: list[str] = []
+    for attachment in attachments:
+        wire_name = Path(str(attachment["name"])).name  # strip any path parts
+        stem = _ATTACHMENT_NAME_SAFE_RE.sub("_", Path(wire_name).stem)[:48]
+        suffix = _ATTACHMENT_NAME_SAFE_RE.sub("", Path(wire_name).suffix)[:16]
+        if suffix and not suffix.startswith("."):
+            suffix = f".{suffix}"
+        if suffix == ".":
+            suffix = ""
+        handle, path = tempfile.mkstemp(
+            prefix=f"{stem or 'attachment'}-",
+            suffix=suffix,
+            dir=directory,
+        )
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(attachment["data"])
+        paths.append(path)
+        mime_types.append(str(attachment["mimeType"]))
+    return paths, mime_types
 
 
 @dataclass
@@ -146,6 +201,14 @@ class T3PlatformAdapter(BasePlatformAdapter):
         self._active_session_threads: set[str] = set()
         self._thread_by_session: dict[str, str] = {}
         self._active_turns: dict[str, _TurnState] = {}
+        # The most recently COMPLETED turn per thread. The base adapter's
+        # delivery pipeline sends the final text (notify-marked, which
+        # completes the turn here) BEFORE it sends the reply's media files
+        # (`gateway/platforms/base.py:5326` then `:5383+`), so a turn reply's
+        # media routinely arrives moments after its turn closed. This record
+        # lets that media still be delivered turn-scoped instead of erroring
+        # with "no active T3 turn".
+        self._recent_turns: dict[str, _TurnState] = {}
         self._approval_requests: dict[str, tuple[str, str]] = {}
         self._user_input_requests: dict[str, tuple[str, str]] = {}
         self._home_queue = HomeDeliveryQueue()
@@ -424,11 +487,178 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 return
 
     async def _acknowledge_home_delivery(self, message: dict[str, Any]) -> None:
-        """Purge a delivery T3 has durably written."""
+        """Purge a delivery T3 has durably written.
+
+        Serves `home.deliver.ack` and `media.deliver.ack` alike: both frame
+        types live in the same queue keyed on `deliveryId`, so the purge does
+        not care which kind of delivery was acknowledged.
+        """
         delivery_id_value = str(message.get("deliveryId") or "").strip()
         if not delivery_id_value:
-            raise ValueError("home.deliver.ack requires a deliveryId")
+            raise ValueError("a delivery ack requires a deliveryId")
         self._home_queue.purge(delivery_id_value)
+
+    # ── outbound media ─────────────────────────────────────────────────
+
+    def _media_turn_scope(
+        self,
+        thread_id: str,
+        content: str,
+        metadata: dict[str, Any] | None,
+    ) -> _TurnState | None:
+        """Resolve the turn a media send belongs to, or None for home delivery.
+
+        Same provenance gate as `_is_proactive_delivery`, with one addition:
+        the base adapter's delivery pipeline sends a reply's final text —
+        notify-marked, which completes the turn here — BEFORE it dispatches
+        the reply's media files (`gateway/platforms/base.py:5326` then
+        `:5383+`), so turn media routinely arrives moments after its turn
+        closed. The most recently completed turn per thread is therefore an
+        accepted scope when the send still carries that turn's session key.
+        """
+        turn = self._active_turns.get(thread_id)
+        recent = self._recent_turns.get(thread_id)
+        session_key = self._gateway_session_key()
+        if turn is not None and session_key == turn.session_id:
+            return turn
+        if turn is None and recent is not None and session_key == recent.session_id:
+            return recent
+        home = home_thread_id()
+        if not home or thread_id != home:
+            # Not home: media belongs to the live turn or has nowhere to go —
+            # exactly the text path's scope rule. A stale completed turn is
+            # NOT a scope here; only the session-key-matched case above may
+            # reach back past completion.
+            return turn
+        if turn is None:
+            return None
+        _kind, _label, certain = classify_delivery(
+            content,
+            metadata,
+            session_user_id=self._session_user_id(),
+        )
+        # Conservative half of the gate, mirroring text: an unattributable
+        # media send during a live home turn stays with the turn.
+        return None if certain else turn
+
+    async def _deliver_media_file(
+        self,
+        chat_id: str,
+        path: str,
+        *,
+        caption: str | None = None,
+        name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Emit one `media.deliver`, queueing it until T3 acknowledges it.
+
+        The same durable lifecycle as `_deliver_to_home`: persist BEFORE
+        sending, report success once queued, purge only on the ack. The one
+        divergence is a payload that cannot be built at all — unreadable file,
+        empty, over the 25MB ceiling — which fails the send immediately
+        instead of queueing a frame T3 would reject on every future flush.
+        """
+        thread_id = str(chat_id)
+        content = str(caption or "")
+        turn = self._media_turn_scope(thread_id, content, metadata)
+        if turn is None:
+            home = home_thread_id()
+            if not home or thread_id != home:
+                return SendResult(success=False, error="no active T3 turn")
+        kind, label, _certain = classify_delivery(
+            content,
+            metadata,
+            session_user_id=self._session_user_id(),
+        )
+        try:
+            delivery = build_media_delivery(
+                thread_id=thread_id,
+                path=str(path),
+                kind=kind,
+                label=label,
+                turn_id=turn.turn_id if turn is not None else None,
+                caption=caption,
+                name=name,
+            )
+        except Exception as exc:  # noqa: BLE001 - adapter send must return SendResult
+            logger.warning("T3 media delivery for %s failed to build: %s", path, exc)
+            return SendResult(success=False, error=str(exc))
+        delivery_id_value = str(delivery["deliveryId"])
+        self._home_queue.append(delivery)
+        try:
+            await self._send_frame(delivery)
+        except Exception as exc:  # noqa: BLE001 - adapter send must return SendResult
+            logger.warning(
+                "T3 media delivery %s could not be sent (%s); it is queued for "
+                "the next connect",
+                delivery_id_value,
+                exc,
+            )
+        return SendResult(success=True, message_id=delivery_id_value)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        del reply_to, kwargs
+        return await self._deliver_media_file(
+            chat_id, image_path, caption=caption, metadata=metadata
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        del reply_to, kwargs
+        return await self._deliver_media_file(
+            chat_id, video_path, caption=caption, metadata=metadata
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        # T3 renders audio as a download card (no native player in v1), which
+        # is still strictly better than the base fallback's "couldn't deliver
+        # the audio attachment" notice.
+        del reply_to, kwargs
+        return await self._deliver_media_file(
+            chat_id, audio_path, caption=caption, metadata=metadata
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+        file_name: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        del reply_to, kwargs
+        return await self._deliver_media_file(
+            chat_id,
+            file_path,
+            caption=caption,
+            name=file_name,
+            metadata=metadata,
+        )
 
     @staticmethod
     def _session_user_id() -> str:
@@ -588,7 +818,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 await self._describe(message)
             elif frame_type == "skill.body.request":
                 await self._send_skill_body(message)
-            elif frame_type == "home.deliver.ack":
+            elif frame_type in {"home.deliver.ack", "media.deliver.ack"}:
                 await self._acknowledge_home_delivery(message)
         except ValueError as exc:
             await self._send_frame(
@@ -698,6 +928,20 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 )
             )
             return
+        # Decode and materialize attachments BEFORE any turn state exists: a
+        # malformed attachment raises ValueError into the correlated
+        # `protocol.error` path with no half-started turn to clean up.
+        #
+        # Surfacing choice: the temp file paths ride the MessageEvent's own
+        # `media_urls` / `media_types` fields — Hermes' structured channel for
+        # exactly this (`gateway/platforms/base.py:1800`). The gateway's
+        # enrichment pipeline then does everything a bundled platform gets:
+        # vision routing for images, STT for voice, and path-pointing context
+        # notes for documents (`gateway/run.py:12420+`). No prompt-text
+        # injection is needed on this path.
+        media_paths, media_types = _materialize_attachments(
+            turn_attachments(message)
+        )
         turn = _TurnState(
             thread_id=thread_id,
             session_id=session_id,
@@ -726,6 +970,8 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 source=self._source(thread_id, turn.request_id),
                 message_id=turn.request_id,
                 metadata={"t3_turn_id": turn.turn_id},
+                media_urls=media_paths,
+                media_types=media_types,
             )
         )
 
@@ -741,6 +987,18 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 )
             )
             return
+        # Attachments on a steer cannot ride `media_urls`: Hermes' `/steer`
+        # handler injects only the command's text between tool iterations
+        # (`gateway/run.py:11254`) and never reads the event's media fields.
+        # The paths are appended to the injected text instead — mid-turn the
+        # agent reaches files through its tools anyway, so a path note is the
+        # natural (and only) channel here.
+        steer_text = str(message["text"])
+        media_paths, media_types = _materialize_attachments(
+            turn_attachments(message)
+        )
+        for path, mime in zip(media_paths, media_types):
+            steer_text += f"\n[The user attached a file ({mime}): {path}]"
         # `/steer` is Hermes' official active-run injection surface. The base
         # adapter dispatches active slash commands inline, then sends the
         # command's textual acknowledgement back through this adapter with
@@ -755,7 +1013,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
         try:
             await self.handle_message(
                 MessageEvent(
-                    text=f"/steer {message['text']}",
+                    text=f"/steer {steer_text}",
                     message_type=MessageType.COMMAND,
                     source=self._source(turn.thread_id, control.request_id),
                     message_id=control.request_id,
@@ -1086,6 +1344,9 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 )
             )
             self._active_turns.pop(turn.thread_id, None)
+            # Remembered for media scoping: the base adapter sends a reply's
+            # media files AFTER its notify-marked text, i.e. after this point.
+            self._recent_turns[turn.thread_id] = turn
         await self._send_status()
 
     async def _emit_generic_activity(self, turn: _TurnState, detail: str) -> None:

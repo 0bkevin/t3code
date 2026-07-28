@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
 import threading
 from pathlib import Path
@@ -32,6 +33,7 @@ from .protocol import (
     delivery_id,
     home_deliver,
     iso_now,
+    media_deliver,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,7 +149,14 @@ def save_home_thread_id(thread_id: str) -> bool:
 
 
 class HomeDeliveryQueue:
-    """Append-only JSONL outbox of unacknowledged `home.deliver` frames.
+    """Append-only JSONL outbox of unacknowledged delivery frames.
+
+    Entries are stored as raw wire frames keyed on `deliveryId`, so the queue
+    carries `home.deliver` and `media.deliver` alike: flushing replays the
+    frame verbatim and T3 discriminates on `type`. A media entry is large (up
+    to ~34MB of base64 on one line), so the entry cap doubles as a coarse disk
+    bound; a genuinely wedged connection under heavy media output trades disk
+    for durability, which is the documented preference.
 
     Correctness rests on one rule: an entry is removed **only** when T3 acks
     its `deliveryId`. Everything else — a socket that dropped mid-send, a
@@ -436,6 +445,47 @@ def build_delivery(
     )
 
 
+def build_media_delivery(
+    *,
+    thread_id: str,
+    path: str,
+    kind: str = "message",
+    label: str = "Hermes",
+    turn_id: str | None = None,
+    caption: str | None = None,
+    name: str | None = None,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Mint one `media.deliver` frame from a local file, id and timestamp included.
+
+    Reads the file eagerly so the queued copy is self-contained: Hermes' media
+    files live in temp/cache directories that may be gone by the time a queued
+    delivery flushes after an outage, and a queue entry pointing at a dead path
+    would be unsendable forever. `createdAt` is stamped here for the same
+    reason as `build_delivery`.
+
+    Raises `OSError` when the file cannot be read and `ValueError` when it is
+    empty or over the 25MB wire ceiling — the caller decides whether that is a
+    logged skip (adapter) or a reported error (standalone sender).
+    """
+    file_path = Path(path)
+    data = file_path.read_bytes()
+    display_name = str(name or "").strip() or file_path.name
+    mime, _encoding = mimetypes.guess_type(display_name)
+    return media_deliver(
+        delivery_id_value=delivery_id(),
+        thread_id=thread_id,
+        kind=kind if kind in HOME_DELIVERY_KINDS else "other",
+        label=label,
+        name=display_name,
+        mime_type=mime or "application/octet-stream",
+        data=data,
+        turn_id=turn_id,
+        caption=caption,
+        created_at=created_at or iso_now(),
+    )
+
+
 # ── standalone (out-of-process) sender ────────────────────────────────────
 
 
@@ -466,17 +516,15 @@ async def standalone_send(
     disk before the socket is opened, so the job reports success-with-queued
     and the live gateway flushes it on its next `connection.accepted`.
 
-    `media_files` and `force_document` are accepted for signature parity
-    (`gateway/platform_registry.py:150-158`); the v3 wire contract carries no
-    attachment framing, so they are ignored.
+    `media_files` rides the v4 wire as one `media.deliver` frame per file
+    (upstream passes `(path, is_voice)` tuples; bare path strings are accepted
+    too). A file that cannot be read or exceeds the 25MB frame ceiling is
+    reported in `detail` and skipped — never queued, because a queued frame
+    that T3 will always reject would sit in the outbox forever. `force_document`
+    remains signature parity only: T3 derives rendering from `mimeType`, so
+    there is no document/photo distinction to force.
     """
     del force_document
-    if media_files:
-        logger.info(
-            "T3 standalone send ignoring %d media file(s): the v3 gateway "
-            "contract has no attachment framing",
-            len(media_files),
-        )
 
     extra = getattr(pconfig, "extra", None) or {}
 
@@ -506,18 +554,49 @@ async def standalone_send(
         }
 
     kind, label, _certain = classify_delivery(message, None)
-    frame = build_delivery(thread_id=target, text=message, kind=kind, label=label)
-    delivery = str(frame["deliveryId"])
+    frames: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    # The text frame is skipped only when media makes the send non-empty
+    # anyway; a bare text send keeps today's behaviour (empty text normalizes
+    # inside `home_deliver`).
+    if str(message or "").strip() or not media_files:
+        frames.append(
+            build_delivery(thread_id=target, text=message, kind=kind, label=label)
+        )
+    for entry in media_files or []:
+        media_path = entry[0] if isinstance(entry, (tuple, list)) else entry
+        try:
+            frames.append(
+                build_media_delivery(
+                    thread_id=target,
+                    path=str(media_path),
+                    kind=kind,
+                    label=label,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad file must not sink the send
+            # Never queued: a frame T3 will always reject (unreadable then,
+            # oversized forever) would otherwise sit in the outbox for good.
+            logger.warning(
+                "T3 standalone send skipping media file %s: %s", media_path, exc
+            )
+            skipped.append(f"{media_path}: {exc}")
+    if not frames:
+        return {
+            "error": "T3 standalone send: no deliverable content "
+            + "; ".join(skipped)
+        }
+    delivery = str(frames[0]["deliveryId"])
 
     queue = HomeDeliveryQueue()
-    queued = queue.append(frame)
+    queued = all(queue.append(frame) for frame in frames)
 
     try:
         acked = await _deliver_over_short_lived_socket(
             url=url,
             instance_id=instance_id,
             credential=credential,
-            frame=frame,
+            frames=frames,
         )
     except Exception as exc:  # noqa: BLE001 - cron delivery must not raise
         logger.debug("T3 standalone send raised", exc_info=True)
@@ -530,15 +609,23 @@ async def standalone_send(
             }
         return {"error": f"T3 standalone send failed: {exc}"}
 
-    if acked:
-        queue.purge(delivery)
-        return {"success": True, "message_id": delivery}
+    for acked_id in acked:
+        queue.purge(acked_id)
+    result_detail = "; ".join(f"skipped {entry}" for entry in skipped)
+    if len(acked) == len(frames):
+        result: dict[str, Any] = {"success": True, "message_id": delivery}
+        if result_detail:
+            result["detail"] = result_detail
+        return result
     if queued:
         return {
             "success": True,
             "message_id": delivery,
             "queued": True,
-            "detail": "T3 did not acknowledge the delivery; queued for retry",
+            "detail": (
+                "T3 did not acknowledge every delivery; queued for retry"
+                + (f" ({result_detail})" if result_detail else "")
+            ),
         }
     return {"error": "T3 standalone send: the delivery was neither acked nor queued"}
 
@@ -548,15 +635,22 @@ async def _deliver_over_short_lived_socket(
     url: str,
     instance_id: str,
     credential: str,
-    frame: dict[str, Any],
+    frames: list[dict[str, Any]],
     timeout: float = 20.0,
-) -> bool:
-    """Open, authenticate as `delivery`, send, await the ack, close."""
+) -> set[str]:
+    """Open, authenticate as `delivery`, send, await the acks, close.
+
+    Returns the set of `deliveryId`s T3 acknowledged (`home.deliver.ack` and
+    `media.deliver.ack` are equivalent here). A timeout returns whatever was
+    acked so far — the caller purges exactly those and leaves the rest queued.
+    """
     import asyncio
 
     from .connection import _open_socket, authenticate_socket
 
     hermes_version = _hermes_version()
+    expected = {str(frame["deliveryId"]) for frame in frames}
+    acked: set[str] = set()
     socket = await _open_socket(url)
     try:
         await authenticate_socket(
@@ -569,15 +663,16 @@ async def _deliver_over_short_lived_socket(
             hermes_version=hermes_version,
             role="delivery",
         )
-        await socket.send(
-            json.dumps(frame, separators=(",", ":"), ensure_ascii=False)
-        )
+        for frame in frames:
+            await socket.send(
+                json.dumps(frame, separators=(",", ":"), ensure_ascii=False)
+            )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while True:
+        while acked != expected:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                return False
+                return acked
             raw = await asyncio.wait_for(socket.recv(), timeout=remaining)
             try:
                 reply = json.loads(raw)
@@ -585,12 +680,13 @@ async def _deliver_over_short_lived_socket(
                 continue
             if not isinstance(reply, dict):
                 continue
-            if reply.get("type") == "home.deliver.ack" and str(
-                reply.get("deliveryId") or ""
-            ) == str(frame["deliveryId"]):
-                return True
+            if reply.get("type") in {"home.deliver.ack", "media.deliver.ack"}:
+                delivery_id_value = str(reply.get("deliveryId") or "")
+                if delivery_id_value in expected:
+                    acked.add(delivery_id_value)
             # Anything else (a liveness ping, an unrelated frame) is ignored:
-            # this socket exists only to hand over one delivery.
+            # this socket exists only to hand over these deliveries.
+        return acked
     finally:
         try:
             await socket.close()
