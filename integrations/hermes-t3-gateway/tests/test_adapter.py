@@ -1869,6 +1869,35 @@ class HomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.queue.entries(), [])
 
+    async def test_flush_restamps_stale_protocol_versions(self):
+        """A frame queued under an older plugin must not wedge the reconnect.
+
+        T3's strict-lockstep decoder closes the socket on any frame carrying a
+        different protocolVersion, so a v3-era queued delivery would otherwise
+        turn one stale outbox entry into a reconnect loop that outlives the
+        upgrade. The flush restamps to the current version; the delivery
+        fields themselves are version-stable.
+        """
+        stale = protocol_module.home_deliver(
+            thread_id=self.HOME,
+            text="Queued before the upgrade",
+            kind="cron",
+            label="Cron: nightly",
+            delivery_id_value="stale-v3-delivery",
+        )
+        stale["protocolVersion"] = 3
+        self.assertTrue(self.queue.append(stale))
+
+        await self.adapter._flush_home_queue()
+
+        flushed = self.connection.messages
+        self.assertEqual(len(flushed), 1)
+        self.assertEqual(flushed[0]["protocolVersion"], protocol_module.PROTOCOL_VERSION)
+        self.assertEqual(flushed[0]["text"], "Queued before the upgrade")
+        # The queued copy is untouched — restamping happens on the wire only,
+        # and the entry still purges by deliveryId on ack.
+        self.assertEqual(self.queue.entries()[0]["protocolVersion"], 3)
+
     async def test_the_queue_flushes_in_fifo_order(self):
         class DeadConnection:
             connected = False
@@ -2250,6 +2279,133 @@ class MediaDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery["type"], "media.deliver")
         self.assertEqual(delivery["turnId"], "turn-late")
 
+    async def test_live_repro_reply_media_lands_with_no_session_key_bound(self):
+        """The 2026-07-27 18:47:06 gateway.log repro, end to end.
+
+        An ordinary (non-home) thread asks for an image. Upstream's delivery
+        pipeline sends the reply's notify-marked TEXT — completing the T3 turn
+        through the real completion path — and 36ms later dispatches the file.
+
+        The session context is modelled as it ACTUALLY is at that moment:
+        UNAVAILABLE. `HERMES_SESSION_KEY` is bound inside
+        `_handle_message_with_agent` and cleared in its own `finally`
+        (`gateway/run.py:12972` → `:14626`), while this whole delivery block
+        runs one frame further out in
+        `BasePlatformAdapter._process_message_background`, after the handler
+        returned — and `clear_session_vars` sets `""` rather than resetting, so
+        the `os.environ` fallback is suppressed too. Every send here reads `""`.
+
+        That is why the file was dropped with "no active T3 turn": the text
+        path never consults the key when a live turn exists, but the media path
+        required it to match. The class default `_gateway_session_key` stub
+        (`lambda: ""`) is exactly this state — no per-test patch.
+        """
+        thread = "3667b0a1-c1db-4216-8e72-2f62a3ff87e2"
+        await self._start_turn(thread, "turn-live-repro")
+
+        # The reply's final text. notify=True is what upstream stamps via
+        # `_mark_notify_metadata`, and it completes the turn for real.
+        text_result = await self.adapter.send(
+            thread,
+            "Here's the image you asked for.",
+            metadata={"thread_id": thread, "notify": True},
+        )
+        self.assertTrue(text_result.success)
+        self.assertNotIn(thread, self.adapter._active_turns)
+        completed = [
+            frame
+            for frame in self.connection.messages
+            if frame["type"] == "turn.completed"
+        ]
+        self.assertEqual([frame["turnId"] for frame in completed], ["turn-live-repro"])
+        frames_before = len(self.connection.messages)
+
+        # ~36ms later: the same reply's image, same metadata dict.
+        result = await self.adapter.send_image_file(
+            thread,
+            str(self.chart),
+            caption=None,
+            metadata={"thread_id": thread, "notify": True},
+        )
+
+        self.assertTrue(result.success)
+        frames = self.connection.messages[frames_before:]
+        self.assertEqual([frame["type"] for frame in frames], ["media.deliver"])
+        delivery = frames[0]
+        # Scoped to its own turn, in its own thread — not exiled to Home.
+        self.assertEqual(delivery["threadId"], thread)
+        self.assertEqual(delivery["turnId"], "turn-live-repro")
+        self.assertEqual(delivery["name"], "chart.png")
+        # The completed turn is not resurrected by claiming its media.
+        self.assertNotIn(thread, self.adapter._active_turns)
+
+    async def test_media_long_after_a_turn_closed_does_not_claim_it(self):
+        """Recency is what bounds the reach-back, so an old turn must not claim.
+
+        Without the window, `_recent_turns` would keep a thread's last turn
+        claimable forever and an unrelated later delivery would be sequenced
+        into an answer the user finished reading long ago.
+        """
+        thread = "thread-stale-reachback"
+        await self._start_turn(thread, "turn-stale")
+        await self.adapter.send(thread, "Done.", metadata={"notify": True})
+        self.assertNotIn(thread, self.adapter._active_turns)
+
+        stale = self.adapter._recent_turns[thread]
+        stale.completed_at -= adapter_module._RECENT_TURN_MEDIA_WINDOW_SECONDS + 1
+        frames_before = len(self.connection.messages)
+
+        with self.assertLogs(adapter_module.logger, level="INFO"):
+            result = await self.adapter.send_document(thread, str(self.chart))
+
+        self.assertTrue(result.success)
+        delivery = self.connection.messages[frames_before:][0]
+        self.assertNotIn("turnId", delivery)
+        self.assertEqual(delivery["threadId"], self.HOME)
+
+    async def test_a_cron_delivery_never_claims_a_just_closed_turn(self):
+        """Provenance still overrides recency inside the window.
+
+        A positively-classified proactive send — cron here — is refused the
+        completed turn even microseconds after it closed, and takes the
+        turnless home route with its badge intact. This is the guard that
+        keeps the recency window from re-opening the defect class the
+        session-key gate was built for.
+        """
+        thread = "thread-cron-collision"
+        await self._start_turn(thread, "turn-cron-collision")
+        await self.adapter.send(thread, "All set.", metadata={"notify": True})
+        self.assertIsNotNone(self.adapter._recent_turns[thread].completed_at)
+        frames_before = len(self.connection.messages)
+
+        with self.assertLogs(adapter_module.logger, level="INFO"):
+            result = await self.adapter.send_document(
+                thread,
+                str(self.chart),
+                caption="Cronjob Response: nightly\n-------------\n\nChart attached.",
+            )
+
+        self.assertTrue(result.success)
+        delivery = self.connection.messages[frames_before:][0]
+        self.assertNotIn("turnId", delivery)
+        self.assertEqual(delivery["threadId"], self.HOME)
+        self.assertEqual(delivery["kind"], "cron")
+        self.assertEqual(delivery["label"], "Cron: nightly")
+
+    async def test_a_live_turn_still_outranks_a_completed_one(self):
+        """The user asked again; the new turn owns the thread, not the old one."""
+        thread = "thread-relay"
+        await self._start_turn(thread, "turn-first")
+        await self.adapter.send(thread, "First answer.", metadata={"notify": True})
+        await self._start_turn(thread, "turn-second")
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send_image_file(thread, str(self.chart))
+
+        self.assertTrue(result.success)
+        delivery = self.connection.messages[frames_before:][0]
+        self.assertEqual(delivery["turnId"], "turn-second")
+
     async def test_proactive_media_to_home_is_turnless_with_provenance(self):
         frames_before = len(self.connection.messages)
 
@@ -2271,11 +2427,42 @@ class MediaDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual(self.adapter._active_turns, {})
 
-    async def test_media_to_a_non_home_thread_without_a_turn_errors(self):
-        """"Send media to any thread unprompted" stays out of scope."""
-        result = await self.adapter.send_document(
-            "some-other-thread", str(self.chart)
+    async def test_unscopeable_media_falls_back_to_home_instead_of_dropping(self):
+        """"Send media to any thread unprompted" still lands — in Home.
+
+        The thread route stays out of scope: the frame goes out turnless, so
+        T3 re-resolves the home thread server-side and can write nowhere else.
+        But the file is NOT dropped. Upstream's only response to a failed
+        media send is a log line, so returning an error silently loses an
+        artifact Hermes already spent a generation call producing.
+        """
+        with self.assertLogs(adapter_module.logger, level="INFO"):
+            result = await self.adapter.send_document(
+                "some-other-thread", str(self.chart)
+            )
+
+        self.assertTrue(result.success)
+        frames = self.connection.messages
+        self.assertEqual([frame["type"] for frame in frames], ["media.deliver"])
+        delivery = frames[0]
+        # Home-addressed and turnless: it renders as a badged notification,
+        # never as a reply inside the thread that could not take it.
+        self.assertEqual(delivery["threadId"], self.HOME)
+        self.assertNotIn("turnId", delivery)
+        self.assertEqual(delivery["label"], "Hermes")
+        self.assertEqual(
+            [entry["deliveryId"] for entry in self.queue.entries()],
+            [result.message_id],
         )
+
+    async def test_media_with_no_home_designated_still_errors(self):
+        """With nowhere to fall back to, the original error stands."""
+        with unittest.mock.patch.dict(
+            adapter_module.os.environ, {home_module.HOME_CHANNEL_ENV: ""}
+        ):
+            result = await self.adapter.send_document(
+                "some-other-thread", str(self.chart)
+            )
         self.assertFalse(result.success)
         self.assertEqual(result.error, "no active T3 turn")
         self.assertEqual(self.connection.messages, [])

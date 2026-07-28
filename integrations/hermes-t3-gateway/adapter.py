@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 import uuid
 import weakref
 from collections.abc import Coroutine
@@ -37,6 +38,7 @@ from .home import (
     save_home_thread_id,
 )
 from .protocol import (
+    PROTOCOL_VERSION,
     canonical_tool_data,
     canonical_tool_item_type,
     describe_response,
@@ -66,6 +68,23 @@ _T3_HOME_CHANNEL_NOTICE = (
 # preferring `detail` over `title`, so the live status string is sent as
 # `detail`.
 _STATUS_ITEM_TYPE = "status_text"
+
+# How long a just-completed turn stays an acceptable scope for its own media.
+#
+# The window exists because the base adapter's delivery pipeline sends a
+# reply's final TEXT before the reply's media files, and that text is
+# notify-marked — so it completes the T3 turn, and every file of the same
+# reply then arrives against a thread with no active turn
+# (`gateway/platforms/base.py:5326` text, then `:5373+`/`:5424+` media).
+#
+# Sized against what actually separates the two: the live repro measured 36ms,
+# and the only deliberate spacing upstream inserts is `_get_human_delay()`
+# (`gateway/platforms/base.py:5051`), whose widest configured mode is 2.5s per
+# file. 30s covers a slow batch of large files with generous headroom while
+# staying far below any plausible human follow-up: the window closes long
+# before the user could read the answer and ask something new, and it is a
+# *scope* window only — it never keeps a turn alive or re-completes one.
+_RECENT_TURN_MEDIA_WINDOW_SECONDS = 30.0
 
 
 def _hermes_version() -> str:
@@ -143,6 +162,12 @@ class _TurnState:
         default_factory=asyncio.Lock,
         repr=False,
     )
+    # Monotonic clock reading taken when this turn completed; None while live.
+    # Read only by `_media_turn_scope` to bound how long the completed turn
+    # remains an acceptable scope for its own trailing media
+    # (`_RECENT_TURN_MEDIA_WINDOW_SECONDS`). Monotonic deliberately: a wall
+    # clock adjustment mid-turn must not widen or collapse the window.
+    completed_at: float | None = None
 
 
 @dataclass
@@ -474,6 +499,13 @@ class T3PlatformAdapter(BasePlatformAdapter):
         Entries are NOT removed here — only a `home.deliver.ack` purges one.
         Re-sending an entry T3 already durably wrote is harmless (it dedupes on
         `deliveryId`); dropping one it never wrote is not.
+
+        Frames are restamped to the CURRENT protocol version before sending: an
+        entry queued by an older plugin carries the version it was built under,
+        and T3's strict-lockstep decoder closes the socket on any other version
+        — turning one stale queued frame into a reconnect loop that outlives
+        the upgrade. The delivery fields themselves are version-stable (the
+        v3→v4 change only added frame types), so restamping is honest.
         """
         pending = self._home_queue.entries()
         if not pending:
@@ -481,7 +513,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
         logger.info("Flushing %d queued T3 home deliver(y|ies)", len(pending))
         for entry in pending[:MAX_FLUSH_PER_CONNECT]:
             try:
-                await self._send_frame(entry)
+                await self._send_frame({**entry, "protocolVersion": PROTOCOL_VERSION})
             except Exception as exc:  # noqa: BLE001 - the rest rides the next connect
                 logger.warning("T3 home delivery flush stopped: %s", exc)
                 return
@@ -512,9 +544,66 @@ class T3PlatformAdapter(BasePlatformAdapter):
         the base adapter's delivery pipeline sends a reply's final text —
         notify-marked, which completes the turn here — BEFORE it dispatches
         the reply's media files (`gateway/platforms/base.py:5326` then
-        `:5383+`), so turn media routinely arrives moments after its turn
-        closed. The most recently completed turn per thread is therefore an
-        accepted scope when the send still carries that turn's session key.
+        `:5373+`), so turn media routinely arrives moments after its turn
+        closed and must still be able to reach back to it.
+
+        **The session key is NOT available on the media dispatch path**, and
+        that is structural, not a race. The gateway binds `HERMES_SESSION_KEY`
+        inside `_handle_message_with_agent` and clears it in that method's own
+        `finally` (`gateway/run.py:12972` → `:14626`); the delivery pipeline
+        that sends the text and then the files lives one frame further out, in
+        `BasePlatformAdapter._process_message_background`, and runs entirely
+        AFTER the handler returned. `clear_session_vars` sets the vars to `""`
+        rather than resetting them, deliberately suppressing the `os.environ`
+        fallback — so every send the pipeline makes, text and media alike,
+        reads `""`. Verified against the real gateway package: inside the
+        handler the key resolves; on return it is `""`.
+
+        The text path never noticed because it does not consult the key when a
+        live turn exists — `send()` reaches `_is_proactive_delivery`, which for
+        a non-home thread returns False on the thread check alone and falls
+        through to `_active_turns`. Media had no such fallback: it required the
+        key to match, so on a non-home thread the file was dropped with
+        "no active T3 turn" (live repro 2026-07-27 18:47:06, 36ms after the
+        turn's own text completed the turn).
+
+        So the reach-back cannot be keyed on the session key. It is keyed on
+        the two signals that ARE trustworthy here:
+
+        * **Recency.** A completed turn is a scope only within
+          `_RECENT_TURN_MEDIA_WINDOW_SECONDS` of completing. Turn media follows
+          its text by milliseconds; anything later is not this turn's output.
+        * **Provenance.** `classify_delivery` must NOT positively identify the
+          send as proactive. This is the same discriminator the home half of
+          the gate uses, applied with the opposite default — and it is what
+          contains the collision this window would otherwise open.
+
+        The collision to contain is `send_message`, the one thing besides a
+        turn that can dispatch media to a NON-home thread
+        (`tools/send_message_tool.py:1880+` → `adapter.send_image_file` with a
+        caller-chosen `chat_id`). Cron cannot: it delivers to the home channel
+        and is excluded by the thread check. But `send_message` runs INSIDE a
+        turn's own handler — it is a tool the agent calls — so it is not a
+        cross-turn intruder arriving during someone else's live turn; it is
+        this session's own agent choosing a destination. Two cases follow. If
+        it targets this thread, scoping the file to the turn that produced it
+        is exactly right. If it targets a *different* thread, that thread's
+        `_recent_turns` entry is stale by far more than the window unless the
+        user was mid-conversation there seconds ago — and in that narrow case
+        the file still lands in the thread the agent addressed, attributed to a
+        turn that just ended in it. A slightly-wrong turn attribution on a
+        message row, never a stolen answer.
+
+        That asymmetry is the whole reason this is safe where the text gate is
+        strict. `send()` completes turns; a misattributed text send ends a live
+        turn with the wrong output — the `finalize` defect class. Media touches
+        no turn machinery at all: `media.deliver` carries `turnId` purely as a
+        sequencing hint, emits no turn or item frame, and cannot complete,
+        interrupt, or alter a turn. The worst outcome here is a file sequenced
+        next to the wrong neighbour.
+
+        A live turn whose session key matches still wins outright and is
+        checked first, so nothing about the ordinary in-handler path changes.
         """
         turn = self._active_turns.get(thread_id)
         recent = self._recent_turns.get(thread_id)
@@ -525,11 +614,19 @@ class T3PlatformAdapter(BasePlatformAdapter):
             return recent
         home = home_thread_id()
         if not home or thread_id != home:
-            # Not home: media belongs to the live turn or has nowhere to go —
-            # exactly the text path's scope rule. A stale completed turn is
-            # NOT a scope here; only the session-key-matched case above may
-            # reach back past completion.
-            return turn
+            # Not home. A live turn takes the media exactly as the text path
+            # would. Otherwise the just-completed turn may claim it, bounded by
+            # recency and refused to a positively-proactive send — see above.
+            if turn is not None:
+                return turn
+            if not self._within_media_reachback(recent):
+                return None
+            _kind, _label, certain = classify_delivery(
+                content,
+                metadata,
+                session_user_id=self._session_user_id(),
+            )
+            return None if certain else recent
         if turn is None:
             return None
         _kind, _label, certain = classify_delivery(
@@ -540,6 +637,20 @@ class T3PlatformAdapter(BasePlatformAdapter):
         # Conservative half of the gate, mirroring text: an unattributable
         # media send during a live home turn stays with the turn.
         return None if certain else turn
+
+    @staticmethod
+    def _within_media_reachback(turn: _TurnState | None) -> bool:
+        """True while a completed turn may still claim its own trailing media.
+
+        A turn with no `completed_at` never went through `_complete_turn`, so
+        nothing is known about when it ended — treated as out of the window
+        rather than assumed fresh.
+        """
+        if turn is None or turn.completed_at is None:
+            return False
+        return (
+            time.monotonic() - turn.completed_at
+        ) <= _RECENT_TURN_MEDIA_WINDOW_SECONDS
 
     async def _deliver_media_file(
         self,
@@ -557,14 +668,40 @@ class T3PlatformAdapter(BasePlatformAdapter):
         divergence is a payload that cannot be built at all — unreadable file,
         empty, over the 25MB ceiling — which fails the send immediately
         instead of queueing a frame T3 would reject on every future flush.
+
+        **An unscopeable file goes to Home rather than being dropped.** When
+        `_media_turn_scope` finds nothing on a non-home thread, the old
+        behaviour returned `"no active T3 turn"` — and upstream's only
+        response to that is `logger.error("Failed to send image: %s")`
+        (`gateway/platforms/base.py:3471`) before moving on. The file is gone,
+        silently from the user's side, after Hermes spent a generation call
+        producing it. Text can afford that (the agent can restate it, the user
+        can ask again); a produced artifact cannot.
+
+        Routing it to Home is safe in the way the thread route is not. The
+        frame goes out turnless, so T3 re-resolves the instance's home thread
+        server-side and writes only there — a plugin cannot address an
+        arbitrary thread on this path even in principle
+        (`apps/server/src/provider/hermesGatewayHttp.ts:207-215`) — and it
+        carries `classify_delivery` provenance, so it renders as a badged
+        notification exactly like a cron artifact rather than impersonating a
+        thread reply. With no home designated there is genuinely nowhere to put
+        it, and the original error stands.
         """
         thread_id = str(chat_id)
         content = str(caption or "")
         turn = self._media_turn_scope(thread_id, content, metadata)
-        if turn is None:
-            home = home_thread_id()
-            if not home or thread_id != home:
+        home = home_thread_id()
+        delivery_thread_id = thread_id
+        if turn is None and (not home or thread_id != home):
+            if not home:
                 return SendResult(success=False, error="no active T3 turn")
+            logger.info(
+                "T3 media for thread %s has no turn to attach to; delivering "
+                "it to the home thread instead of dropping it",
+                thread_id,
+            )
+            delivery_thread_id = home
         kind, label, _certain = classify_delivery(
             content,
             metadata,
@@ -572,7 +709,7 @@ class T3PlatformAdapter(BasePlatformAdapter):
         )
         try:
             delivery = build_media_delivery(
-                thread_id=thread_id,
+                thread_id=delivery_thread_id,
                 path=str(path),
                 kind=kind,
                 label=label,
@@ -1346,6 +1483,8 @@ class T3PlatformAdapter(BasePlatformAdapter):
             self._active_turns.pop(turn.thread_id, None)
             # Remembered for media scoping: the base adapter sends a reply's
             # media files AFTER its notify-marked text, i.e. after this point.
+            # The stamp bounds that reach-back — see `_media_turn_scope`.
+            turn.completed_at = time.monotonic()
             self._recent_turns[turn.thread_id] = turn
         await self._send_status()
 
