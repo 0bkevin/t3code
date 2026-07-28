@@ -731,6 +731,21 @@ class T3PlatformAdapter(BasePlatformAdapter):
                 delivery_id_value,
                 exc,
             )
+        # The same notify-completion contract `send()` honors for text. The
+        # base adapter notify-marks every send of a reply's FINAL delivery
+        # batch (`_mark_notify_metadata`, `gateway/platforms/base.py:5220`) —
+        # text and media alike — and an image-only reply produces no text
+        # send at all, so this is the only place its turn can complete.
+        # Guarded to the still-live turn: the common text-then-media ordering
+        # completes the turn on the text, and re-completing a `_recent_turns`
+        # entry would emit a second `turn.completed` for a turn T3 already
+        # folded.
+        if (
+            turn is not None
+            and bool((metadata or {}).get("notify"))
+            and self._active_turns.get(thread_id) is turn
+        ):
+            await self._complete_turn(turn)
         return SendResult(success=True, message_id=delivery_id_value)
 
     async def send_image_file(

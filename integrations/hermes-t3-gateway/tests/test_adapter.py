@@ -2339,6 +2339,62 @@ class MediaDeliveryTests(unittest.IsolatedAsyncioTestCase):
         # The completed turn is not resurrected by claiming its media.
         self.assertNotIn(thread, self.adapter._active_turns)
 
+    async def test_an_image_only_reply_completes_its_turn(self):
+        """Live repro 2026-07-27 21:26: "send it one more time" → image, no text.
+
+        Upstream notify-marks every send of a reply's final delivery batch —
+        text AND media (`_mark_notify_metadata`, base.py:5220) — but a reply
+        that is only an image produces no text send, so the media send is the
+        only carrier of the completion signal. Without honoring it, the turn
+        sat "Working" until the two-minute liveness timeout.
+        """
+        thread = "thread-image-only-reply"
+        await self._start_turn(thread, "turn-image-only")
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send_image_file(
+            thread,
+            str(self.chart),
+            caption=None,
+            metadata={"thread_id": thread, "notify": True},
+        )
+
+        self.assertTrue(result.success)
+        frames = self.connection.messages[frames_before:]
+        # `_complete_turn` also republishes connection.status; the contract
+        # here is the ORDER media -> completed, not the exact frame set.
+        types = [frame["type"] for frame in frames]
+        self.assertEqual(types[:2], ["media.deliver", "turn.completed"])
+        self.assertEqual(frames[0]["turnId"], "turn-image-only")
+        self.assertEqual(frames[1]["turnId"], "turn-image-only")
+        self.assertNotIn(thread, self.adapter._active_turns)
+
+    async def test_trailing_media_does_not_recomplete_a_closed_turn(self):
+        """The text-then-media ordering must emit exactly one turn.completed.
+
+        The text completes the turn; the file's own notify mark must not
+        re-complete the `_recent_turns` entry it scopes to — T3 already
+        folded the turn, and a second terminal frame names a turn its
+        conflict gate would reject.
+        """
+        thread = "thread-text-then-media"
+        await self._start_turn(thread, "turn-text-media")
+        await self.adapter.send(
+            thread, "Here it is.", metadata={"thread_id": thread, "notify": True}
+        )
+        frames_before = len(self.connection.messages)
+
+        result = await self.adapter.send_image_file(
+            thread,
+            str(self.chart),
+            caption=None,
+            metadata={"thread_id": thread, "notify": True},
+        )
+
+        self.assertTrue(result.success)
+        frames = self.connection.messages[frames_before:]
+        self.assertEqual([frame["type"] for frame in frames], ["media.deliver"])
+
     async def test_media_long_after_a_turn_closed_does_not_claim_it(self):
         """Recency is what bounds the reach-back, so an old turn must not claim.
 
