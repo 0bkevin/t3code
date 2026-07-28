@@ -16,7 +16,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
@@ -50,7 +49,7 @@ import {
   makeComposerMentionDragHandlers,
 } from "./composerMentionDrag";
 import {
-  type ComposerImageAttachment,
+  type ComposerAttachment,
   type DraftId,
   type PersistedComposerImageAttachment,
   hydrateImagesFromPersisted,
@@ -58,6 +57,11 @@ import {
   useComposerThreadDraft,
   useEffectiveComposerModelState,
 } from "../../composerDraftStore";
+import {
+  formatComposerAttachmentSize,
+  isComposerImageMimeType,
+  planComposerAttachmentIntake,
+} from "../../lib/composerAttachments";
 import {
   EMPTY_PROMPT_STASH_QUEUE,
   MAX_STASH_ENTRIES_PER_QUEUE,
@@ -68,7 +72,7 @@ import {
 } from "../../promptStashStore";
 import { ComposerStashBadge } from "./ComposerStashBadge";
 import { ComposerStashMenu } from "./ComposerStashMenu";
-import { compressImageForStash } from "../../lib/stashImageCompression";
+import { compressImageForStash, readAttachmentForStash } from "../../lib/stashImageCompression";
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { getTerminalFocusOwner } from "../../lib/terminalFocus";
 import { resolveShortcutCommand } from "../../keybindings";
@@ -178,7 +182,9 @@ import { toastManager } from "../ui/toast";
 import {
   BotIcon,
   CircleAlertIcon,
+  FileIcon,
   ListTodoIcon,
+  PaperclipIcon,
   PencilRulerIcon,
   type LucideIcon,
   LockIcon,
@@ -217,8 +223,6 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
-
-const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -305,6 +309,12 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
    * agent to open (every workspace provider).
    */
   onOpenAgent: (() => void) | null;
+  /**
+   * Opens the file picker. Null off Hermes — every other provider's composer
+   * takes images through drag/paste only, and a picker there would offer an
+   * intake path the rest of the pipeline rejects.
+   */
+  onAttachFiles: (() => void) | null;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
   showPlanToggle: boolean;
@@ -410,6 +420,31 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
     </>
   ) : null;
 
+  // Hermes-only: the picker exists because that composer takes any file type,
+  // and drag/paste are not reachable at all on touch.
+  const attachButton = props.onAttachFiles ? (
+    <>
+      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80"
+              size="sm"
+              type="button"
+              onClick={props.onAttachFiles}
+              aria-label="Attach files"
+            />
+          }
+        >
+          <PaperclipIcon className="size-4 shrink-0" />
+        </TooltipTrigger>
+        <TooltipPopup side="top">Attach files</TooltipPopup>
+      </Tooltip>
+    </>
+  ) : null;
+
   const agentButton = props.onOpenAgent ? (
     <>
       <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
@@ -442,6 +477,8 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
       {runtimeModeSelector}
 
       {interactionModeToggle}
+
+      {attachButton}
 
       {agentButton}
 
@@ -564,7 +601,7 @@ export interface ChatComposerHandle {
   /** Get the current prompt/effort/model state for use in send. */
   getSendContext: () => {
     prompt: string;
-    images: ComposerImageAttachment[];
+    images: ComposerAttachment[];
     terminalContexts: TerminalContextDraft[];
     elementContexts: ElementContextDraft[];
     previewAnnotations: PreviewAnnotationPayload[];
@@ -656,7 +693,7 @@ export interface ChatComposerProps {
 
   // Refs the parent needs kept in sync
   promptRef: React.RefObject<string>;
-  composerImagesRef: React.RefObject<ComposerImageAttachment[]>;
+  composerImagesRef: React.RefObject<ComposerAttachment[]>;
   composerTerminalContextsRef: React.RefObject<TerminalContextDraft[]>;
   composerElementContextsRef: React.RefObject<ElementContextDraft[]>;
   composerRef: React.RefObject<ChatComposerHandle | null>;
@@ -780,6 +817,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerPreviewAnnotations = composerDraft.previewAnnotations;
   const composerReviewComments = composerDraft.reviewComments;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
+  // The zoom dialog and the annotation cards are image-only; file attachments
+  // share the pending strip but have nothing to preview.
+  const composerPreviewableImages = useMemo(
+    () => composerImages.filter((image) => image.type === "image"),
+    [composerImages],
+  );
 
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
@@ -925,6 +968,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProvider: ProviderDriverKind =
     selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const allowHermesSteering = phase === "running" && selectedProvider === "hermes";
+  // Non-image attachments are Hermes-only: it is the one driver whose
+  // transport carries arbitrary files to the agent. Every other provider
+  // keeps the image-only intake it has always had.
+  const allowsFileAttachments = selectedProvider === "hermes";
 
   // A Home thread is permanently bound to one instance and one model slug —
   // `thread.create` fixes both, and Hermes sets
@@ -1082,6 +1129,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
+  const composerFileInputRef = useRef<HTMLInputElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
@@ -1372,14 +1420,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   const addComposerImage = useCallback(
-    (image: ComposerImageAttachment) => {
+    (image: ComposerAttachment) => {
       addComposerDraftImage(composerDraftTarget, image);
     },
     [composerDraftTarget, addComposerDraftImage],
   );
 
   const addComposerImagesToDraft = useCallback(
-    (images: ComposerImageAttachment[]) => {
+    (images: ComposerAttachment[]) => {
       addComposerDraftImages(composerDraftTarget, images);
     },
     [composerDraftTarget, addComposerDraftImages],
@@ -2270,7 +2318,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const oversizedImageNames: string[] = [];
       const unreadableImageNames: string[] = [];
       for (const image of images) {
-        const result = await compressImageForStash(image.file);
+        // Only images can be re-encoded to fit the budget; a PDF or archive
+        // is stored verbatim when it fits and dropped when it does not.
+        const result = isComposerImageMimeType(image.mimeType)
+          ? await compressImageForStash(image.file)
+          : await readAttachmentForStash(image.file, image.mimeType);
         if (!result.ok) {
           // "too large" and "could not be read" are distinct outcomes; the
           // menu and restore toast report them separately.
@@ -2400,38 +2452,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (pendingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
-        title: "Attach images after answering plan questions.",
+        title: allowsFileAttachments
+          ? "Attach files after answering plan questions."
+          : "Attach images after answering plan questions.",
       });
       return;
     }
-    const nextImages: ComposerImageAttachment[] = [];
-    let nextImageCount = composerImagesRef.current.length;
-    let error: string | null = null;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
-        continue;
-      }
-      if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-        error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
-        continue;
-      }
-      if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
-        break;
-      }
-      const previewUrl = URL.createObjectURL(file);
-      nextImages.push({
-        type: "image",
-        id: randomUUID(),
-        name: file.name || "image",
-        mimeType: file.type,
-        sizeBytes: file.size,
-        previewUrl,
-        file,
-      });
-      nextImageCount += 1;
-    }
+    const { accepted, error } = planComposerAttachmentIntake({
+      files,
+      existingCount: composerImagesRef.current.length,
+      allowNonImageFiles: allowsFileAttachments,
+    });
+    const nextImages: ComposerAttachment[] = accepted.map((entry) => ({
+      type: entry.type,
+      id: randomUUID(),
+      name: entry.file.name || (entry.type === "image" ? "image" : "file"),
+      mimeType: entry.mimeType,
+      sizeBytes: entry.file.size,
+      // Blob URLs back both the image thumbnail and (for files) nothing
+      // visible, but the draft store keys dedupe/revocation off this field
+      // for every attachment, so it is always created.
+      previewUrl: URL.createObjectURL(entry.file),
+      file: entry.file,
+    }));
     if (nextImages.length === 1 && nextImages[0]) {
       addComposerImage(nextImages[0]);
     } else if (nextImages.length > 1) {
@@ -2444,16 +2487,34 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     removeComposerImageFromDraft(imageId);
   };
 
+  const openComposerFilePicker = () => {
+    composerFileInputRef.current?.click();
+  };
+
+  const onComposerFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    // Reset before the intake so picking the same file twice in a row still
+    // fires a change event.
+    event.target.value = "";
+    if (files.length === 0) return;
+    addComposerImages(files);
+    focusComposer();
+  };
+
   // ------------------------------------------------------------------
   // Callbacks: paste / drag
   // ------------------------------------------------------------------
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) return;
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) return;
+    // Non-image pastes stay untouched off Hermes so a copied file still
+    // falls through to the editor's own paste handling there.
+    const pastedFiles = allowsFileAttachments
+      ? files
+      : files.filter((file) => file.type.startsWith("image/"));
+    if (pastedFiles.length === 0) return;
     event.preventDefault();
-    addComposerImages(imageFiles);
+    addComposerImages(pastedFiles);
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -2731,6 +2792,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className="mx-auto w-full min-w-0 max-w-3xl"
       data-chat-composer-form="true"
     >
+      {/* Only mounted on Hermes threads, so no other provider's composer can
+          route a picked file into the image-only intake. */}
+      {allowsFileAttachments ? (
+        <input
+          ref={composerFileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={onComposerFileInputChange}
+        />
+      ) : null}
       <div
         className={cn(
           "group rounded-[22px] p-px transition-colors duration-200",
@@ -3006,12 +3080,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               composerPreviewAnnotations.length > 0 && (
                 <ComposerPreviewAnnotationCards
                   annotations={composerPreviewAnnotations}
-                  images={composerImages}
+                  images={composerPreviewableImages}
                   onRemove={(annotationId) =>
                     removeComposerDraftPreviewAnnotation(composerDraftTarget, annotationId)
                   }
                   onExpandImage={(imageId) => {
-                    const preview = buildExpandedImagePreview(composerImages, imageId);
+                    const preview = buildExpandedImagePreview(composerPreviewableImages, imageId);
                     if (preview) onExpandImage(preview);
                   }}
                   className="mb-3"
@@ -3059,66 +3133,120 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           (annotation) => annotation.id === image.id,
                         ),
                     )
-                    .map((image) => (
-                      <div
-                        key={image.id}
-                        className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
-                      >
-                        {image.previewUrl ? (
-                          <button
-                            type="button"
-                            className="h-full w-full cursor-zoom-in"
-                            aria-label={`Preview ${image.name}`}
-                            onClick={() => {
-                              const preview = buildExpandedImagePreview(composerImages, image.id);
-                              if (!preview) return;
-                              onExpandImage(preview);
-                            }}
-                          >
-                            <img
-                              src={image.previewUrl}
-                              alt={image.name}
-                              className="h-full w-full object-cover"
-                            />
-                          </button>
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-muted-foreground/70">
-                            {image.name}
-                          </div>
-                        )}
-                        {nonPersistedComposerImageIdSet.has(image.id) && (
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <span
-                                  role="img"
-                                  aria-label="Draft attachment may not persist"
-                                  className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
-                                >
-                                  <CircleAlertIcon className="size-3" />
-                                </span>
-                              }
-                            />
-                            <TooltipPopup
-                              side="top"
-                              className="max-w-64 whitespace-normal leading-tight"
-                            >
-                              Draft attachment could not be saved locally and may be lost on
-                              navigation.
-                            </TooltipPopup>
-                          </Tooltip>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
-                          onClick={() => removeComposerImage(image.id)}
-                          aria-label={`Remove ${image.name}`}
+                    .map((image) =>
+                      image.type === "file" ? (
+                        <div
+                          key={image.id}
+                          className="relative flex h-16 min-w-0 max-w-56 items-center gap-2 overflow-hidden rounded-lg border border-border/80 bg-background pl-2.5 pr-8"
                         >
-                          <XIcon />
-                        </Button>
-                      </div>
-                    ))}
+                          <FileIcon
+                            className="size-4 shrink-0 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate text-xs text-foreground/90">
+                              {image.name}
+                            </span>
+                            <span className="block text-[10px] text-muted-foreground">
+                              {formatComposerAttachmentSize(image.sizeBytes)}
+                            </span>
+                          </span>
+                          {nonPersistedComposerImageIdSet.has(image.id) && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span
+                                    role="img"
+                                    aria-label="Draft attachment may not persist"
+                                    className="shrink-0 text-amber-600"
+                                  >
+                                    <CircleAlertIcon className="size-3" />
+                                  </span>
+                                }
+                              />
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                Draft attachment could not be saved locally and may be lost on
+                                navigation.
+                              </TooltipPopup>
+                            </Tooltip>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                            onClick={() => removeComposerImage(image.id)}
+                            aria-label={`Remove ${image.name}`}
+                          >
+                            <XIcon />
+                          </Button>
+                        </div>
+                      ) : (
+                        <div
+                          key={image.id}
+                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
+                        >
+                          {image.previewUrl ? (
+                            <button
+                              type="button"
+                              className="h-full w-full cursor-zoom-in"
+                              aria-label={`Preview ${image.name}`}
+                              onClick={() => {
+                                const preview = buildExpandedImagePreview(
+                                  composerPreviewableImages,
+                                  image.id,
+                                );
+                                if (!preview) return;
+                                onExpandImage(preview);
+                              }}
+                            >
+                              <img
+                                src={image.previewUrl}
+                                alt={image.name}
+                                className="h-full w-full object-cover"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-muted-foreground/70">
+                              {image.name}
+                            </div>
+                          )}
+                          {nonPersistedComposerImageIdSet.has(image.id) && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span
+                                    role="img"
+                                    aria-label="Draft attachment may not persist"
+                                    className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
+                                  >
+                                    <CircleAlertIcon className="size-3" />
+                                  </span>
+                                }
+                              />
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                Draft attachment could not be saved locally and may be lost on
+                                navigation.
+                              </TooltipPopup>
+                            </Tooltip>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                            onClick={() => removeComposerImage(image.id)}
+                            aria-label={`Remove ${image.name}`}
+                          >
+                            <XIcon />
+                          </Button>
+                        </div>
+                      ),
+                    )}
                 </div>
               )}
 
@@ -3263,6 +3391,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     showRuntimeModeSelector={composerProviderControls.showRuntimeModeSelector}
                     onOpenAgent={openAgentPage}
+                    onAttachFiles={allowsFileAttachments ? openComposerFilePicker : null}
                     traitsMenuContent={providerTraitsMenuContent}
                     onToggleInteractionMode={toggleInteractionMode}
                     onTogglePlanSidebar={togglePlanSidebar}
@@ -3280,6 +3409,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       showRuntimeModeSelector={composerProviderControls.showRuntimeModeSelector}
                       onOpenAgent={openAgentPage}
+                      onAttachFiles={allowsFileAttachments ? openComposerFilePicker : null}
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}
                       showPlanToggle={showPlanSidebarToggle}

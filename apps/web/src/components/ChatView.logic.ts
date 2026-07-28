@@ -11,7 +11,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { type ChatMessage, type SessionPhase, type Thread } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import { type ComposerAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
@@ -179,12 +179,24 @@ export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
   URL.revokeObjectURL(previewUrl);
 }
 
-export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
+/**
+ * Releases the blob previews an optimistic user message is holding.
+ *
+ * Every attachment variant gets a blob URL at intake, so the release is
+ * variant-agnostic. `retainedPreviewUrls` skips the image previews that were
+ * handed off to cross-fade against the server's signed URL — file cards have
+ * no such cross-fade, so their blobs are always released here.
+ */
+export function revokeUserMessagePreviewUrls(
+  message: ChatMessage,
+  retainedPreviewUrls?: ReadonlyArray<string>,
+): void {
   if (message.role !== "user" || !message.attachments) {
     return;
   }
+  const retained = retainedPreviewUrls ? new Set(retainedPreviewUrls) : null;
   for (const attachment of message.attachments) {
-    if (attachment.type !== "image") {
+    if (attachment.previewUrl && retained?.has(attachment.previewUrl)) {
       continue;
     }
     revokeBlobPreviewUrl(attachment.previewUrl);
@@ -226,6 +238,32 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+/**
+ * Upload shape for one composer attachment on `thread.turn.start`.
+ *
+ * The variant tag rides along unchanged: images stay `type: "image"` (mime
+ * constrained to `image/*` by the contract), and everything staged on a
+ * Hermes thread goes as `type: "file"` with its own mime.
+ */
+export async function buildTurnUploadAttachment(
+  attachment: ComposerAttachment,
+  readDataUrl: (file: File) => Promise<string>,
+): Promise<{
+  type: "image" | "file";
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  dataUrl: string;
+}> {
+  return {
+    type: attachment.type,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    dataUrl: await readDataUrl(attachment.file),
+  };
+}
+
 export function resolveSendEnvMode(input: {
   requestedEnvMode: DraftThreadEnvMode;
   isGitRepo: boolean;
@@ -233,9 +271,7 @@ export function resolveSendEnvMode(input: {
   return input.isGitRepo ? input.requestedEnvMode : "local";
 }
 
-export function cloneComposerImageForRetry(
-  image: ComposerImageAttachment,
-): ComposerImageAttachment {
+export function cloneComposerImageForRetry(image: ComposerAttachment): ComposerAttachment {
   if (typeof URL === "undefined" || !image.previewUrl.startsWith("blob:")) {
     return image;
   }

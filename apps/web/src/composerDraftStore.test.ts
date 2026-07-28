@@ -65,7 +65,9 @@ import {
   markPromotedDraftThreadByRef,
   markPromotedDraftThreads,
   markPromotedDraftThreadsByRef,
+  type ComposerFileAttachment,
   type ComposerImageAttachment,
+  hydrateImagesFromPersisted,
   useComposerDraftStore,
   DraftId,
 } from "./composerDraftStore";
@@ -95,6 +97,27 @@ function makeImage(input: {
   });
   return {
     type: "image",
+    id: input.id,
+    name,
+    mimeType,
+    sizeBytes: file.size,
+    previewUrl: input.previewUrl,
+    file,
+  };
+}
+
+function makeFileAttachment(input: {
+  id: string;
+  previewUrl: string;
+  name?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}): ComposerFileAttachment {
+  const name = input.name ?? "spec.pdf";
+  const mimeType = input.mimeType ?? "application/pdf";
+  const file = new File([new Uint8Array(input.sizeBytes ?? 6)], name, { type: mimeType });
+  return {
+    type: "file",
     id: input.id,
     name,
     mimeType,
@@ -286,6 +309,70 @@ describe("composerDraftStore clearComposerContent", () => {
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
     expect(draft).toBeUndefined();
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:optimistic");
+  });
+});
+
+describe("composerDraftStore file attachments", () => {
+  const threadId = ThreadId.make("thread-files");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+  let originalRevokeObjectUrl: typeof URL.revokeObjectURL;
+  let revokeSpy: ReturnType<typeof vi.fn<(url: string) => void>>;
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+    originalRevokeObjectUrl = URL.revokeObjectURL;
+    revokeSpy = vi.fn();
+    URL.revokeObjectURL = revokeSpy;
+  });
+
+  afterEach(() => {
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+  });
+
+  it("holds non-image attachments in the same list as images", () => {
+    const image = makeImage({ id: "img-1", previewUrl: "blob:image" });
+    const pdf = makeFileAttachment({ id: "file-1", previewUrl: "blob:pdf" });
+
+    useComposerDraftStore.getState().addImages(threadRef, [image, pdf]);
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.images.map((attachment) => [attachment.id, attachment.type])).toEqual([
+      ["img-1", "image"],
+      ["file-1", "file"],
+    ]);
+  });
+
+  it("removes a file attachment and revokes its preview URL", () => {
+    const pdf = makeFileAttachment({ id: "file-1", previewUrl: "blob:pdf" });
+    useComposerDraftStore.getState().addImage(threadRef, pdf);
+
+    useComposerDraftStore.getState().removeImage(threadRef, "file-1");
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+    expect(revokeSpy).toHaveBeenCalledWith("blob:pdf");
+  });
+
+  it("re-derives the file variant when hydrating a persisted draft", () => {
+    const [image, file] = hydrateImagesFromPersisted([
+      {
+        id: "img-1",
+        name: "shot.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+        dataUrl: "data:image/png;base64,AAAA",
+      },
+      {
+        id: "file-1",
+        name: "spec.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+        dataUrl: "data:application/pdf;base64,AAAA",
+      },
+    ]);
+
+    expect(image?.type).toBe("image");
+    expect(file?.type).toBe("file");
+    expect(file?.name).toBe("spec.pdf");
   });
 });
 

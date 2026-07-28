@@ -10,7 +10,9 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import type { Thread } from "../types";
+import type { ComposerAttachment } from "../composerDraftStore";
 import {
+  buildTurnUploadAttachment,
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   branchMismatchKey,
@@ -723,5 +725,50 @@ describe("deriveLockedProvider", () => {
         threadProvider: "codex",
       }),
     ).toBe("codex");
+  });
+});
+
+describe("buildTurnUploadAttachment", () => {
+  const readDataUrl = (file: File) => Promise.resolve(`data:${file.type};base64,AAAA`);
+
+  function makeComposerAttachment(input: {
+    type: "image" | "file";
+    name: string;
+    mimeType: string;
+  }): ComposerAttachment {
+    const file = new File([new Uint8Array(4)], input.name, { type: input.mimeType });
+    return {
+      type: input.type,
+      id: `att-${input.name}`,
+      name: input.name,
+      mimeType: input.mimeType,
+      sizeBytes: file.size,
+      previewUrl: `blob:${input.name}`,
+      file,
+    } as ComposerAttachment;
+  }
+
+  it("sends a non-image attachment as the file upload variant", async () => {
+    await expect(
+      buildTurnUploadAttachment(
+        makeComposerAttachment({ type: "file", name: "spec.pdf", mimeType: "application/pdf" }),
+        readDataUrl,
+      ),
+    ).resolves.toEqual({
+      type: "file",
+      name: "spec.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4,
+      dataUrl: "data:application/pdf;base64,AAAA",
+    });
+  });
+
+  it("leaves images on the image upload variant", async () => {
+    await expect(
+      buildTurnUploadAttachment(
+        makeComposerAttachment({ type: "image", name: "shot.png", mimeType: "image/png" }),
+        readDataUrl,
+      ),
+    ).resolves.toMatchObject({ type: "image", mimeType: "image/png" });
   });
 });

@@ -173,6 +173,31 @@ async function encodeWithinBudget(
  * doesn't fit after the fallback passes, returns `null` so the caller can
  * record it as dropped.
  */
+/**
+ * Stash payload for a non-image attachment. There is nothing to re-encode —
+ * a PDF or archive is not lossy-compressible — so it is stored verbatim when
+ * it fits the budget and reported as too-large when it does not.
+ */
+export async function readAttachmentForStash(
+  file: File,
+  mimeType: string,
+  budgetChars: number = MAX_STASH_IMAGE_DATA_URL_CHARS,
+): Promise<CompressStashImageResult> {
+  let dataUrl: string;
+  try {
+    dataUrl = await blobToDataUrl(file, mimeType);
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
+  if (dataUrl.length > budgetChars) {
+    return { ok: false, reason: "too-large" };
+  }
+  return {
+    ok: true,
+    image: { dataUrl, mimeType, sizeBytes: file.size, recompressed: false },
+  };
+}
+
 export async function compressImageForStash(
   file: File,
   budgetChars: number = MAX_STASH_IMAGE_DATA_URL_CHARS,

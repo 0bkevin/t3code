@@ -1,6 +1,6 @@
 import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
-import { EllipsisIcon, ListTodoIcon } from "lucide-react";
+import { EllipsisIcon, ListTodoIcon, PaperclipIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { HermesIcon } from "../HermesIcon";
 import {
@@ -30,6 +30,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
    * has no agent page to open.
    */
   onOpenAgent: (() => void) | null;
+  /**
+   * Mirrors the wide-layout paperclip. Null when this composer's provider
+   * takes images through drag/paste only (everything but Hermes).
+   */
+  onAttachFiles: (() => void) | null;
   traitsMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
@@ -89,6 +94,15 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               <MenuRadioItem value="auto">Auto</MenuRadioItem>
               <MenuRadioItem value="full-access">Full access</MenuRadioItem>
             </MenuRadioGroup>
+          </>
+        ) : null}
+        {props.onAttachFiles ? (
+          <>
+            <MenuDivider />
+            <MenuItem onClick={props.onAttachFiles}>
+              <PaperclipIcon className="size-4 shrink-0" />
+              Attach files
+            </MenuItem>
           </>
         ) : null}
         {props.onOpenAgent ? (
