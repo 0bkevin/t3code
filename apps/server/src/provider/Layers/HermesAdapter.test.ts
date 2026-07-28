@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   ApprovalRequestId,
   HERMES_GATEWAY_PROTOCOL_VERSION,
+  HERMES_MEDIA_MAX_BYTES,
   HermesGatewayItemId,
   HermesGatewayRequestId,
   HermesGatewaySessionId,
@@ -10,6 +11,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  type ChatAttachment,
   type HermesGatewayInstanceStatus,
   type HermesGatewayT3ToPluginMessage,
   type ProviderInstanceDescription,
@@ -17,10 +19,15 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
+import { createAttachmentId, resolveAttachmentPath } from "../../attachmentStore.ts";
+import * as ServerConfig from "../../config.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import {
   HermesGatewayBroker,
@@ -32,6 +39,12 @@ import {
   sanitizeHermesItemData,
   sanitizeHermesRequestArgs,
 } from "./HermesAdapter.ts";
+
+// The adapter reads attachment bytes from `attachmentsDir`, so every test
+// needs a ServerConfig alongside the platform services.
+const testEnvLayer = ServerConfig.layerTest("/tmp/hermes-adapter-test", "/tmp").pipe(
+  Layer.provideMerge(NodeServices.layer),
+);
 
 /**
  * The reconnect trigger is a broker status transition, so these tests drive the
@@ -334,7 +347,7 @@ it.effect("keeps cwd local while forwarding turn text byte-for-byte and steering
     const afterActiveCompletion = (yield* adapter.listSessions())[0];
     assert.equal(afterActiveCompletion?.status, "ready");
     assert.equal(afterActiveCompletion?.activeTurnId, undefined);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("resumes active Hermes turns for steering and projects authoritative snapshots", () =>
@@ -431,7 +444,7 @@ it.effect("resumes active Hermes turns for steering and projects authoritative s
         contentIndex: 0,
       });
     }
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 /**
@@ -615,7 +628,7 @@ it.effect("re-issues session.ensure on reconnect and keeps streaming a turn that
     assert.isDefined(seen.find((event) => event.type === "content.delta"));
 
     yield* Fiber.interrupt(fiber);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 // Regression: a plugin restart REPLACES the socket rather than leaving a gap.
@@ -685,7 +698,7 @@ it.effect("does not stop remote sessions when the adapter shuts down", () =>
       sent.find((message) => message.type === "session.stop"),
       "shutdown must not end the remote Hermes session",
     );
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(testEnvLayer)),
 );
 
 it.effect("re-issues session.ensure when the connection is replaced without going offline", () =>
@@ -725,7 +738,7 @@ it.effect("re-issues session.ensure when the connection is replaced without goin
     yield* harness.adapter.sendTurn({ threadId, input: "after the restart" });
     const starts = harness.sent.filter((message) => message.type === "turn.start");
     assert.equal(starts.length, 1);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 // Regression: the resume must not block the status-stream handler.
@@ -767,7 +780,7 @@ it.effect("keeps handling status events while a resume awaits its reply", () =>
       afterFirst,
       "a resume awaiting its reply must not stall later reconnects",
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("does not re-ensure when the same connection republishes its status", () =>
@@ -796,7 +809,7 @@ it.effect("does not re-ensure when the same connection republishes its status", 
     yield* harness.republishSameConnection(4242);
 
     assert.equal(harness.sent.filter((message) => message.type === "session.ensure").length, 1);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("settles the thread when a turn does not survive the reconnect", () =>
@@ -834,7 +847,7 @@ it.effect("settles the thread when a turn does not survive the reconnect", () =>
     assert.equal(session?.status, "error");
 
     yield* Fiber.interrupt(fiber);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("settles the thread when session.ensure fails on reconnect", () =>
@@ -866,7 +879,7 @@ it.effect("settles the thread when session.ensure fails on reconnect", () =>
     assert.isUndefined((yield* harness.adapter.listSessions())[0]?.activeTurnId);
 
     yield* Fiber.interrupt(fiber);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("cancels pending approvals and user input on reconnect without deciding", () =>
@@ -954,7 +967,7 @@ it.effect("cancels pending approvals and user input on reconnect without decidin
     }
 
     yield* Fiber.interrupt(fiber);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("keeps pending interactions when the turn survives the reconnect", () =>
@@ -1009,7 +1022,7 @@ it.effect("keeps pending interactions when the turn survives the reconnect", () 
     );
 
     yield* Fiber.interrupt(fiber);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("fails sends immediately and actionably while the gateway is offline", () =>
@@ -1082,7 +1095,7 @@ it.effect("fails sends immediately and actionably while the gateway is offline",
     assert.equal(userInputError._tag, "ProviderAdapterRequestError");
 
     assert.equal(harness.sent.length, sentBefore);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("keeps the session on an undeliverable stop so Hermes is not orphaned", () =>
@@ -1137,7 +1150,7 @@ it.effect("keeps the session on an undeliverable stop so Hermes is not orphaned"
     assert.isDefined(seen.find((event) => event.type === "content.delta"));
 
     yield* Fiber.interrupt(fiber);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("drops frames for a session it no longer tracks", () =>
@@ -1191,7 +1204,7 @@ it.effect("drops frames for a session it no longer tracks", () =>
     assert.equal(seen.length, 0, "frames for an untracked session must not be forwarded");
 
     yield* Fiber.interrupt(fiber);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 /**
@@ -1262,7 +1275,7 @@ it.effect("enriches the base description with what the plugin reports", () =>
               activity: true,
               approvals: true,
               userInput: true,
-              attachments: false,
+              attachments: true,
             },
             model: "claude-opus-5",
             reasoningEffort: "high",
@@ -1298,9 +1311,9 @@ it.effect("enriches the base description with what the plugin reports", () =>
       activity: true,
       approvals: true,
       userInput: true,
-      attachments: false,
+      attachments: true,
     });
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("keeps base values for fields the plugin omitted", () =>
@@ -1320,7 +1333,7 @@ it.effect("keeps base values for fields the plugin omitted", () =>
               activity: true,
               approvals: true,
               userInput: true,
-              attachments: false,
+              attachments: true,
             },
             skills: [],
             describedAt: "2024-06-01T10:00:00.000Z",
@@ -1346,7 +1359,7 @@ it.effect("keeps base values for fields the plugin omitted", () =>
     // Omitted model/effort must not blank out what the snapshot already knew.
     assert.equal(description.model?.displayName, "Snapshot Model");
     assert.equal(description.model?.reasoningEffortLabel, "medium");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("fails describe rather than reporting stale data when the gateway is offline", () =>
@@ -1362,7 +1375,7 @@ it.effect("fails describe rather than reporting stale data when the gateway is o
     // The caller (ProviderRegistry) turns this failure into "render the
     // snapshot default", which is why failing here is correct.
     assert.equal(result._tag, "Failure");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 
 it.effect("reads a skill body and passes a null body through unchanged", () =>
@@ -1390,5 +1403,150 @@ it.effect("reads a skill body and passes a null body through unchanged", () =>
     // "Asked, and there is nothing to show" is distinct from a dropped reply.
     const empty = yield* adapter.getSkillBody!("empty");
     assert.equal(empty.markdown, null);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
+);
+
+/**
+ * A broker fake that answers session.ensure and turn.start/steer, recording
+ * everything sent — the minimum surface `sendTurn` touches.
+ */
+const makeTurnBroker = () => {
+  const sent: Array<HermesGatewayT3ToPluginMessage> = [];
+  const broker: HermesGatewayBrokerShape = {
+    createEnrollment: () => Effect.die(new Error("unused")),
+    getInstanceStatus: () => Effect.die(new Error("unused")),
+    listInstances: Effect.succeed([]),
+    renameInstance: () => Effect.die(new Error("unused")),
+    revokeInstance: () => Effect.die(new Error("unused")),
+    removeInstance: () => Effect.die(new Error("unused")),
+    registerConnection: () => Effect.die(new Error("unused")),
+    receive: () => Effect.void,
+    disconnect: () => Effect.void,
+    request: (_instanceId, message) => {
+      sent.push(message);
+      if (message.type === "session.ensure") {
+        return Effect.succeed({
+          type: "session.ready",
+          protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+          requestId: message.requestId,
+          threadId: message.threadId,
+          sessionId: HermesGatewaySessionId.make("session-attachments"),
+          resumed: false,
+        });
+      }
+      if (message.type === "turn.start" || message.type === "turn.steer") {
+        return Effect.succeed({
+          type: "turn.started",
+          protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+          requestId: message.requestId,
+          threadId: message.threadId,
+          sessionId: message.sessionId,
+          turnId: message.turnId,
+        });
+      }
+      return Effect.die(new Error(`unexpected request ${message.type}`));
+    },
+    send: (_instanceId, message) => Effect.sync(() => sent.push(message)).pipe(Effect.asVoid),
+    isConnected: () => Effect.succeed(true),
+    stream: Stream.empty,
+    streamStatuses: Stream.empty,
+  };
+  return { sent, broker } as const;
+};
+
+/** Write attachment bytes where the adapter will look for them. */
+const writeAttachmentFixture = (attachment: ChatAttachment, bytes: Uint8Array) =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const attachmentPath = resolveAttachmentPath({
+      attachmentsDir: config.attachmentsDir,
+      attachment,
+    });
+    if (!attachmentPath) return yield* Effect.die(new Error("unresolvable attachment path"));
+    yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+    yield* fileSystem.writeFile(attachmentPath, bytes);
+  });
+
+it.effect("inlines attachment bytes as base64 on the turn frame", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_attachments");
+    const threadId = ThreadId.make("thread-attachments");
+    const { sent, broker } = makeTurnBroker();
+    const adapter = yield* makeHermesAdapter({ instanceId }).pipe(
+      Effect.provideService(HermesGatewayBroker, broker),
+    );
+
+    const attachment: ChatAttachment = {
+      type: "file",
+      id: createAttachmentId(threadId)!,
+      name: "notes.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 9,
+    };
+    yield* writeAttachmentFixture(attachment, new TextEncoder().encode("PDF BYTES"));
+
+    yield* adapter.startSession({
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+    yield* adapter.sendTurn({ threadId, input: "here is a file", attachments: [attachment] });
+
+    const turnStart = sent.find((message) => message.type === "turn.start");
+    if (!turnStart || turnStart.type !== "turn.start") {
+      return yield* Effect.die(new Error("turn.start was not sent"));
+    }
+    assert.equal(turnStart.attachments?.length, 1);
+    const framed = turnStart.attachments![0]!;
+    assert.equal(framed.name, "notes.pdf");
+    assert.equal(framed.mimeType, "application/pdf");
+    // sizeBytes reflects the bytes actually read, not the caller's claim.
+    assert.equal(framed.sizeBytes, 9);
+    assert.equal(Buffer.from(framed.data, "base64").toString("utf8"), "PDF BYTES");
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
+);
+
+it.effect("fails a turn whose attachments total more than the per-turn ceiling", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_attachments_oversized");
+    const threadId = ThreadId.make("thread-attachments-oversized");
+    const { sent, broker } = makeTurnBroker();
+    const adapter = yield* makeHermesAdapter({ instanceId }).pipe(
+      Effect.provideService(HermesGatewayBroker, broker),
+    );
+
+    // Two files under the per-file cap whose sum crosses the 25MB per-turn
+    // total — the case only the adapter can see.
+    const half = Math.floor(HERMES_MEDIA_MAX_BYTES / 2) + 1024;
+    const attachments: Array<ChatAttachment> = [];
+    for (const name of ["first.bin", "second.bin"]) {
+      const attachment: ChatAttachment = {
+        type: "file",
+        id: createAttachmentId(threadId)!,
+        name,
+        mimeType: "application/octet-stream",
+        sizeBytes: half,
+      };
+      yield* writeAttachmentFixture(attachment, new Uint8Array(half));
+      attachments.push(attachment);
+    }
+
+    yield* adapter.startSession({
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+    const error = yield* Effect.flip(
+      adapter.sendTurn({ threadId, input: "too much", attachments }),
+    );
+    assert.equal(error._tag, "ProviderAdapterValidationError");
+    if (error._tag === "ProviderAdapterValidationError") {
+      assert.include(error.issue, "25MB");
+      assert.include(error.issue, "second.bin");
+    }
+    // The turn never reached the gateway.
+    assert.isUndefined(sent.find((message) => message.type === "turn.start"));
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );

@@ -1,6 +1,7 @@
 import {
   EventId,
   HERMES_GATEWAY_PROTOCOL_VERSION,
+  HERMES_MEDIA_MAX_BYTES,
   HermesGatewayRequestId,
   HermesGatewayResumeCursor,
   HermesGatewaySessionId,
@@ -11,6 +12,7 @@ import {
   TurnId,
   type CanonicalRequestType,
   type HermesGatewayPluginToT3Message,
+  type HermesGatewayTurnAttachment,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
@@ -19,10 +21,13 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ServerConfig } from "../../config.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
@@ -149,6 +154,8 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
 }) {
   const crypto = yield* Crypto.Crypto;
   const broker = yield* HermesGatewayBroker;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const serverConfig = yield* ServerConfig;
   const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, SessionContext>();
 
@@ -724,15 +731,65 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
     },
   );
 
-  const sendTurn: HermesAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (turnInput) {
-    const context = yield* findContext(turnInput.threadId);
-    if (turnInput.attachments && turnInput.attachments.length > 0) {
-      return yield* new ProviderAdapterValidationError({
-        provider: PROVIDER,
-        operation: "sendTurn",
-        issue: "Hermes gateway attachments are not supported yet.",
+  /**
+   * Read a turn's attachments off disk and inline them onto the frame.
+   *
+   * Inline base64 on purpose: the plugin may run on another machine with no
+   * authenticated route back to T3's asset endpoint, so a URL would be a
+   * side channel that sometimes works. The per-turn total is enforced here —
+   * the schema bounds each file, but only the adapter sees the whole turn.
+   */
+  const readTurnAttachments = Effect.fn("readTurnAttachments")(function* (
+    attachments: NonNullable<Parameters<HermesAdapterShape["sendTurn"]>[0]["attachments"]>,
+  ): Effect.fn.Return<
+    Array<HermesGatewayTurnAttachment>,
+    ProviderAdapterRequestError | ProviderAdapterValidationError
+  > {
+    const frameAttachments: Array<HermesGatewayTurnAttachment> = [];
+    let totalBytes = 0;
+    for (const attachment of attachments) {
+      const attachmentPath = resolveAttachmentPath({
+        attachmentsDir: serverConfig.attachmentsDir,
+        attachment,
+      });
+      if (!attachmentPath) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: `Invalid attachment id '${attachment.id}'.`,
+        });
+      }
+      const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn.start",
+              detail: `Failed to read attachment '${attachment.name}'.`,
+              cause,
+            }),
+        ),
+      );
+      totalBytes += bytes.byteLength;
+      if (totalBytes > HERMES_MEDIA_MAX_BYTES) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: `Attachments total more than ${Math.floor(HERMES_MEDIA_MAX_BYTES / (1024 * 1024))}MB for one turn — remove '${attachment.name}' or send it separately.`,
+        });
+      }
+      frameAttachments.push({
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        sizeBytes: bytes.byteLength,
+        data: Buffer.from(bytes).toString("base64"),
       });
     }
+    return frameAttachments;
+  });
+
+  const sendTurn: HermesAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (turnInput) {
+    const context = yield* findContext(turnInput.threadId);
     const text = turnInput.input;
     if (!text || text.trim().length === 0) {
       return yield* new ProviderAdapterValidationError({
@@ -741,6 +798,10 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
         issue: "Hermes turns require text input.",
       });
     }
+    const attachments =
+      turnInput.attachments && turnInput.attachments.length > 0
+        ? yield* readTurnAttachments(turnInput.attachments)
+        : undefined;
     const activeTurnId = context.session.activeTurnId;
     const method = activeTurnId ? "turn.steer" : "turn.start";
     // Checked before the request so an offline gateway fails immediately with
@@ -756,6 +817,7 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
       sessionId: context.hermesSessionId,
       turnId,
       text,
+      ...(attachments !== undefined ? { attachments } : {}),
     });
     if (response.type !== "turn.started") {
       return yield* new ProviderAdapterRequestError({

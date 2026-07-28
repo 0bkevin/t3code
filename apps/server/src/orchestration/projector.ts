@@ -742,11 +742,13 @@ export function projectEvent(
             id: payload.messageId,
             role: "assistant",
             text: payload.text,
-            // A delivery belongs to no turn: it arrives outside the turn
-            // machinery and may land while an unrelated turn is live.
-            turnId: null,
+            // A proactive delivery belongs to no turn: it arrives outside the
+            // turn machinery and may land while an unrelated turn is live.
+            // Turn-scoped media is the exception — the payload names its turn.
+            turnId: payload.turnId ?? null,
             streaming: false,
             notification: payload.notification,
+            ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
           },

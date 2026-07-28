@@ -4,6 +4,8 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
+  type ChatAttachment,
   type OrchestrationReadModel,
   type OrchestrationThread,
 } from "@t3tools/contracts";
@@ -63,6 +65,8 @@ function deliverCommand(overrides: {
   readonly deliveryId?: string;
   readonly messageId?: string;
   readonly text?: string;
+  readonly attachments?: ReadonlyArray<ChatAttachment>;
+  readonly turnId?: TurnId;
 }) {
   return {
     type: "thread.notification.deliver",
@@ -73,9 +77,19 @@ function deliverCommand(overrides: {
     kind: overrides.kind ?? "cron",
     label: "Cron: daily-digest",
     text: overrides.text ?? "Digest ready.",
+    ...(overrides.attachments !== undefined ? { attachments: overrides.attachments } : {}),
+    ...(overrides.turnId !== undefined ? { turnId: overrides.turnId } : {}),
     createdAt: NOW,
   } as const;
 }
+
+const mediaAttachment: ChatAttachment = {
+  type: "file",
+  id: "thread-1-2c8b3f1e-0000-4000-8000-000000000001",
+  name: "chart.mp4",
+  mimeType: "video/mp4",
+  sizeBytes: 2_048,
+};
 
 const deliveredMessage: OrchestrationThread["messages"][number] = {
   id: MessageId.make("message-1"),
@@ -218,6 +232,72 @@ it.layer(NodeServices.layer)("notification delivery decider", (it) => {
       if (delivered?.type === "thread.notification-delivered") {
         expect(delivered.payload.messageId).toBe("message-2");
         expect(delivered.payload.notification.deliveryId).toBe("delivery-2");
+      }
+    }),
+  );
+
+  it.effect("threads media attachments and turnId through the delivered payload", () =>
+    Effect.gen(function* () {
+      const turnId = TurnId.make("turn-live");
+      const result = yield* decideOrchestrationCommand({
+        command: deliverCommand({
+          commandId: "cmd-deliver-media",
+          deliveryId: "delivery-media",
+          messageId: "message-media",
+          text: "A caption",
+          attachments: [mediaAttachment],
+          turnId,
+        }),
+        readModel: makeReadModel({}),
+      });
+      const events = Array.isArray(result) ? result : [result];
+      const delivered = events.find((event) => event.type === "thread.notification-delivered");
+      if (delivered?.type === "thread.notification-delivered") {
+        expect(delivered.payload.attachments).toEqual([mediaAttachment]);
+        expect(delivered.payload.turnId).toBe(turnId);
+      } else {
+        expect.unreachable("expected a thread.notification-delivered event");
+      }
+    }),
+  );
+
+  it.effect("rebuilds media replays from the persisted row, not the retry's fields", () =>
+    Effect.gen(function* () {
+      const persisted: OrchestrationThread["messages"][number] = {
+        ...deliveredMessage,
+        id: MessageId.make("message-media"),
+        text: "A caption",
+        turnId: TurnId.make("turn-live"),
+        attachments: [mediaAttachment],
+        notification: {
+          kind: "cron",
+          label: "Cron: daily-digest",
+          deliveryId: "delivery-media",
+        },
+      };
+      const result = yield* decideOrchestrationCommand({
+        // The retry names a different messageId and attachment id — its bytes
+        // were written under the original id, so adopting the retry's fields
+        // would re-point the row at files that do not exist.
+        command: deliverCommand({
+          commandId: "cmd-deliver-media-retry",
+          deliveryId: "delivery-media",
+          messageId: "message-media-retry",
+          text: "A caption (retry)",
+          attachments: [
+            { ...mediaAttachment, id: "thread-1-2c8b3f1e-0000-4000-8000-00000000dead" },
+          ],
+        }),
+        readModel: makeReadModel({ messages: [persisted] }),
+      });
+      const events = Array.isArray(result) ? result : [result];
+      expect(events.map((event) => event.type)).toEqual(["thread.notification-delivered"]);
+      const delivered = events[0];
+      if (delivered?.type === "thread.notification-delivered") {
+        expect(delivered.payload.messageId).toBe("message-media");
+        expect(delivered.payload.text).toBe("A caption");
+        expect(delivered.payload.attachments).toEqual([mediaAttachment]);
+        expect(delivered.payload.turnId).toBe("turn-live");
       }
     }),
   );

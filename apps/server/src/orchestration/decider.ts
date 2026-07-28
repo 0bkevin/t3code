@@ -1224,6 +1224,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const duplicate = thread.messages.find(
         (message) => message.notification?.deliveryId === command.deliveryId,
       );
+      // On replay these too come from the persisted row, for the same reason
+      // as the text: the retry's attachment ids point at files written for a
+      // different messageId, and adopting them would re-point the row.
+      const attachments = duplicate ? duplicate.attachments : command.attachments;
+      const turnId = duplicate ? (duplicate.turnId ?? undefined) : command.turnId;
       const notificationEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1241,6 +1246,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             label: command.label,
             deliveryId: command.deliveryId,
           },
+          ...(attachments !== undefined ? { attachments } : {}),
+          ...(turnId !== undefined ? { turnId } : {}),
           createdAt: duplicate?.createdAt ?? command.createdAt,
           updatedAt: duplicate?.updatedAt ?? command.createdAt,
         },

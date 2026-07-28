@@ -60,7 +60,9 @@ const capabilities = {
   activity: true,
   approvals: true,
   userInput: true,
-  attachments: false,
+  // Part of the v4 contract itself: a hello advertising `false` fails the
+  // strict capabilities check and is rejected at the version gate.
+  attachments: true,
 } as const;
 
 const makeSecretStore = () => {
@@ -429,6 +431,7 @@ it.effect("shares one live broker between the gateway route and Hermes provider 
       }),
     ),
     Layer.provide(Layer.succeed(ServerSecretStore.ServerSecretStore, secrets)),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-hermes-broker-test-" })),
     Layer.provide(NodeServices.layer),
   );
 
@@ -513,6 +516,7 @@ it.effect("resumes an existing thread after the gateway restarts", () => {
       }),
     ),
     Layer.provide(Layer.succeed(ServerSecretStore.ServerSecretStore, secrets)),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-hermes-broker-test-" })),
     Layer.provide(NodeServices.layer),
   );
 

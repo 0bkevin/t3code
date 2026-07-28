@@ -911,11 +911,17 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
           );
         }
         yield* publishStatus(instanceId, record);
+        // Names the fix, not just the mismatch: the rejection text is what a
+        // v3 (pre-media) plugin's operator sees in its logs. A right-version
+        // hello can still land here when its capabilities don't satisfy the
+        // v4 contract (e.g. `attachments: false`), so say which it was.
         return yield* Effect.fail(
           rejection(
             hello.requestId,
             "version-incompatible",
-            `Expected protocol version ${HERMES_GATEWAY_PROTOCOL_VERSION}.`,
+            hello.protocolVersion !== HERMES_GATEWAY_PROTOCOL_VERSION
+              ? `Expected protocol version ${HERMES_GATEWAY_PROTOCOL_VERSION}, received ${hello.protocolVersion}. Upgrade the T3 Code gateway plugin on the Hermes host to reconnect.`
+              : `The advertised capabilities do not satisfy the version ${HERMES_GATEWAY_PROTOCOL_VERSION} contract. Upgrade the T3 Code gateway plugin on the Hermes host to reconnect.`,
           ),
         );
       }
@@ -1035,12 +1041,12 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
 
   const receive = (registration: HermesGatewayConnectionRegistration, message: PluginMessage) =>
     Effect.gen(function* () {
-      // A delivery connection's one frame — `home.deliver` — is handled at the
-      // transport layer, because its ack has to go back to that specific
-      // short-lived socket. Anything else it sends is outside its remit and is
-      // dropped here: it holds no session, so completing a correlated request
-      // or publishing a status off it would let a throwaway cron socket speak
-      // for the live connection.
+      // A delivery connection's frames — `home.deliver` and `media.deliver` —
+      // are handled at the transport layer, because their acks have to go back
+      // to that specific short-lived socket. Anything else it sends is outside
+      // its remit and is dropped here: it holds no session, so completing a
+      // correlated request or publishing a status off it would let a throwaway
+      // cron socket speak for the live connection.
       if (registration.role === "delivery") return;
 
       if (message.type === "connection.status") {

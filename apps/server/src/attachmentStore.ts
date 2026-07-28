@@ -10,7 +10,35 @@ import {
 } from "./attachmentPaths.ts";
 import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
-const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
+/**
+ * Extensions a generic file attachment may take on disk. The extension is
+ * derived from the declared mime rather than the client-supplied filename —
+ * the asset route later re-derives the served content type from it, so this
+ * map is what keeps a video playing as a video and everything unknown pinned
+ * to inert `.bin`.
+ */
+const FILE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "application/gzip": ".gz",
+  "application/json": ".json",
+  "application/pdf": ".pdf",
+  "application/zip": ".zip",
+  "audio/mpeg": ".mp3",
+  "audio/ogg": ".ogg",
+  "audio/wav": ".wav",
+  "text/csv": ".csv",
+  "text/markdown": ".md",
+  "text/plain": ".txt",
+  "video/mp4": ".mp4",
+  "video/quicktime": ".mov",
+  "video/webm": ".webm",
+};
+const SAFE_FILE_EXTENSIONS = new Set(Object.values(FILE_EXTENSION_BY_MIME_TYPE));
+
+const ATTACHMENT_FILENAME_EXTENSIONS = [
+  ...SAFE_IMAGE_FILE_EXTENSIONS,
+  ...SAFE_FILE_EXTENSIONS,
+  ".bin",
+];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -61,6 +89,11 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
         mimeType: attachment.mimeType,
         fileName: attachment.name,
       });
+      return `${attachment.id}${extension}`;
+    }
+    case "file": {
+      const extension =
+        FILE_EXTENSION_BY_MIME_TYPE[attachment.mimeType.trim().toLowerCase()] ?? ".bin";
       return `${attachment.id}${extension}`;
     }
   }

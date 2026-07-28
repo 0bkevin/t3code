@@ -115,6 +115,46 @@ it.effect("replays a delivery onto the same message instead of duplicating it", 
   }),
 );
 
+it.effect("projects media deliveries with attachments and an optional turnId", () =>
+  Effect.gen(function* () {
+    const created = yield* projectEvent(createEmptyReadModel(CREATED_AT), threadCreatedEvent);
+    const attachment = {
+      type: "file",
+      id: "thread-home-2c8b3f1e-0000-4000-8000-000000000001",
+      name: "chart.mp4",
+      mimeType: "video/mp4",
+      sizeBytes: 2_048,
+    } as const;
+    const delivered = yield* projectEvent(
+      created,
+      makeEvent({
+        sequence: 2,
+        type: "thread.notification-delivered",
+        occurredAt: DELIVERED_AT,
+        payload: {
+          threadId: ThreadId.make("thread-home"),
+          messageId: MessageId.make("notification:media-1"),
+          text: "A caption",
+          notification: {
+            kind: "cron",
+            label: "Cron: daily-digest",
+            deliveryId: "delivery-media",
+          },
+          attachments: [attachment],
+          turnId: "turn-live",
+          createdAt: DELIVERED_AT,
+          updatedAt: DELIVERED_AT,
+        },
+      }),
+    );
+
+    const message = delivered.threads[0]?.messages[0];
+    expect(message?.attachments).toEqual([attachment]);
+    // Turn-scoped media names its turn so it sequences beside the turn's text.
+    expect(message?.turnId).toBe("turn-live");
+  }),
+);
+
 it.effect("keeps deliveries alongside ordinary turn messages", () =>
   Effect.gen(function* () {
     const created = yield* projectEvent(createEmptyReadModel(CREATED_AT), threadCreatedEvent);

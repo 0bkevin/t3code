@@ -342,9 +342,6 @@ function collectThreadAttachmentRelativePaths(
   const relativePaths = new Set<string>();
   for (const message of messages) {
     for (const attachment of message.attachments ?? []) {
-      if (attachment.type !== "image") {
-        continue;
-      }
       const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachment.id);
       if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
         continue;
@@ -956,10 +953,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
-            turnId: null,
+            // Null for proactive deliveries; turn-scoped media names its turn
+            // so it sequences beside that turn's text.
+            turnId: event.payload.turnId ?? null,
             role: "assistant",
             text: event.payload.text,
             notification: event.payload.notification,
+            ...(event.payload.attachments !== undefined
+              ? { attachments: [...event.payload.attachments] }
+              : {}),
             isStreaming: false,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,

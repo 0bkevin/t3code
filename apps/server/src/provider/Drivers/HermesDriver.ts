@@ -9,10 +9,12 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { ServerConfig } from "../../config.ts";
 import { readHomeThreadId } from "../../orchestration/homeThreads.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
@@ -27,7 +29,11 @@ import { HermesGatewayBroker } from "../Services/HermesGatewayBroker.ts";
 
 const decodeHermesSettings = Schema.decodeSync(HermesSettings);
 
-export type HermesDriverEnv = Crypto.Crypto | ServerSettingsService;
+export type HermesDriverEnv =
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | ServerConfig
+  | ServerSettingsService;
 
 const unsupportedTextGeneration = (
   operation:

@@ -2513,6 +2513,60 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         JSON.parse(threadRows[0]?.latestNotification ?? "null"),
         { kind: "cron", label: "Cron: daily-digest", deliveredAt },
       );
+
+      // Media rides the same event: attachments land in attachments_json and
+      // a turn-scoped delivery keeps its turn id on the row.
+      const mediaDeliveredAt = "2026-07-01T09:06:00.000Z";
+      const mediaAttachment = {
+        type: "file",
+        id: "thread-notify-2c8b3f1e-0000-4000-8000-000000000001",
+        name: "chart.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 2_048,
+      } as const;
+      yield* appendAndProject({
+        type: "thread.notification-delivered",
+        eventId: EventId.make("evt-notify-media"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-notify"),
+        occurredAt: mediaDeliveredAt,
+        commandId: CommandId.make("cmd-notify-media"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-notify-media"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-notify"),
+          messageId: MessageId.make("message-notify-media"),
+          text: "A caption",
+          notification: {
+            kind: "cron",
+            label: "Cron: daily-digest",
+            deliveryId: "delivery-media",
+          },
+          attachments: [mediaAttachment],
+          turnId: TurnId.make("turn-live"),
+          createdAt: mediaDeliveredAt,
+          updatedAt: mediaDeliveredAt,
+        },
+      });
+
+      const mediaRows = yield* sql<{
+        readonly turnId: string | null;
+        readonly attachments: string | null;
+      }>`
+        SELECT
+          turn_id AS "turnId",
+          attachments_json AS "attachments"
+        FROM projection_thread_messages
+        WHERE message_id = 'message-notify-media'
+      `;
+      assert.equal(mediaRows.length, 1);
+      assert.equal(mediaRows[0]?.turnId, "turn-live");
+      assert.deepEqual(
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.parse(mediaRows[0]?.attachments ?? "null"),
+        [mediaAttachment],
+      );
     }),
   );
 
