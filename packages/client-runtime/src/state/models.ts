@@ -124,7 +124,7 @@ function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary 
     activeRunId: thread.activeRunId,
     providerInstanceId: thread.providerInstanceId,
     providerName: null,
-    lastError: null,
+    lastError: thread.lastError ?? null,
     updatedAt: iso(thread.updatedAt),
   };
 }

@@ -124,13 +124,13 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         id: providerSessionId,
         driver,
         providerInstanceId,
-        status: "ready" as const,
+        status: "error" as const,
         cwd: "/workspace",
         model: modelSelection.model,
         capabilities: CodexProviderCapabilitiesV2,
         createdAt: now,
         updatedAt: now,
-        lastError: null,
+        lastError: "provider process exited",
       };
 
       yield* projectionStore.apply({
@@ -173,6 +173,16 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           (value) => value.id,
         ),
         [providerSessionId],
+      );
+      assert.deepEqual(
+        (yield* projectionStore.getShellSnapshot()).threads.map((thread) => ({
+          id: thread.id,
+          lastError: thread.lastError,
+        })),
+        [
+          { id: firstThreadId, lastError: "provider process exited" },
+          { id: secondThreadId, lastError: "provider process exited" },
+        ],
       );
 
       yield* projectionStore.apply({
