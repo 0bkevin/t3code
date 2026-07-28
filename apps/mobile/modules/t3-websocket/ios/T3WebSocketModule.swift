@@ -58,11 +58,15 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
   private var idsByTaskIdentifier: [Int: Int] = [:]
   private var emittersById: [Int: T3WebSocketEmitter] = [:]
 
-  private lazy var session = URLSession(
-    configuration: .default,
-    delegate: self,
-    delegateQueue: nil
-  )
+  private lazy var session: URLSession = {
+    let configuration = URLSessionConfiguration.default
+    // Dev clients (and network debuggers) register custom URLProtocol classes
+    // that intercept URLSession traffic. They do not understand the WebSocket
+    // upgrade and drop the connection right after the 101 (NSURLErrorDomain
+    // -1005). WebSocket traffic has no reason to go through them.
+    configuration.protocolClasses = []
+    return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+  }()
 
   func open(id: Int, url: URL, protocols: [String], emitter: @escaping T3WebSocketEmitter) {
     queue.async {
