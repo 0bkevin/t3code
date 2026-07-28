@@ -54,10 +54,10 @@ vi.mock("expo", () => ({
   requireOptionalNativeModule: () => mocks.getModule(),
 }));
 
-import { nativeWebSocketConstructor } from "./nativeWebSocket";
+import { loadNativeWebSocketConstructor } from "./nativeWebSocket";
 
-function openSocket() {
-  const construct = nativeWebSocketConstructor();
+async function openSocket() {
+  const construct = await loadNativeWebSocketConstructor();
   expect(construct).not.toBeNull();
   return construct!("wss://example.test/ws");
 }
@@ -77,17 +77,17 @@ describe("nativeWebSocketConstructor", () => {
     mocks.reset();
   });
 
-  it("returns null on Android and when the native module is missing", () => {
+  it("resolves null on Android and when the native module is missing", async () => {
     mocks.setPlatform("android");
-    expect(nativeWebSocketConstructor()).toBeNull();
+    expect(await loadNativeWebSocketConstructor()).toBeNull();
 
     mocks.setPlatform("ios");
     mocks.setModuleAvailable(false);
-    expect(nativeWebSocketConstructor()).toBeNull();
+    expect(await loadNativeWebSocketConstructor()).toBeNull();
   });
 
-  it("connects and transitions readyState on open", () => {
-    const socket = openSocket();
+  it("connects and transitions readyState on open", async () => {
+    const socket = await openSocket();
     const id = connectionIdOf(socket);
     expect(lastCall("connect")!.args).toEqual([id, "wss://example.test/ws", []]);
     expect(socket.readyState).toBe(0);
@@ -103,8 +103,8 @@ describe("nativeWebSocketConstructor", () => {
     expect(opened).toHaveBeenCalledTimes(1);
   });
 
-  it("delivers text messages as strings and binary messages as bytes", () => {
-    const socket = openSocket();
+  it("delivers text messages as strings and binary messages as bytes", async () => {
+    const socket = await openSocket();
     const id = connectionIdOf(socket);
     const received: unknown[] = [];
     socket.addEventListener("message", (event) => {
@@ -119,8 +119,8 @@ describe("nativeWebSocketConstructor", () => {
     expect([...(received[1] as Uint8Array)]).toEqual([1, 2, 3]);
   });
 
-  it("sends binary data base64-encoded and strings as text", () => {
-    const socket = openSocket();
+  it("sends binary data base64-encoded and strings as text", async () => {
+    const socket = await openSocket();
     const id = connectionIdOf(socket);
 
     socket.send("ping");
@@ -130,10 +130,10 @@ describe("nativeWebSocketConstructor", () => {
     expect(lastCall("sendBinary")!.args).toEqual([id, btoa("\x01\x02\x03")]);
   });
 
-  it("dispatches close once and routes messages by connection id", () => {
-    const first = openSocket();
+  it("dispatches close once and routes messages by connection id", async () => {
+    const first = await openSocket();
     const firstId = connectionIdOf(first);
-    const second = openSocket();
+    const second = await openSocket();
     const secondId = connectionIdOf(second);
     expect(firstId).not.toBe(secondId);
 
@@ -151,8 +151,8 @@ describe("nativeWebSocketConstructor", () => {
     expect(second.readyState).toBe(0);
   });
 
-  it("close() is idempotent and forwards code and reason", () => {
-    const socket = openSocket();
+  it("close() is idempotent and forwards code and reason", async () => {
+    const socket = await openSocket();
     const id = connectionIdOf(socket);
 
     socket.close(4000, "bye");

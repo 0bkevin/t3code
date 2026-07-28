@@ -82,8 +82,10 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
     queue.async {
       guard let task = self.tasksById[id] else { return }
       task.send(message) { [weak self] error in
-        guard let error else { return }
-        self?.emit(id: id, event: "onError", payload: ["message": error.localizedDescription])
+        guard let self, let error else { return }
+        self.queue.async {
+          self.emitLocked(id: id, event: "onError", payload: ["message": error.localizedDescription])
+        }
       }
     }
   }
@@ -110,35 +112,34 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
   private func receiveLoop(id: Int, task: URLSessionWebSocketTask) {
     task.receive { [weak self] result in
       guard let self else { return }
-      switch result {
-      case .success(let message):
-        switch message {
-        case .string(let text):
-          self.emit(id: id, event: "onMessage", payload: ["data": text, "binary": false])
-        case .data(let data):
-          self.emit(id: id, event: "onMessage", payload: ["data": data.base64EncodedString(), "binary": true])
-        @unknown default:
-          break
-        }
-        self.queue.async {
+      self.queue.async {
+        switch result {
+        case .success(let message):
+          switch message {
+          case .string(let text):
+            self.emitLocked(id: id, event: "onMessage", payload: ["data": text, "binary": false])
+          case .data(let data):
+            self.emitLocked(id: id, event: "onMessage", payload: ["data": data.base64EncodedString(), "binary": true])
+          @unknown default:
+            break
+          }
           guard self.tasksById[id] != nil else { return }
           self.receiveLoop(id: id, task: task)
+        case .failure:
+          // The delegate close/error callbacks own failure reporting; the loop
+          // just stops so it does not spin on a dead task.
+          break
         }
-      case .failure:
-        // The delegate close/error callbacks own failure reporting; the loop
-        // just stops so it does not spin on a dead task.
-        break
       }
     }
   }
 
-  private func emit(id: Int, event: String, payload: [String: Any]) {
-    queue.async {
-      guard let emitter = self.emittersById[id] else { return }
-      var enriched = payload
-      enriched["id"] = id
-      emitter(event, enriched)
-    }
+  // Must be called on `queue`.
+  private func emitLocked(id: Int, event: String, payload: [String: Any]) {
+    guard let emitter = emittersById[id] else { return }
+    var enriched = payload
+    enriched["id"] = id
+    emitter(event, enriched)
   }
 
   private func remove(id: Int, taskIdentifier: Int) {
@@ -156,7 +157,7 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
   ) {
     queue.async {
       guard let id = self.idsByTaskIdentifier[webSocketTask.taskIdentifier] else { return }
-      self.emit(id: id, event: "onOpen", payload: ["protocol": `protocol` ?? ""])
+      self.emitLocked(id: id, event: "onOpen", payload: ["protocol": `protocol` ?? ""])
     }
   }
 
@@ -169,7 +170,7 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
     queue.async {
       guard let id = self.idsByTaskIdentifier[webSocketTask.taskIdentifier] else { return }
       let reasonText = reason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-      self.emit(id: id, event: "onClose", payload: ["code": closeCode.rawValue, "reason": reasonText])
+      self.emitLocked(id: id, event: "onClose", payload: ["code": closeCode.rawValue, "reason": reasonText])
       self.remove(id: id, taskIdentifier: webSocketTask.taskIdentifier)
     }
   }
@@ -182,10 +183,10 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
     queue.async {
       guard let id = self.idsByTaskIdentifier[task.taskIdentifier] else { return }
       if let error {
-        self.emit(id: id, event: "onError", payload: ["message": error.localizedDescription])
+        self.emitLocked(id: id, event: "onError", payload: ["message": error.localizedDescription])
         // Abnormal termination: no close frame arrived, mirror the browser's
         // 1006 so Effect's close-code classification treats it as an error.
-        self.emit(id: id, event: "onClose", payload: ["code": 1006, "reason": error.localizedDescription])
+        self.emitLocked(id: id, event: "onClose", payload: ["code": 1006, "reason": error.localizedDescription])
       }
       self.remove(id: id, taskIdentifier: task.taskIdentifier)
     }

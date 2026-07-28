@@ -1,4 +1,3 @@
-import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
 
 // URLSession-backed WebSocket for iOS. React Native's built-in WebSocket uses
@@ -100,7 +99,12 @@ class NativeWebSocket {
     attachNativeListeners(module);
     const protocolList =
       typeof protocols === "string" ? [protocols] : protocols ? [...protocols] : [];
-    module.connect(this.id, url, protocolList);
+    try {
+      module.connect(this.id, url, protocolList);
+    } catch (error) {
+      activeSockets.delete(this.id);
+      throw error;
+    }
   }
 
   addEventListener(
@@ -185,17 +189,27 @@ class NativeWebSocket {
 }
 
 /**
- * WebSocket constructor backed by URLSessionWebSocketTask, or `null` when
- * unavailable (Android, or an iOS binary predating the native module). Callers
- * fall back to the global WebSocket.
+ * Loads the WebSocket constructor backed by URLSessionWebSocketTask, resolving
+ * `null` when unavailable (Android, or an iOS binary predating the native
+ * module). Callers fall back to the global WebSocket.
+ *
+ * Async because "expo" is imported lazily: its module-scope setup code assumes
+ * a React Native environment, and this file's importer (runtime.ts) sits in
+ * many test import chains.
  */
-export function nativeWebSocketConstructor():
-  | ((url: string, protocols?: string | Array<string>) => globalThis.WebSocket)
-  | null {
+export async function loadNativeWebSocketConstructor(): Promise<
+  ((url: string, protocols?: string | Array<string>) => globalThis.WebSocket) | null
+> {
   if (Platform.OS !== "ios") {
     return null;
   }
-  const module = requireOptionalNativeModule<T3WebSocketNativeModule>("T3WebSocket");
+  let module: T3WebSocketNativeModule | null;
+  try {
+    const expo = await import("expo");
+    module = expo.requireOptionalNativeModule<T3WebSocketNativeModule>("T3WebSocket");
+  } catch {
+    return null;
+  }
   if (!module) {
     return null;
   }
