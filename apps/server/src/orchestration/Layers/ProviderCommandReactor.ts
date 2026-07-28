@@ -44,6 +44,7 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { WorktreeService } from "../../vcs/WorktreeService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -196,6 +197,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
+  const worktreeService = yield* WorktreeService;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
@@ -495,6 +497,26 @@ const make = Effect.gen(function* () {
       thread,
       projects: project ? [project] : [],
     });
+    // A pruned (or manually deleted) worktree is recreated from the thread's
+    // branch before the provider session starts in it.
+    if (thread.worktreePath !== null && thread.branch !== null && project) {
+      yield* worktreeService
+        .reviveWorktree({
+          workspaceRoot: project.workspaceRoot,
+          worktreePath: thread.worktreePath,
+          branch: thread.branch,
+        })
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new ProviderAdapterRequestError({
+                provider: providerErrorLabel(preferredProvider),
+                method: "thread.turn.start",
+                detail: `Could not restore the thread's worktree: ${error.message}`,
+              }),
+          ),
+        );
+    }
 
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;

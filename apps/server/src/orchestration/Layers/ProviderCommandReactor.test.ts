@@ -60,6 +60,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
+import { WorktreeService } from "../../vcs/WorktreeService.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
@@ -376,6 +377,11 @@ describe("ProviderCommandReactor", () => {
         Layer.mock(TextGeneration, {
           generateBranchName,
           generateThreadTitle,
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.mock(WorktreeService, {
+          reviveWorktree: () => Effect.succeed({ revived: false }),
         }),
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),

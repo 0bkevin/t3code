@@ -13,7 +13,11 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
 
-import { createEnvironmentRpcCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
+import {
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
+  createEnvironmentSubscriptionAtomFamily,
+} from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
@@ -199,6 +203,22 @@ export function createVcsEnvironmentAtoms<R, E>(
       tag: WS_METHODS.vcsRemoveWorktree,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
+    }),
+    listWorktrees: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:vcs:list-worktrees",
+      tag: WS_METHODS.vcsListWorktrees,
+      staleTimeMs: 10_000,
+    }),
+    pruneWorktrees: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:prune-worktrees",
+      tag: WS_METHODS.vcsPruneWorktrees,
+      scheduler: vcsCommandScheduler,
+      // Prune spans repositories, so serialize per environment instead of
+      // per-cwd like the other vcs commands.
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId }) => JSON.stringify([environmentId, "worktrees.prune"]),
+      },
     }),
     createRef: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:create-ref",

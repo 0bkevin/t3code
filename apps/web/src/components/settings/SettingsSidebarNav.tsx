@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   BotIcon,
   FlaskConicalIcon,
+  FolderGit2Icon,
   GitBranchIcon,
   KeyboardIcon,
   Link2Icon,
@@ -29,6 +30,7 @@ export type SettingsSectionPath =
   | "/settings/keybindings"
   | "/settings/providers"
   | "/settings/source-control"
+  | "/settings/worktrees"
   | "/settings/connections"
   | "/settings/beta"
   | "/settings/archived";
@@ -43,6 +45,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
   { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
+  { label: "Worktrees", to: "/settings/worktrees", icon: FolderGit2Icon },
   { label: "Connections", to: "/settings/connections", icon: Link2Icon },
   { label: "Beta", to: "/settings/beta", icon: FlaskConicalIcon },
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },

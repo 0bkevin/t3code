@@ -65,6 +65,8 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
+import * as WorktreeReaper from "./vcs/WorktreeReaper.ts";
+import * as WorktreeService from "./vcs/WorktreeService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
@@ -229,6 +231,12 @@ const ReviewLayerLive = ReviewService.layer.pipe(
 );
 
 const VcsLayerLive = Layer.empty.pipe(
+  // Listed first so the later provideMerge entries (GitWorkflowLayerLive and
+  // friends) feed its requirements; projection repositories and server
+  // settings arrive from layers merged after VcsLayerLive in the runtime
+  // chain.
+  Layer.provideMerge(WorktreeReaper.layer),
+  Layer.provideMerge(WorktreeService.layer),
   Layer.provideMerge(VcsProjectConfig.layer),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
   Layer.provideMerge(VcsProvisioningService.layer.pipe(Layer.provide(VcsDriverRegistryLayerLive))),

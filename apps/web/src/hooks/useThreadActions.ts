@@ -31,7 +31,8 @@ import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import { useClientSettings } from "./useSettings";
+import { useClientSettings, usePrimarySettings } from "./useSettings";
+import { usePrimaryEnvironmentId } from "../state/environments";
 import { useAtomCommand } from "../state/use-atom-command";
 
 export class ThreadArchiveBlockedError extends Schema.TaggedErrorClass<ThreadArchiveBlockedError>()(
@@ -126,6 +127,10 @@ export function useThreadActions() {
   });
   const sidebarThreadSortOrder = useClientSettings((settings) => settings.sidebarThreadSortOrder);
   const confirmThreadDelete = useClientSettings((settings) => settings.confirmThreadDelete);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const deleteOrphanedWorktreesImmediately = usePrimarySettings(
+    (settings) => settings.worktrees.deleteOrphanedImmediately,
+  );
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearDraftThread);
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
@@ -258,9 +263,14 @@ export function useThreadActions() {
         ? formatWorktreePathForDisplay(orphanedWorktreePath)
         : null;
       const canDeleteWorktree = orphanedWorktreePath !== null && threadProject !== null;
+      // When the server is configured to remove orphaned worktrees on its
+      // own, skip the dialog and the client-side removal — the server's
+      // thread-deletion reactor prunes the worktree (safely, never forced).
+      const serverPrunesOrphan =
+        deleteOrphanedWorktreesImmediately && threadRef.environmentId === primaryEnvironmentId;
       const localApi = readLocalApi();
       let shouldDeleteWorktree = false;
-      if (canDeleteWorktree && localApi) {
+      if (canDeleteWorktree && localApi && !serverPrunesOrphan) {
         const confirmationResult = await settlePromise(() =>
           localApi.dialogs.confirm(
             [
@@ -401,8 +411,10 @@ export function useThreadActions() {
       clearProjectDraftThreadById,
       clearTerminalUiState,
       closeTerminal,
+      deleteOrphanedWorktreesImmediately,
       deleteThreadMutation,
       getCurrentRouteThreadRef,
+      primaryEnvironmentId,
       refreshVcsStatus,
       removeWorktree,
       router,
