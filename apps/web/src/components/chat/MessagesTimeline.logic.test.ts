@@ -261,6 +261,96 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("never folds a turn's attachment messages behind Worked-for", () => {
+    // Live repro (2026-07-28, thread d9f634bd): a Hermes reply of two media
+    // messages plus a closing text message rendered as ONLY the text — the
+    // files sat hidden inside the collapsed turn fold, because a single
+    // last-message-per-turn slot decided visibility. Attachments are output,
+    // not commentary; they must survive the fold un-expanded.
+    const makeMessage = (
+      id: string,
+      createdAt: string,
+      overrides: Record<string, unknown> = {},
+    ) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text: "",
+        turnId: "turn-media" as never,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+        ...overrides,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-media-entry",
+          kind: "message",
+          createdAt: "2026-07-28T17:54:36.789Z",
+          message: {
+            id: "user-media" as never,
+            role: "user",
+            text: "send me a couple files",
+            turnId: null,
+            createdAt: "2026-07-28T17:54:36.789Z",
+            updatedAt: "2026-07-28T17:54:36.789Z",
+            streaming: false,
+          },
+        },
+        makeMessage("assistant-commentary", "2026-07-28T17:55:01.000Z", {
+          text: "Let me grab those.",
+        }),
+        makeMessage("media-1", "2026-07-28T17:55:08.546238Z", {
+          attachments: [
+            {
+              type: "file",
+              id: "att-1",
+              name: "keybindings.md",
+              mimeType: "text/markdown",
+              sizeBytes: 4096,
+            },
+          ],
+        }),
+        makeMessage("media-2", "2026-07-28T17:55:08.546889Z", {
+          attachments: [
+            {
+              type: "file",
+              id: "att-2",
+              name: "workspace-layout.md",
+              mimeType: "text/markdown",
+              sizeBytes: 727,
+            },
+          ],
+        }),
+        makeMessage("assistant-caption", "2026-07-28T17:55:09.000Z", {
+          text: "Here are two harmless docs.",
+        }),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const visibleAssistantIds = rows
+      .filter(
+        (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+          row.kind === "message" && row.message.role === "assistant",
+      )
+      .map((row) => row.message.id as string);
+
+    // The fold still collapses the commentary, but both media messages and
+    // the closing caption render without expanding anything.
+    expect(visibleAssistantIds).toEqual(["media-1", "media-2", "assistant-caption"]);
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

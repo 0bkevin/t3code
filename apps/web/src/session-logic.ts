@@ -1365,7 +1365,29 @@ export function deriveTimelineEntries(
     entry,
   }));
   return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
+    compareIsoTimestamps(a.createdAt, b.createdAt),
+  );
+}
+
+/**
+ * Lexicographic ISO compare, robust to mixed fractional-second precision.
+ *
+ * The timeline mixes producers: this server stamps milliseconds (`.546Z`)
+ * while the Hermes plugin stamps microseconds (`.546238Z`). A raw string
+ * compare puts `.546Z` AFTER `.546238Z` (`Z` > `2`), which rendered a
+ * reply's lead-in caption below the files it introduced. Padding every
+ * fraction to nine digits restores instant order while staying a pure
+ * string comparison — all timestamps in this pipeline are UTC `Z`-suffixed
+ * IsoDateTime values, so no offset handling is needed.
+ */
+export function compareIsoTimestamps(a: string, b: string): number {
+  return normalizeIsoFraction(a).localeCompare(normalizeIsoFraction(b));
+}
+
+function normalizeIsoFraction(iso: string): string {
+  return iso.replace(
+    /(?:\.(\d+))?Z$/,
+    (_match, fraction: string | undefined) => `.${(fraction ?? "").padEnd(9, "0")}Z`,
   );
 }
 

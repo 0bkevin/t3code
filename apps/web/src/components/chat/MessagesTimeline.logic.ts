@@ -223,6 +223,7 @@ export function resolveAssistantMessageCopyState({
 
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
   const lastAssistantMessageIdByResponseKey = new Map<string, string>();
+  const attachmentMessageIds = new Set<string>();
   let nullTurnResponseIndex = 0;
 
   for (const timelineEntry of timelineEntries) {
@@ -238,13 +239,21 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
       continue;
     }
 
+    // A message carrying attachments is a deliverable, not commentary: a
+    // turn's files must stay visible even when a later text message takes
+    // the last-per-turn slot. Without this, turn-scoped media folded behind
+    // "Worked for …" and the reply appeared to arrive with no files.
+    if (message.attachments && message.attachments.length > 0) {
+      attachmentMessageIds.add(message.id);
+    }
+
     const responseKey = message.turnId
       ? `turn:${message.turnId}`
       : `unkeyed:${nullTurnResponseIndex}`;
     lastAssistantMessageIdByResponseKey.set(responseKey, message.id);
   }
 
-  return new Set(lastAssistantMessageIdByResponseKey.values());
+  return new Set([...lastAssistantMessageIdByResponseKey.values(), ...attachmentMessageIds]);
 }
 
 interface TurnFold {
@@ -456,7 +465,12 @@ function deriveTurnFolds(input: {
     }
     const hiddenEntryIds = new Set<string>();
     for (const entry of group.entries) {
-      if (entry.id !== group.terminalEntry?.id) {
+      // Every terminal message stays visible, not just the group's anchor:
+      // a turn can end with attachment messages AND a text message, and the
+      // files are output, not work-log noise to collapse.
+      const isTerminalMessage =
+        entry.kind === "message" && input.terminalAssistantMessageIds.has(entry.message.id);
+      if (entry.id !== group.terminalEntry?.id && !isTerminalMessage) {
         hiddenEntryIds.add(entry.id);
       }
     }

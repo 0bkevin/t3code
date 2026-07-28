@@ -1574,6 +1574,33 @@ describe("deriveTimelineEntries", () => {
       },
     });
   });
+
+  it("orders mixed-precision timestamps by instant, not by string", () => {
+    // The server stamps milliseconds while the Hermes plugin stamps
+    // microseconds. Raw string compare puts ".546Z" after ".546238Z"
+    // ("Z" > "2"), which rendered a reply's caption below the files it
+    // introduced.
+    const makeMessage = (id: string, createdAt: string) => ({
+      id: MessageId.make(id),
+      role: "assistant" as const,
+      text: id,
+      createdAt,
+      turnId: null,
+      updatedAt: createdAt,
+      streaming: false,
+    });
+
+    const entries = deriveTimelineEntries(
+      [
+        makeMessage("media-micro", "2026-07-28T17:55:08.546238Z"),
+        makeMessage("text-milli", "2026-07-28T17:55:08.546Z"),
+      ],
+      [],
+      [],
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual(["text-milli", "media-micro"]);
+  });
 });
 
 describe("deriveWorkLogEntries context window handling", () => {
