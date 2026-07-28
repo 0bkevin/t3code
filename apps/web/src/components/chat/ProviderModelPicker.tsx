@@ -54,7 +54,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
 }) {
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
-  const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
+  // The static branch renders no Popover, so a truthy `open` would arm the
+  // scroll-lock effect below with nothing on screen to dismiss — the composer
+  // owns this state and `modelPicker.toggle` sets it without knowing which
+  // branch rendered. Forcing it closed keeps the page scrollable.
+  const isMenuOpen = props.staticLabel ? false : (props.open ?? uncontrolledIsMenuOpen);
 
   // Resolve the active instance entry by exact routing key. The composer
   // resolves fallbacks before rendering this component; if the selected

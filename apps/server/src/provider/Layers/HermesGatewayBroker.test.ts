@@ -1064,6 +1064,35 @@ it.effect("preserves concurrent provider settings edits during rename and remova
   }).pipe(Effect.provide(testLayer)),
 );
 
+// `createEnrollment`'s settings callback no-ops when the instance is gone (or
+// changed driver) between its read and its write. Continuing past that meant
+// minting a token `registerConnection` can only ever reject — the user is
+// handed a `hermes t3 connect …` command that fails with no explanation.
+it.effect("fails rather than minting a token when the instance vanishes mid-enrollment", () =>
+  Effect.gen(function* () {
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const inner = makeSecretStore();
+    // The credential invalidation sits exactly between the read and the write,
+    // so removing the instance from there lands the race deterministically.
+    const secrets: ServerSecretStore.ServerSecretStore["Service"] = {
+      ...inner,
+      remove: (name) =>
+        settings
+          .updateSettingsWith((current) => {
+            const providerInstances = { ...current.providerInstances };
+            delete providerInstances[instanceId];
+            return { providerInstances };
+          })
+          .pipe(Effect.ignore, Effect.andThen(inner.remove(name))),
+    };
+    const broker = yield* makeBrokerWith(secrets, settings);
+
+    const error = yield* Effect.flip(enroll(broker, instanceId, "Vanishing Hermes"));
+    assert.equal(error.operation, "create-enrollment");
+    assert.equal(error.code, "instance-not-found");
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("requires revocation before removing an enrolled instance", () =>
   Effect.gen(function* () {
     const secrets = makeSecretStore();

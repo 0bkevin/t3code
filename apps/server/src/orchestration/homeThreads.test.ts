@@ -120,12 +120,21 @@ const makeQueryLayer = (
 
 const makeEngineLayer = (
   dispatched: Ref.Ref<ReadonlyArray<OrchestrationCommand>>,
-  options: { readonly fail?: boolean } = {},
+  options: {
+    readonly fail?: boolean;
+    /**
+     * Runs after each command is recorded. The only hook that fires *inside*
+     * `getOrCreateHomeThread`, which is what lets a test land a competing
+     * settings write between this caller's read and its persist.
+     */
+    readonly onDispatch?: (command: OrchestrationCommand) => Effect.Effect<void, never, never>;
+  } = {},
 ) =>
   Layer.succeed(OrchestrationEngine.OrchestrationEngineService, {
     readEvents: () => Stream.empty,
     dispatch: (command: OrchestrationCommand) =>
       Ref.update(dispatched, (calls) => [...calls, command]).pipe(
+        Effect.andThen(options.onDispatch ? options.onDispatch(command) : Effect.void),
         Effect.andThen(
           options.fail
             ? Effect.fail(
@@ -150,6 +159,14 @@ const testLayer = (input: {
   readonly dispatched: Ref.Ref<ReadonlyArray<OrchestrationCommand>>;
   readonly providerInstances: Record<string, unknown>;
   readonly failDispatch?: boolean;
+  /** Fires inside `getOrCreateHomeThread`, right after `thread.create`. */
+  readonly onDispatch?: (command: OrchestrationCommand) => Effect.Effect<void, never, never>;
+  /**
+   * Settings layer to use instead of a fresh one. A test that needs to write
+   * settings from `onDispatch` builds the layer itself so both sides share one
+   * store.
+   */
+  readonly settingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   /**
    * Archive-state rows. Unlike the shell queue these ignore archive state, so
    * a test can model "archived, therefore invisible to the shell query but
@@ -159,11 +176,15 @@ const testLayer = (input: {
 }) =>
   Layer.mergeAll(
     makeQueryLayer(input.threads, input.archiveStates),
-    makeEngineLayer(input.dispatched, input.failDispatch ? { fail: true } : {}),
+    makeEngineLayer(input.dispatched, {
+      ...(input.failDispatch ? { fail: true } : {}),
+      ...(input.onDispatch ? { onDispatch: input.onDispatch } : {}),
+    }),
     configLayer,
-    ServerSettings.layerTest({
-      providerInstances: input.providerInstances,
-    } as never),
+    input.settingsLayer ??
+      ServerSettings.layerTest({
+        providerInstances: input.providerInstances,
+      } as never),
     NodeServices.layer,
   );
 
@@ -308,6 +329,57 @@ it.effect("adopts a racing caller's designation when its own dispatch fails", ()
     );
 
     assert.equal(resolved, HOME_THREAD_ID);
+  }),
+);
+
+it.effect("does not clobber a designation that landed while it was creating", () =>
+  Effect.gen(function* () {
+    // Two handshakes race: both read "no designation", both create a thread.
+    // The one that persists *second* must stand down rather than overwrite —
+    // otherwise the first caller re-read the winner's id and returned it while
+    // this one overwrites with its own, so the two disagree about Home and
+    // concurrent proactive deliveries land in two different threads.
+    const threads = yield* Ref.make<ReadonlyArray<Option.Option<OrchestrationThreadShell>>>([
+      Option.none(),
+    ]);
+    const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
+    const settingsLayer = ServerSettings.layerTest({
+      providerInstances: { [INSTANCE_ID]: hermesInstance({}) },
+    } as never);
+
+    yield* Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+
+      const resolved = yield* getOrCreateHomeThread({
+        instanceId: INSTANCE_ID,
+        title: "Hermes Siva Local",
+      }).pipe(
+        Effect.provide(
+          testLayer({
+            threads,
+            dispatched,
+            providerInstances: {},
+            settingsLayer,
+            // The racing caller wins the settings write while this one is
+            // still between `thread.create` and its own persist.
+            onDispatch: () =>
+              settings
+                .updateSettingsWith((latest) => ({
+                  providerInstances: {
+                    ...latest.providerInstances,
+                    [INSTANCE_ID]: hermesInstance({ homeThreadId: HOME_THREAD_ID }),
+                  },
+                }))
+                .pipe(Effect.ignore),
+          }),
+        ),
+      );
+
+      // Both callers agree on the winner's thread, and the loser's own thread
+      // stays an empty thread in the agent project rather than a second Home.
+      assert.equal(resolved, HOME_THREAD_ID);
+      assert.equal(yield* getDesignatedHomeThreadId(INSTANCE_ID), HOME_THREAD_ID);
+    }).pipe(Effect.provide(settingsLayer));
   }),
 );
 

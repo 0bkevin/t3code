@@ -116,10 +116,26 @@ const readHomeThreadRow = Effect.fn("readHomeThreadRow")(function* (threadId: Th
   return Option.getOrUndefined(row);
 });
 
-/** Persist a designation into the instance's Hermes config blob. */
+/**
+ * Persist a designation into the instance's Hermes config blob.
+ *
+ * A compare-and-set against `expected` — the designation this caller read
+ * before deciding to create — rather than a blind write. Two concurrent
+ * callers that both mint a thread would otherwise each persist their own id,
+ * and the one that wrote first re-reads before the other's overwrite lands, so
+ * the two return *different* threads and one is orphaned from the final
+ * designation. Standing down when the designation moved out from under us is
+ * what makes the caller's re-read below an actual tiebreaker.
+ *
+ * `expected` still has to be honoured rather than "never overwrite": the
+ * self-healing path arrives here with a stale designation pointing at a thread
+ * that is really gone, and replacing exactly that value is the whole point.
+ */
 const persistHomeThreadId = (input: {
   readonly instanceId: ProviderInstanceId;
   readonly threadId: ThreadId;
+  /** Designation observed before creating, or `undefined` if there was none. */
+  readonly expected: ThreadId | undefined;
 }) =>
   Effect.gen(function* () {
     const settings = yield* ServerSettingsService;
@@ -130,6 +146,9 @@ const persistHomeThreadId = (input: {
       // it. Returning an empty patch is the established no-op here.
       const existing = latest.providerInstances[input.instanceId];
       if (!existing || existing.driver !== HERMES_DRIVER_KIND) return {};
+      // Someone else designated (or re-designated) while we were creating.
+      // Adopt theirs; ours stays an empty thread in the agent project.
+      if (readHomeThreadId(existing) !== input.expected) return {};
       const currentConfig =
         existing.config && typeof existing.config === "object"
           ? (existing.config as Record<string, unknown>)
@@ -231,7 +250,7 @@ export const getOrCreateHomeThread = Effect.fn("getOrCreateHomeThread")(function
     return yield* Effect.fail(dispatched.failure);
   }
 
-  yield* persistHomeThreadId({ instanceId: input.instanceId, threadId });
+  yield* persistHomeThreadId({ instanceId: input.instanceId, threadId, expected: designated });
 
   // Re-read rather than trusting our own write: if a racing caller persisted
   // first, both callers must agree on one thread, and settings is the

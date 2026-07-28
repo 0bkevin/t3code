@@ -456,6 +456,13 @@ const makeReconnectHarness = (options: {
   readonly instanceId: ProviderInstanceId;
   readonly threadId: ThreadId;
   readonly initialSessionId: HermesGatewaySessionId;
+  /**
+   * Runs before each one-way send is recorded, so a test can land a broker
+   * event in the middle of an adapter operation.
+   */
+  readonly onSend?: (
+    message: HermesGatewayT3ToPluginMessage,
+  ) => Effect.Effect<void, never, never>;
 }) =>
   Effect.gen(function* () {
     const sent: Array<HermesGatewayT3ToPluginMessage> = [];
@@ -520,7 +527,11 @@ const makeReconnectHarness = (options: {
         }
         return Effect.die(new Error(`unexpected request ${message.type}`));
       },
-      send: (_instanceId, message) => Effect.sync(() => sent.push(message)).pipe(Effect.asVoid),
+      send: (_instanceId, message) =>
+        (options.onSend ? options.onSend(message) : Effect.void).pipe(
+          Effect.andThen(Effect.sync(() => sent.push(message))),
+          Effect.asVoid,
+        ),
       isConnected: () => Effect.sync(() => state.connected),
       stream: Stream.fromPubSub(brokerEvents),
       streamStatuses: Stream.fromPubSub(brokerStatuses),
@@ -1150,6 +1161,59 @@ it.effect("keeps the session on an undeliverable stop so Hermes is not orphaned"
     assert.isDefined(seen.find((event) => event.type === "content.delta"));
 
     yield* Fiber.interrupt(fiber);
+  }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
+);
+
+// `stopAll` snapshots `sessions.keys()` up front, and the broker event fiber
+// deletes a session the moment `session.exited` lands — so a session can be
+// gone by the time its own stop runs. That raises SessionNotFound, which the
+// sweep used to let escape: every session after it in the snapshot was never
+// stopped, and on shutdown the whole finalizer logged a failure.
+it.effect("finishes the stopAll sweep when a session exits mid-sweep", () =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("hermes_stop_all_race");
+    const firstThreadId = ThreadId.make("thread-stop-all-first");
+    const secondThreadId = ThreadId.make("thread-stop-all-second");
+    const sessionId = HermesGatewaySessionId.make("session-stop-all");
+    const events = yield* PubSub.unbounded<HermesGatewayEnvelope>();
+
+    const harness = yield* makeReconnectHarness({
+      instanceId,
+      threadId: firstThreadId,
+      initialSessionId: sessionId,
+      // The second session exits while the first one's stop is being written.
+      onSend: (message) =>
+        message.type === "session.stop" && message.threadId === firstThreadId
+          ? PubSub.publish(events, {
+              instanceId,
+              message: {
+                type: "session.exited",
+                protocolVersion: HERMES_GATEWAY_PROTOCOL_VERSION,
+                threadId: secondThreadId,
+                sessionId,
+                recoverable: false,
+              },
+            }).pipe(Effect.andThen(drain))
+          : Effect.void,
+    });
+    // Route the harness's broker stream through our own pubsub so `onSend` can
+    // publish into the same stream the adapter is subscribed to.
+    yield* Stream.runForEach(Stream.fromPubSub(events), (envelope) =>
+      PubSub.publish(harness.brokerEvents, envelope),
+    ).pipe(Effect.forkChild({ startImmediately: true }));
+
+    for (const threadId of [firstThreadId, secondThreadId]) {
+      yield* harness.adapter.startSession({
+        threadId,
+        providerInstanceId: instanceId,
+        runtimeMode: "full-access",
+      });
+    }
+
+    // The sweep must run to completion rather than dying on the vanished one.
+    yield* harness.adapter.stopAll();
+    assert.isFalse(yield* harness.adapter.hasSession(firstThreadId));
+    assert.isFalse(yield* harness.adapter.hasSession(secondThreadId));
   }).pipe(Effect.scoped, Effect.provide(testEnvLayer)),
 );
 

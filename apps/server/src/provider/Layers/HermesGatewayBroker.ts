@@ -448,7 +448,7 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
             ),
           );
 
-        yield* settings
+        const committed = yield* settings
           .updateSettingsWith((latest) => {
             const latestConfigured = latest.providerInstances[input.instanceId];
             if (!latestConfigured || latestConfigured.driver !== HERMES_DRIVER_KIND) return {};
@@ -473,6 +473,21 @@ export const makeHermesGatewayBroker = Effect.gen(function* () {
               ),
             ),
           );
+
+        // Same committed-settings check `renameInstance` and `removeInstance`
+        // make, and for the sharper reason: the callback above no-ops when the
+        // instance vanished (or changed driver) between `readSettings` and the
+        // write, and continuing would mint a token `registerConnection` can
+        // only ever reject — handing the user a `hermes t3 connect` command
+        // that fails with no explanation. Failing here says so instead.
+        if (!recordFrom(input.instanceId, committed.providerInstances[input.instanceId])) {
+          return yield* managementError(
+            "create-enrollment",
+            "instance-not-found",
+            `Provider instance '${input.instanceId}' is no longer configured with the Hermes driver.`,
+            input.instanceId,
+          );
+        }
 
         // Any live connection is authenticating with the credential we just
         // invalidated, so it can no longer be trusted.

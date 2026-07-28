@@ -1061,6 +1061,11 @@ export const makeHermesAdapter = Effect.fn("makeHermesAdapter")(function* (input
                   threadId,
                   detail: error.detail,
                 }),
+              // The keys snapshot is taken before the first stop runs, and the
+              // broker event fiber deletes sessions on `session.exited` — so a
+              // session can disappear mid-sweep. That is the outcome this sweep
+              // wants anyway; aborting the remaining threads over it is not.
+              ProviderAdapterSessionNotFoundError: () => Effect.void,
             }),
           ),
         { discard: true },

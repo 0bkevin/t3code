@@ -270,7 +270,12 @@ export function NewTaskDraftScreen(props: {
         return;
       }
 
-      if (projects.length > 0) {
+      // Guard on the *unfiltered* catalog. `projects` drops synthetic agent
+      // projects, so an agent-only environment is indistinguishable from a
+      // catalog that has not loaded yet — and a route pointing at an agent
+      // project then found no directProject, skipped this branch, and left the
+      // screen on "Loading task" with nothing left to resolve it.
+      if (allProjects.length > 0) {
         // Never fall through to the flow provider's temporary first-project
         // default. Return to the picker with the share id intact so the user
         // can choose an available destination.
@@ -290,6 +295,7 @@ export function NewTaskDraftScreen(props: {
 
     navigation.dispatch(StackActions.replace("NewTask"));
   }, [
+    allProjects,
     logicalProjects,
     projects,
     props.initialProjectRef,
