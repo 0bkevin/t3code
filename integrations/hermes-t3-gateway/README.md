@@ -129,8 +129,8 @@ delivers media perfectly well is still treated as if it cannot. Two consequences
 both against **v0.19.0**:
 
 - **A false warning.** `tools/send_message_tool.py:1108` builds `"MEDIA
-  attachments were omitted for t3; ..."` whenever a send carries files and the
-  platform is off that list, and line 1154 appends it to *any* successful result
+attachments were omitted for t3; ..."` whenever a send carries files and the
+  platform is off that list, and line 1154 appends it to _any_ successful result
   without checking whether anything was actually dropped. Left alone, the tool
   output tells the agent the files were lost immediately after T3 acknowledged
   them — which is exactly how a live agent came to report a delivery failure for
