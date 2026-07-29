@@ -163,4 +163,19 @@ describe("nativeWebSocketConstructor", () => {
     expect(closeCalls[0]!.args).toEqual([id, 4000, "bye"]);
     expect(socket.readyState).toBe(2);
   });
+
+  it("ignores a native open that lands after close", async () => {
+    const socket = await openSocket();
+    const id = connectionIdOf(socket);
+    const opened = vi.fn();
+    socket.addEventListener("open", opened);
+
+    // Effect closes while still CONNECTING (open timeout or scope teardown);
+    // the in-flight native connect can still report success afterwards.
+    socket.close(1000, "");
+    mocks.emit("onOpen", { id });
+
+    expect(opened).not.toHaveBeenCalled();
+    expect(socket.readyState).toBe(2);
+  });
 });

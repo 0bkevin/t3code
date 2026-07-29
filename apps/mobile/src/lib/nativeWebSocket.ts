@@ -150,6 +150,14 @@ class NativeWebSocket {
   }
 
   handleOpen(): void {
+    // `close()` during CONNECTING (an Effect open-timeout or scope teardown)
+    // leaves a native connect in flight, so its `didOpen` can still land. Only
+    // a socket that is still connecting may transition to OPEN; otherwise the
+    // close would be silently undone and open handlers would fire on a socket
+    // the caller already gave up on.
+    if (this.readyState !== NativeWebSocket.CONNECTING) {
+      return;
+    }
     this.readyState = NativeWebSocket.OPEN;
     this.dispatch("open", { type: "open" });
   }
