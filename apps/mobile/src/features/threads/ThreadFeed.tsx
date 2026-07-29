@@ -59,6 +59,7 @@ import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import {
   hasNativeSelectableMarkdownText,
   SelectableMarkdownText,
+  type MarkdownImageRenderer,
   type NativeMarkdownTextStyle,
   type SelectableMarkdownSkill,
 } from "../../native/SelectableMarkdownText";
@@ -101,6 +102,7 @@ import {
   ThreadWorkLog,
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
+import { MarkdownMedia } from "./MarkdownMedia";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
@@ -244,6 +246,7 @@ interface MarkdownStyleSet {
   readonly theme: PartialMarkdownTheme;
   readonly styles: NodeStyleOverrides;
   readonly renderers: CustomRenderers;
+  readonly renderImage: MarkdownImageRenderer;
   readonly nativeTextStyle: NativeMarkdownTextStyle;
 }
 
@@ -446,7 +449,12 @@ function useReviewCommentColors(): ReviewCommentColors {
   );
 }
 
-function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSets {
+function useMarkdownStyles(
+  onLinkPress: (href: string) => void,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  onPressImage: (uri: string) => void,
+): MarkdownStyleSets {
   const colorScheme = useColorScheme();
   const { appearance } = useAppearancePreferences();
   const markdownFontSizes = useMemo(
@@ -575,7 +583,14 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
       copyTintColor: ColorValue,
       preserveSoftBreaks: boolean,
       highlightCode: boolean,
+      renderImage: MarkdownImageRenderer,
     ): CustomRenderers => ({
+      image: ({ url = "", alt, title }) =>
+        renderImage({
+          href: url,
+          ...(alt ? { alt } : {}),
+          ...(title ? { title } : {}),
+        }),
       link: ({ children, href = "" }) => {
         const presentation = resolveMarkdownLinkPresentation(href);
         if (presentation.kind === "file") {
@@ -689,6 +704,22 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
         />
       ),
     });
+    const createMediaRenderer =
+      (backgroundColor: ColorValue, mutedColor: ColorValue): MarkdownImageRenderer =>
+      ({ href, alt, title }) => (
+        <MarkdownMedia
+          environmentId={environmentId}
+          threadId={threadId}
+          src={href}
+          {...(alt ? { alt } : {})}
+          {...(title ? { title } : {})}
+          backgroundColor={backgroundColor}
+          mutedColor={mutedColor}
+          onPressImage={onPressImage}
+        />
+      );
+    const userMediaRenderer = createMediaRenderer(markdownUserCodeBg, markdownUserBodyColor);
+    const assistantMediaRenderer = createMediaRenderer(markdownCodeBg, iconSubtleColor);
 
     const userTheme: PartialMarkdownTheme = {
       ...baseTheme,
@@ -747,7 +778,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           userBubbleForegroundMuted,
           true,
           false,
+          userMediaRenderer,
         ),
+        renderImage: userMediaRenderer,
         nativeTextStyle: {
           color: markdownUserBodyColor,
           strongColor: markdownUserBodyColor,
@@ -780,7 +813,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           iconSubtleColor,
           false,
           true,
+          assistantMediaRenderer,
         ),
+        renderImage: assistantMediaRenderer,
         nativeTextStyle: {
           color: markdownBodyColor,
           strongColor: markdownStrongColor,
@@ -810,9 +845,12 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
     inlineSkillForeground,
     markdownFontSizes,
     nativeMarkdownTypography,
+    environmentId,
     onLinkPress,
+    onPressImage,
     regularFontFamily,
     themeMode,
+    threadId,
     userBubbleForegroundMuted,
   ]);
 }
@@ -969,6 +1007,7 @@ function renderFeedEntry(
               skills={props.skills}
               textStyle={styles.nativeTextStyle}
               onLinkPress={props.onMarkdownLinkPress}
+              renderImage={styles.renderImage}
             />
           ) : (
             <Markdown
@@ -1066,6 +1105,7 @@ function UserMessageContent(props: {
           textStyle={props.markdownStyles.nativeTextStyle}
           preserveSoftBreaks
           onLinkPress={props.onLinkPress}
+          renderImage={props.markdownStyles.renderImage}
         />
       );
     }
@@ -1107,6 +1147,7 @@ function UserMessageContent(props: {
             textStyle={props.markdownStyles.nativeTextStyle}
             preserveSoftBreaks
             onLinkPress={props.onLinkPress}
+            renderImage={props.markdownStyles.renderImage}
           />
         ) : (
           <Markdown
@@ -1346,6 +1387,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     uri: string;
     headers?: Record<string, string>;
   } | null>(null);
+  const onPressImage = useCallback((uri: string, headers?: Record<string, string>) => {
+    setExpandedImage({ uri, headers });
+  }, []);
   const horizontalPadding = props.layoutVariant === "split" ? 20 : 16;
   const contentHorizontalPadding = deriveCenteredContentHorizontalPadding({
     viewportWidth,
@@ -1400,7 +1444,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     },
     [props.environmentId, props.threadId, props.workspaceRoot, navigation],
   );
-  const markdownStyles = useMarkdownStyles(onMarkdownLinkPress);
+  const markdownStyles = useMarkdownStyles(
+    onMarkdownLinkPress,
+    props.environmentId,
+    props.threadId,
+    onPressImage,
+  );
   const reviewCommentColors = useReviewCommentColors();
   // LegendList does not invalidate visible rows when only the renderItem closure changes.
   // Keep row-local interaction props in extraData so disclosures and copy feedback repaint.
@@ -1691,10 +1740,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     },
     [suspendEndScrollMaintenanceForDisclosure],
   );
-
-  const onPressImage = useCallback((uri: string, headers?: Record<string, string>) => {
-    setExpandedImage({ uri, headers });
-  }, []);
 
   // Rows whose height is known before they ever render. Without this, every
   // row above the viewport is assumed to be estimatedItemSize tall, and
