@@ -1078,6 +1078,7 @@ export function acpPostSettleWakeEvidence(
   ) {
     const text = update.content.text;
     if ((flavor.extractBackgroundToolMutation?.(text) ?? []).length > 0) return false;
+    if (update.sessionUpdate === "agent_message_chunk" && text.trim().length === 0) return false;
     if (/<monitor-event\b/i.test(text) || /Monitor\s+["']?[0-9a-f-]{8,}["']?\s+ended/i.test(text)) {
       return false;
     }
@@ -1103,7 +1104,7 @@ export function acpPostSettleContinuationOfferEvidence(
   // Assistant text only. Thought/reasoning bursts alone must not open synthetic
   // "Background task completed." runs (duplicate-run spam after monitors).
   if (update.sessionUpdate === "agent_message_chunk") {
-    return update.content.type === "text" && update.content.text.length > 0;
+    return update.content.type === "text" && update.content.text.trim().length > 0;
   }
   if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
     return parseSessionUpdateEvent(notification).events.some((event) => {
@@ -3118,7 +3119,11 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               const lateMonitorChatter =
                 /<monitor-event\b/i.test(text) ||
                 /Monitor\s+["']?[0-9a-f-]{8,}["']?\s+ended/i.test(text);
-              if (lateBackgroundMutations.length === 0 && !lateMonitorChatter) {
+              if (
+                text.trim().length > 0 &&
+                lateBackgroundMutations.length === 0 &&
+                !lateMonitorChatter
+              ) {
                 yield* appendLoadedHistory(
                   notification,
                   update.sessionUpdate === "user_message_chunk" ? "user" : "assistant",

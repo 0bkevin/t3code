@@ -12,6 +12,7 @@ import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import Animated, { FadeIn } from "react-native-reanimated";
 import { useV2ItemSupport } from "../../state/v2-item-support";
 import { ThreadActivityInspector } from "./ThreadActivityInspector";
+import { threadWorkLogOverflowNoun } from "./thread-work-log-labels";
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 const WORK_LOG_LAYOUT_ANIMATION = {
@@ -191,6 +192,7 @@ export function ThreadWorkLog(props: {
     hasOverflow && !props.expanded ? rows.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES) : rows;
   const hiddenCount = rows.length - visibleRows.length;
   const onlyToolRows = rows.every((row) => row.toolLike);
+  const overflowNoun = threadWorkLogOverflowNoun(onlyToolRows, hiddenCount);
 
   return (
     <View className="-mx-1 mb-3 px-1 py-0.5">
@@ -327,8 +329,8 @@ export function ThreadWorkLog(props: {
           accessibilityState={{ expanded: props.expanded }}
           accessibilityLabel={
             props.expanded
-              ? "Show fewer tool calls"
-              : `Show ${hiddenCount} previous tool ${hiddenCount === 1 ? "call" : "calls"}`
+              ? `Show fewer ${overflowNoun}`
+              : `Show ${hiddenCount} previous ${overflowNoun}`
           }
           hitSlop={4}
           onPress={() => {
@@ -350,8 +352,8 @@ export function ThreadWorkLog(props: {
           </View>
           <Text className="font-t3-medium text-xs text-foreground opacity-80">
             {props.expanded
-              ? "Show fewer tool calls"
-              : `+${hiddenCount} previous tool ${hiddenCount === 1 ? "call" : "calls"}`}
+              ? `Show fewer ${overflowNoun}`
+              : `+${hiddenCount} previous ${overflowNoun}`}
           </Text>
         </Pressable>
       ) : null}
@@ -368,13 +370,7 @@ export function ThreadWorkGroupToggle(props: {
 }) {
   const colorScheme = useColorScheme();
   const pressedBackground = colorScheme === "dark" ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.035)";
-  const noun = props.onlyToolActivities
-    ? props.hiddenCount === 1
-      ? "tool call"
-      : "tool calls"
-    : props.hiddenCount === 1
-      ? "log entry"
-      : "log entries";
+  const noun = threadWorkLogOverflowNoun(props.onlyToolActivities, props.hiddenCount);
 
   return (
     <View className="-mx-1 mb-1 px-1">

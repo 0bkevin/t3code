@@ -6376,6 +6376,31 @@ describe("AcpAdapterV2", () => {
           1,
           "exactly one continuation must be offered after finalize for mid-turn unhandled completion",
         );
+        const beforeWhitespace = yield* runtime.readThreadSnapshot({ providerThread });
+        yield* Queue.clear(events);
+        yield* sessionUpdateHandler!({
+          sessionId: "mock-session-1",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: " \n\t " },
+          },
+        });
+        const lateEvents: Array<ProviderAdapterV2Event> = [];
+        let lateEvent = yield* Queue.poll(events);
+        while (Option.isSome(lateEvent)) {
+          lateEvents.push(lateEvent.value);
+          lateEvent = yield* Queue.poll(events);
+        }
+        assert.isFalse(
+          lateEvents.some((event) => event.type === "message.updated"),
+          "whitespace-only late chunks must not append assistant history",
+        );
+        const afterWhitespace = yield* runtime.readThreadSnapshot({ providerThread });
+        assert.deepEqual(
+          afterWhitespace.messages,
+          beforeWhitespace.messages,
+          "whitespace-only late chunks must not mutate the loaded history snapshot",
+        );
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
@@ -8872,6 +8897,18 @@ describe("acpPostSettleContinuationOfferEvidence", () => {
         },
       }),
     );
+  });
+
+  it("does not offer on whitespace-only assistant chunks", () => {
+    const notification = {
+      sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk" as const,
+        content: { type: "text" as const, text: " \n\t " },
+      },
+    };
+    assert.isFalse(acpPostSettleWakeEvidence(notification));
+    assert.isFalse(acpPostSettleContinuationOfferEvidence(notification));
   });
 
   it("buffers in-progress tool updates without offering", () => {
