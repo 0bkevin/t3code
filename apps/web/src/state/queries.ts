@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { orchestrationEnvironment } from "./orchestration";
+import { isPaginatedBranchesNextPagePending } from "./paginatedBranches";
 import { projectEnvironment } from "./projects";
 import { useEnvironmentQuery } from "./query";
 import { vcsEnvironment } from "./vcs";
@@ -115,6 +116,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
           totalCount: Math.max(...values.map((value) => value.totalCount)),
         };
   const failed = results.find((result) => result._tag === "Failure");
+  const isFetchingNextPage = isPaginatedBranchesNextPagePending(results);
   const error =
     failed?._tag === "Failure"
       ? (() => {
@@ -149,6 +151,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
     refs: data?.refs ?? EMPTY_REFS,
     error,
     isPending: results.some((result) => result.waiting),
+    isFetchingNextPage,
     refresh,
     loadNext,
   };

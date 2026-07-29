@@ -3,6 +3,7 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import type { Thread } from "../types";
 import { makeThreadFixture } from "../test-fixtures";
 import {
+  buildBrowseGroups,
   buildThreadActionItems,
   enumerateCommandPaletteItems,
   filterCommandPaletteGroups,
@@ -190,5 +191,43 @@ describe("buildThreadActionItems", () => {
     });
 
     expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+  });
+});
+
+describe("buildBrowseGroups", () => {
+  it("waits for asynchronous browse navigation actions", async () => {
+    let finishNavigation: (() => void) | undefined;
+    const browseTo = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishNavigation = resolve;
+        }),
+    );
+    const groups = buildBrowseGroups({
+      browseEntries: [{ name: "Downloads", fullPath: "/Users/test/Downloads" }],
+      browseQuery: "~/",
+      canBrowseUp: false,
+      upIcon: null,
+      directoryIcon: null,
+      browseUp: vi.fn(),
+      browseTo,
+    });
+    const item = groups[0]?.items[0];
+    if (!item || item.kind !== "action") {
+      throw new Error("Expected a browse action");
+    }
+
+    let actionSettled = false;
+    const action = item.run().then(() => {
+      actionSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(browseTo).toHaveBeenCalledWith("Downloads");
+    expect(actionSettled).toBe(false);
+
+    finishNavigation?.();
+    await action;
+    expect(actionSettled).toBe(true);
   });
 });
