@@ -652,6 +652,47 @@ describe("EnvironmentSupervisor", () => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("restarts the retry ladder when the application returns to the foreground", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.closeLatestSession();
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "backoff" && state.attempt === 1,
+      );
+      yield* TestClock.adjust("1 second");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+      yield* harness.closeLatestSession();
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "backoff" && state.attempt === 2,
+      );
+
+      // Foregrounding interrupts the two-second backoff immediately and
+      // resets the ladder, so the next failure retries as attempt one again.
+      yield* harness.wake("application-active");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 3 && state.attempt === 1,
+      );
+      yield* harness.closeLatestSession();
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "backoff" && state.attempt === 1,
+      );
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(3);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("probes the active session without reconnecting on application activation", () =>
     Effect.gen(function* () {
       const probeCount = yield* Ref.make(0);
@@ -712,7 +753,7 @@ describe("EnvironmentSupervisor", () => {
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active");
-      yield* TestClock.adjust("15 seconds");
+      yield* TestClock.adjust("5 seconds");
       yield* awaitState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.lastFailure?.reason === "timeout",

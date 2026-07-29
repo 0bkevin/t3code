@@ -31,7 +31,11 @@ import * as ConnectionWakeups from "./wakeups.ts";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
-const CONNECTION_PROBE_TIMEOUT = "15 seconds";
+// Deliberately short: the probe runs over an already-open socket, so a healthy
+// server answers in well under a second. After mobile backgrounding the socket
+// is often half-open (the OS dropped TCP without a close event) and every
+// second spent waiting here is visible dead time before the reconnect starts.
+const CONNECTION_PROBE_TIMEOUT = "5 seconds";
 const BACKOFF_RESET_AFTER_MS = 30_000;
 
 interface SupervisorIntent {
@@ -563,19 +567,24 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     return failureFromExit(target, connectedExit, true, connectedForMs >= BACKOFF_RESET_AFTER_MS);
   }, Effect.ensuring(clearLease));
 
+  // Resolves when the backoff delay elapses or a signal interrupts the wait.
+  // Returns true when the app returned to the foreground: network conditions
+  // likely changed while backgrounded, so the caller restarts the retry ladder
+  // instead of resuming deep in it.
   const waitForRetrySignal = Effect.fnUntraced(function* (delayMs: number) {
     return yield* Effect.raceFirst(
-      Effect.sleep(delayMs),
+      Effect.sleep(delayMs).pipe(Effect.as(false)),
       Effect.gen(function* () {
         for (;;) {
           const next = yield* Queue.take(signals);
           switch (next._tag) {
+            case "Wakeup":
+              return next.reason === "application-active";
             case "ConnectRequested":
             case "DisconnectRequested":
             case "RetryRequested":
             case "NetworkChanged":
-            case "Wakeup":
-              return;
+              return false;
           }
         }
       }),
@@ -663,7 +672,11 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         lastFailure: error,
         retryAt: (yield* Clock.currentTimeMillis) + delayMs,
       });
-      yield* waitForRetrySignal(delayMs);
+      const foregrounded = yield* waitForRetrySignal(delayMs);
+      if (foregrounded) {
+        failureCount = 0;
+        pendingRetry = Option.none();
+      }
     }
   });
 

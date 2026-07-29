@@ -41,7 +41,7 @@ const encodeCatalog = Effect.fn("mobile.connectionStorage.encodeCatalog")(functi
   );
 });
 
-interface CatalogStore {
+export interface CatalogStore {
   readonly read: Effect.Effect<ConnectionCatalogDocumentType, ConnectionTransientError>;
   readonly update: (
     transform: (catalog: ConnectionCatalogDocumentType) => ConnectionCatalogDocumentType,

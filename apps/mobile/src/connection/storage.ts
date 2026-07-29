@@ -9,7 +9,7 @@ import {
 } from "@t3tools/client-runtime/platform";
 import { TokenStore } from "@t3tools/client-runtime/authorization";
 import {
-  ConnectionTransientError,
+  type ConnectionAttemptError,
   CredentialStore,
   ProfileStore,
 } from "@t3tools/client-runtime/connection";
@@ -18,10 +18,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as CatalogStore from "./catalog-store";
+import * as RemoteDpopTokenStore from "./token-store";
 
 function targetPersistenceError(
   operation: "list-targets" | "register-connection" | "remove-connection",
-  error: ConnectionTransientError,
+  error: ConnectionAttemptError,
 ) {
   return new ConnectionPersistenceError({
     operation,
@@ -32,6 +33,9 @@ function targetPersistenceError(
 export const connectionStorageLayer = Layer.effectContext(
   Effect.gen(function* () {
     const catalog = yield* CatalogStore.make();
+    // Tokens live outside the catalog document so reconnecting environments
+    // do not serialize on the catalog lock. See token-store.ts.
+    const remoteTokenStore = yield* RemoteDpopTokenStore.make(catalog);
 
     const targetStore = ConnectionTargetStore.of({
       list: catalog.read.pipe(
@@ -44,10 +48,17 @@ export const connectionStorageLayer = Layer.effectContext(
         catalog
           .update((document) => registerConnectionInCatalog(document, registration))
           .pipe(Effect.mapError((error) => targetPersistenceError("register-connection", error))),
+      // The token key is deleted before the catalog entry: if the keychain
+      // delete fails the registration survives and the removal can be retried,
+      // instead of leaving an orphaned token that a re-added environment
+      // would pick back up.
       remove: (target) =>
-        catalog
-          .update((document) => removeConnectionFromCatalog(document, target))
-          .pipe(Effect.mapError((error) => targetPersistenceError("remove-connection", error))),
+        remoteTokenStore.remove(target.environmentId).pipe(
+          Effect.andThen(
+            catalog.update((document) => removeConnectionFromCatalog(document, target)),
+          ),
+          Effect.mapError((error) => targetPersistenceError("remove-connection", error)),
+        ),
     });
     const profileStore = ProfileStore.make({
       get: (connectionId) =>
@@ -97,34 +108,6 @@ export const connectionStorageLayer = Layer.effectContext(
             document.credentials,
             (value) => value.connectionId,
             connectionId,
-          ),
-        })),
-    });
-    const remoteTokenStore = TokenStore.make({
-      get: (environmentId) =>
-        catalog.read.pipe(
-          Effect.map((document) =>
-            Option.fromUndefinedOr(
-              document.remoteDpopTokens.find((token) => token.environmentId === environmentId),
-            ),
-          ),
-        ),
-      put: (token) =>
-        catalog.update((document) => ({
-          ...document,
-          remoteDpopTokens: replaceCatalogValue(
-            document.remoteDpopTokens,
-            (value) => value.environmentId,
-            token,
-          ),
-        })),
-      remove: (environmentId) =>
-        catalog.update((document) => ({
-          ...document,
-          remoteDpopTokens: removeCatalogValue(
-            document.remoteDpopTokens,
-            (value) => value.environmentId,
-            environmentId,
           ),
         })),
     });

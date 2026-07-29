@@ -546,19 +546,32 @@ export const make = Effect.fn("ManagedRelayClient.make")(function* (
           expiresAtMillis: nowMillis + response.expires_in * 1_000,
         } satisfies ManagedRelayAccessTokenCacheEntry;
       }
+      const matchInput = {
+        accountId: accountId.value,
+        clientId: options.clientId,
+        relayUrl,
+        thumbprint: input.thumbprint,
+        scopes: input.scopes,
+        nowMillis,
+      };
+      // Fast path outside the critical section: many environments authorize
+      // concurrently on resume, and a cache hit must not wait behind another
+      // fiber's in-flight token exchange.
+      const fastPath = (yield* SynchronizedRef.get(cachedTokens)).find((token) =>
+        tokenMatches(token, matchInput),
+      );
+      if (fastPath) {
+        yield* Effect.annotateCurrentSpan({
+          "relay.token_cache.result": "hit",
+        });
+        return fastPath;
+      }
+      // The critical section re-checks the cache so concurrent misses share
+      // one exchange: the first fiber performs it, the rest find its result.
       return yield* SynchronizedRef.modifyEffect(cachedTokens, (tokens) =>
         Effect.gen(function* () {
           const activeTokens = tokens.filter((token) => token.expiresAtMillis > nowMillis + 5_000);
-          const cached = activeTokens.find((token) =>
-            tokenMatches(token, {
-              accountId: accountId.value,
-              clientId: options.clientId,
-              relayUrl,
-              thumbprint: input.thumbprint,
-              scopes: input.scopes,
-              nowMillis,
-            }),
-          );
+          const cached = activeTokens.find((token) => tokenMatches(token, matchInput));
           if (cached) {
             yield* Effect.annotateCurrentSpan({
               "relay.token_cache.result": "hit",

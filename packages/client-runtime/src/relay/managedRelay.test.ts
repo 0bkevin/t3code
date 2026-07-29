@@ -190,6 +190,95 @@ describe("ManagedRelayClient", () => {
     }).pipe(Effect.provide(managedRelayTestLayer(fetchFn)));
   });
 
+  it.effect("serves cached tokens while another token exchange is still in flight", () => {
+    let releaseExchange = () => undefined as void;
+    const exchangeGate = new Promise<void>((resolve) => {
+      releaseExchange = resolve;
+    });
+    // Resolved from inside the exchange fetch handler, i.e. once the exchange
+    // fiber is parked inside the token cache critical section holding the lock.
+    let markExchangeStarted = () => undefined as void;
+    const exchangeStarted = new Promise<void>((resolve) => {
+      markExchangeStarted = resolve;
+    });
+    const persistedTokens: ReadonlyArray<ManagedRelay.ManagedRelayAccessTokenCacheEntry> = [
+      {
+        accountId: "user-cached",
+        clientId: "t3-mobile",
+        relayUrl: "https://relay.example.test",
+        thumbprint: "client-thumbprint",
+        scopes: [RelayEnvironmentStatusScope],
+        accessToken: "cached-relay-token",
+        expiresAtMillis: Number.MAX_SAFE_INTEGER,
+      },
+    ];
+    const accessTokenStore: ManagedRelay.ManagedRelayAccessTokenStore = {
+      load: Effect.succeed(persistedTokens),
+      save: () => Effect.void,
+      clear: Effect.void,
+    };
+    const statusResponse = () =>
+      Response.json({
+        environmentId: "env-1",
+        endpoint: {
+          httpBaseUrl: "https://desktop.example.test/",
+          wsBaseUrl: "wss://desktop.example.test/ws",
+          providerKind: "cloudflare_tunnel",
+        },
+        status: "online",
+        checkedAt: "2026-06-05T20:00:00.000Z",
+        descriptor: {
+          environmentId: "env-1",
+          label: "Desktop",
+          platform: { os: "darwin", arch: "arm64" },
+          serverVersion: "0.0.0-test",
+          capabilities: { repositoryIdentity: true },
+        },
+      });
+    const fetchFn = ((input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/client/dpop-token")) {
+        // Stall the exchange until the cached-account request has finished.
+        markExchangeStarted();
+        return exchangeGate.then(() =>
+          Response.json({
+            access_token: "fresh-relay-token",
+            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            token_type: "DPoP",
+            expires_in: 1_800,
+            scope: RelayEnvironmentStatusScope,
+          }),
+        );
+      }
+      return Promise.resolve(statusResponse());
+    }) satisfies typeof globalThis.fetch;
+    const statusInput = (token: string) =>
+      ({
+        clerkToken: token,
+        scopes: [RelayEnvironmentStatusScope],
+        environmentId: EnvironmentId.make("env-1"),
+      }) as const;
+
+    return Effect.gen(function* () {
+      const relayClient = yield* ManagedRelay.ManagedRelayClient;
+      const pendingExchange = yield* relayClient
+        .getEnvironmentStatus(statusInput(clerkToken("user-fresh", "session-1")))
+        .pipe(Effect.forkScoped);
+      // Wait until the exchange fiber holds the token cache lock; only then is
+      // the cached-account request proven not to queue behind it. Without the
+      // lock-free fast path this request deadlocks and the test times out.
+      yield* Effect.promise(() => exchangeStarted);
+      const cachedResult = yield* relayClient.getEnvironmentStatus(
+        statusInput(clerkToken("user-cached", "session-2")),
+      );
+      expect(cachedResult.status).toBe("online");
+
+      releaseExchange();
+      const freshResult = yield* Fiber.join(pendingExchange);
+      expect(freshResult.status).toBe("online");
+    }).pipe(Effect.provide(managedRelayTestLayer(fetchFn, undefined, accessTokenStore)));
+  });
+
   it.effect("reuses a persisted token across runtimes and Clerk session token rotation", () => {
     let tokenExchangeCount = 0;
     let persistedTokens: ReadonlyArray<ManagedRelay.ManagedRelayAccessTokenCacheEntry> = [];
