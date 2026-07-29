@@ -58,15 +58,23 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
   private var idsByTaskIdentifier: [Int: Int] = [:]
   private var emittersById: [Int: T3WebSocketEmitter] = [:]
 
-  private lazy var session: URLSession = {
+  // Held so teardown can invalidate it: URLSession retains its delegate (self)
+  // until invalidated, so skipping that leaks this object and the session on
+  // every module destroy/recreate cycle. Only touched from `queue`.
+  private var activeSession: URLSession?
+
+  private var session: URLSession {
+    if let activeSession { return activeSession }
     let configuration = URLSessionConfiguration.default
     // Dev clients (and network debuggers) register custom URLProtocol classes
     // that intercept URLSession traffic. They do not understand the WebSocket
     // upgrade and drop the connection right after the 101 (NSURLErrorDomain
     // -1005). WebSocket traffic has no reason to go through them.
     configuration.protocolClasses = []
-    return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-  }()
+    let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    activeSession = session
+    return session
+  }
 
   func open(id: Int, url: URL, protocols: [String], emitter: @escaping T3WebSocketEmitter) {
     queue.async {
@@ -110,6 +118,10 @@ private final class T3WebSocketConnections: NSObject, URLSessionWebSocketDelegat
       self.tasksById.removeAll()
       self.idsByTaskIdentifier.removeAll()
       self.emittersById.removeAll()
+      // Releases the session's reference to this delegate. A later `open` call
+      // builds a fresh session rather than using an invalidated one.
+      self.activeSession?.invalidateAndCancel()
+      self.activeSession = nil
     }
   }
 
