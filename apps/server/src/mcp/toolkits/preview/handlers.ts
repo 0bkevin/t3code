@@ -12,6 +12,7 @@ import type {
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
   PreviewAutomationResizeResult,
+  PreviewAutomationScreenshotSaveStage,
   PreviewAutomationSetColorSchemeResult,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
@@ -106,7 +107,7 @@ const saveSnapshotScreenshotArtifact = Effect.fn("PreviewToolkit.saveSnapshotScr
             providerSessionId: input.scope.providerSessionId,
             providerInstanceId: input.scope.providerInstanceId,
             savePath: fileName,
-            reason: "failed to write the screenshot artifact",
+            stage: "artifact-write",
             cause,
           }),
       ),
@@ -122,7 +123,7 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
     readonly screenshotBase64: string;
   }) {
     const { savePath, scope } = input;
-    const fail = (reason: string, cause?: unknown) =>
+    const fail = (stage: PreviewAutomationScreenshotSaveStage, cause?: unknown) =>
       new PreviewAutomationScreenshotSaveError({
         operation: "snapshot",
         environmentId: scope.environmentId,
@@ -130,30 +131,26 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
         providerSessionId: scope.providerSessionId,
         providerInstanceId: scope.providerInstanceId,
         savePath,
-        reason,
+        stage,
         ...(cause === undefined ? {} : { cause }),
       });
     if (!savePath.toLowerCase().endsWith(".png")) {
-      return yield* fail("savePath must end with .png");
+      return yield* fail("extension-validation");
     }
 
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
     const threadContext = yield* projectionSnapshotQuery
       .getThreadCheckpointContext(scope.threadId)
-      .pipe(Effect.mapError((cause) => fail("failed to resolve the thread workspace", cause)));
+      .pipe(Effect.mapError((cause) => fail("thread-workspace-resolution", cause)));
     if (Option.isNone(threadContext)) {
-      return yield* fail("thread was not found");
+      return yield* fail("thread-lookup");
     }
     const workspaceRoot = threadContext.value.worktreePath ?? threadContext.value.workspaceRoot;
 
     const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
     const resolved = yield* workspacePaths
       .resolveRelativePathWithinRoot({ workspaceRoot, relativePath: savePath })
-      .pipe(
-        Effect.mapError((cause) =>
-          fail("savePath must be a relative path inside the workspace", cause),
-        ),
-      );
+      .pipe(Effect.mapError((cause) => fail("workspace-path-validation", cause)));
 
     // Lexical containment is not enough: symlinks inside the workspace could
     // point outside it. Every filesystem step below re-verifies canonical
@@ -167,7 +164,7 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
           PlatformError: (error) =>
             error.reason._tag === "NotFound"
               ? Effect.succeed(null)
-              : Effect.fail(fail("failed to resolve the save path", error)),
+              : Effect.fail(fail("save-path-resolution", error)),
         }),
       );
     const isOutsideRoot = (canonicalRoot: string, canonical: string) => {
@@ -177,7 +174,7 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
 
     const canonicalRoot = yield* fileSystem
       .realPath(workspaceRoot)
-      .pipe(Effect.mapError((cause) => fail("failed to resolve the workspace root", cause)));
+      .pipe(Effect.mapError((cause) => fail("workspace-root-resolution", cause)));
 
     // Before creating anything: the deepest EXISTING ancestor of the target
     // must canonicalize inside the root, or recursive mkdir would follow an
@@ -188,23 +185,23 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
     while (canonicalAncestor === null) {
       const parent = path.dirname(existingAncestor);
       if (parent === existingAncestor) {
-        return yield* fail("failed to resolve the save directory");
+        return yield* fail("save-directory-resolution");
       }
       existingAncestor = parent;
       canonicalAncestor = yield* realPathOrNull(existingAncestor);
     }
     if (isOutsideRoot(canonicalRoot, canonicalAncestor)) {
-      return yield* fail("savePath must stay inside the workspace root");
+      return yield* fail("workspace-containment-validation");
     }
 
     yield* fileSystem
       .makeDirectory(lexicalParent, { recursive: true })
-      .pipe(Effect.mapError((cause) => fail("failed to create the save directory", cause)));
+      .pipe(Effect.mapError((cause) => fail("save-directory-creation", cause)));
     const canonicalParent = yield* fileSystem
       .realPath(lexicalParent)
-      .pipe(Effect.mapError((cause) => fail("failed to resolve the save directory", cause)));
+      .pipe(Effect.mapError((cause) => fail("save-directory-resolution", cause)));
     if (isOutsideRoot(canonicalRoot, canonicalParent)) {
-      return yield* fail("savePath must stay inside the workspace root");
+      return yield* fail("workspace-containment-validation");
     }
 
     // Refuse to write through a destination that is itself a symlink: the
@@ -216,13 +213,13 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
       Effect.orElseSucceed(() => false),
     );
     if (destinationIsSymlink) {
-      return yield* fail("savePath must not be an existing symlink");
+      return yield* fail("destination-symlink-validation");
     }
 
     yield* writeScreenshotFile({
       absolutePath: destination,
       screenshotBase64: input.screenshotBase64,
-    }).pipe(Effect.mapError((cause) => fail("failed to write the screenshot file", cause)));
+    }).pipe(Effect.mapError((cause) => fail("screenshot-write", cause)));
     return resolved.relativePath;
   },
 );
