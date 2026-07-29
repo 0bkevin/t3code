@@ -4,6 +4,8 @@ import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import {
@@ -29,7 +31,7 @@ import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
-import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
+import { layer as ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
@@ -85,6 +87,11 @@ import {
 } from "./orchestration-v2/runtimeLayer.ts";
 import * as ResourceCleanupService from "./orchestration-v2/ResourceCleanupService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
+import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
+import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
+import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
+import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
+import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -101,6 +108,10 @@ import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale"
 // already closes the websocket gracefully. Do not add an artificial drain before
 // those finalizers get a chance to run.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
+const ResourceAttributionLayerLive = ResourceAttribution.layer;
+const ApplicationObservabilityLive = ObservabilityLive.pipe(
+  Layer.provideMerge(ResourceAttributionLayerLive),
+);
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -112,6 +123,35 @@ const PtyAdapterLive = Layer.unwrap(
       return NodePtyAdapter.layer;
     }
   }),
+);
+
+const ServerSettingsLayerLive = ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer));
+
+const NativeTelemetryLayerLive = NativeTelemetryClient.layer.pipe(
+  Layer.provide(ResourceMonitorBinary.layer),
+);
+const DesktopTelemetryReceiverLayerLive = DesktopTelemetryReceiver.layer.pipe(
+  Layer.provideMerge(ServerSettingsLayerLive),
+);
+
+const ResourceTelemetryLayerLive = ResourceTelemetry.layer.pipe(
+  Layer.provideMerge(NativeTelemetryLayerLive),
+  Layer.provideMerge(DesktopTelemetryReceiverLayerLive),
+);
+
+const HostPowerMonitorLayerLive = HostPowerMonitor.layer.pipe(
+  Layer.provide(DesktopTelemetryReceiverLayerLive),
+);
+
+const BackgroundLayerLive = BackgroundPolicy.layer.pipe(
+  Layer.provide(HostPowerMonitorLayerLive),
+  Layer.provideMerge(ServerSettingsLayerLive),
+);
+
+const ResourceDiagnosticsLayerLive = Layer.mergeAll(
+  ResourceTelemetryLayerLive,
+  ProcessDiagnostics.layer.pipe(Layer.provide(ResourceTelemetryLayerLive)),
+  ProcessResourceMonitor.layer.pipe(Layer.provide(ResourceTelemetryLayerLive)),
 );
 
 const RelayClientLive = Layer.unwrap(
@@ -274,6 +314,7 @@ const OrchestrationApplicationLayerLive = CheckpointDiffQuery.layer.pipe(
 const RuntimeCoreDependenciesBaseLive = AgentAwarenessRelay.layer.pipe(
   // Core Services
   Layer.provideMerge(OrchestrationApplicationLayerLive),
+  Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
@@ -290,6 +331,11 @@ const RuntimeCoreDependenciesBaseLive = AgentAwarenessRelay.layer.pipe(
 );
 
 const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
+  // Shared native/canonical NDJSON writers used by both the per-instance
+  // V2 drivers and the orchestration runtime. Provide resource attribution so
+  // the rewritten telemetry pipeline can account for logical NDJSON writes.
+  // Provided once at the runtime level so every consumer sees the same
+  // logger instances.
   Layer.provideMerge(ProviderEventLoggersLive),
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
@@ -297,7 +343,6 @@ const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
   // no longer transitively provides it. Exposing it at the runtime level
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
-  Layer.provideMerge(ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectEnrichmentService.layer),
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
@@ -318,8 +363,8 @@ const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
 
 const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
-  Layer.provideMerge(ProcessDiagnostics.layer),
-  Layer.provideMerge(ProcessResourceMonitor.layer),
+  Layer.provideMerge(BackgroundLayerLive),
+  Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
@@ -497,7 +542,7 @@ export const makeServerLayer = Layer.unwrap(
       Layer.provideMerge(serverRelayBrokerTracingLayer),
       Layer.provideMerge(HttpResponseCompressionLive),
       Layer.provideMerge(HttpServerLive),
-      Layer.provide(ObservabilityLive),
+      Layer.provide(ApplicationObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(VcsProcess.layer),
       Layer.provideMerge(PlatformServicesLive),

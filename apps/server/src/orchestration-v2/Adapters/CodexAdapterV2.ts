@@ -56,10 +56,8 @@ import {
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "../../provider/Drivers/CodexHomeLayout.ts";
-import {
-  type EventNdjsonLogger,
-  makeEventNdjsonLogger,
-} from "../../provider/Layers/EventNdjsonLogger.ts";
+import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
+import { ProviderEventLoggers } from "../../provider/Layers/ProviderEventLoggers.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
@@ -1211,15 +1209,12 @@ function isSensitiveCodexProtocolKey(key: string): boolean {
 export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
   CodexAppServerClientFactory,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | ServerConfig
+  ChildProcessSpawner.ChildProcessSpawner | ProviderEventLoggers
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const { providerEventLogPath } = yield* ServerConfig;
-    const nativeEventLogger = yield* makeEventNdjsonLogger(providerEventLogPath, {
-      stream: "native",
-    });
+    const { native: nativeEventLogger } = yield* ProviderEventLoggers;
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
