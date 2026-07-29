@@ -888,17 +888,33 @@ export class PreviewAutomationMalformedResponseError extends Schema.TaggedErrorC
   }
 }
 
+export const PreviewAutomationScreenshotSaveStage = Schema.Literals([
+  "artifact-write",
+  "extension-validation",
+  "thread-workspace-resolution",
+  "thread-lookup",
+  "workspace-path-validation",
+  "save-path-resolution",
+  "workspace-root-resolution",
+  "save-directory-resolution",
+  "workspace-containment-validation",
+  "save-directory-creation",
+  "destination-symlink-validation",
+  "screenshot-write",
+]);
+export type PreviewAutomationScreenshotSaveStage = typeof PreviewAutomationScreenshotSaveStage.Type;
+
 export class PreviewAutomationScreenshotSaveError extends Schema.TaggedErrorClass<PreviewAutomationScreenshotSaveError>()(
   "PreviewAutomationScreenshotSaveError",
   {
     ...PreviewAutomationScopeErrorFields,
     savePath: TrimmedNonEmptyString,
-    reason: Schema.String,
+    stage: PreviewAutomationScreenshotSaveStage,
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Failed to save the preview screenshot to ${this.savePath}: ${this.reason}`;
+    return `Failed to save the preview screenshot to ${this.savePath} during ${this.stage.replaceAll("-", " ")}.`;
   }
 }
 
