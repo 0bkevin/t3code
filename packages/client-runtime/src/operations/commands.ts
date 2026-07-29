@@ -85,6 +85,13 @@ export interface UnsnoozeThreadInput extends ThreadCommandInput {
   readonly reason: "user";
 }
 
+export interface VisitThreadInput extends ThreadCommandInput {
+  /** Watermark of the thread state the viewer has seen (ISO timestamp). */
+  readonly visitedAt: string;
+}
+
+export type MarkThreadUnreadInput = ThreadCommandInput;
+
 export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly title?: string;
   readonly modelSelection?: ModelSelection;
@@ -181,6 +188,15 @@ export interface ReorderQueuedRunInput extends ThreadCommandInput {
 export interface PromoteQueuedRunInput extends ThreadCommandInput {
   readonly queuedRunId: RunId;
   readonly targetRunId: RunId;
+}
+
+export interface CancelQueuedRunInput extends ThreadCommandInput {
+  readonly runId: RunId;
+}
+
+export interface EditQueuedRunInput extends ThreadCommandInput {
+  readonly runId: RunId;
+  readonly text: string;
 }
 
 const allocateCommandId = Effect.fn("EnvironmentCommands.allocateCommandId")(function* (
@@ -384,6 +400,27 @@ export const unsnoozeThread = Effect.fn("EnvironmentCommands.unsnoozeThread")(fu
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     reason: input.reason,
+  });
+});
+
+export const visitThread = Effect.fn("EnvironmentCommands.visitThread")(function* (
+  input: VisitThreadInput,
+) {
+  return yield* dispatch({
+    type: "thread.visit",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    visitedAt: input.visitedAt,
+  });
+});
+
+export const markThreadUnread = Effect.fn("EnvironmentCommands.markThreadUnread")(function* (
+  input: MarkThreadUnreadInput,
+) {
+  return yield* dispatch({
+    type: "thread.mark-unread",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
   });
 });
 
@@ -699,5 +736,28 @@ export const promoteQueuedRun = Effect.fn("EnvironmentCommands.promoteQueuedRun"
     threadId: input.threadId,
     queuedRunId: input.queuedRunId,
     targetRunId: input.targetRunId,
+  });
+});
+
+export const cancelQueuedRun = Effect.fn("EnvironmentCommands.cancelQueuedRun")(function* (
+  input: CancelQueuedRunInput,
+) {
+  return yield* dispatch({
+    type: "queued-run.cancel",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    runId: input.runId,
+  });
+});
+
+export const editQueuedRun = Effect.fn("EnvironmentCommands.editQueuedRun")(function* (
+  input: EditQueuedRunInput,
+) {
+  return yield* dispatch({
+    type: "queued-run.edit",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    runId: input.runId,
+    text: input.text,
   });
 });

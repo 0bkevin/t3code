@@ -72,6 +72,7 @@ function makeProjection(input: {
       archivedAt: null,
       settledOverride: null,
       settledAt: null,
+      lastVisitedAt: null,
       deletedAt: null,
     },
     runs: [],

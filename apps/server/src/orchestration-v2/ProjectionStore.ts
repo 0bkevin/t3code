@@ -190,6 +190,14 @@ export function applyToProjection(
         ...base,
         thread: event.payload,
       };
+    // Visited tracking is read state, not activity: skip the updatedAt bump so
+    // viewing a thread does not surface it as recently active.
+    case "thread.visited":
+    case "thread.marked-unread":
+      return {
+        ...projection,
+        thread: event.payload,
+      };
     case "run.created":
     case "run.updated":
       return withLocalVisibleTurnItems({
@@ -389,6 +397,9 @@ type ShellThreadRow = {
   readonly payload_json: string;
   readonly latest_run_id: string | null;
   readonly latest_run_status: string | null;
+  readonly latest_run_requested_at: string | null;
+  readonly latest_run_started_at: string | null;
+  readonly latest_run_completed_at: string | null;
   readonly active_run_id: string | null;
   readonly last_error: string | null;
   readonly pending_request_payload_json: string | null;
@@ -795,6 +806,9 @@ export function threadShellFromProjection(
       ? {}
       : { historyOrigin: projection.thread.historyOrigin }),
     latestRunId: latestRun?.id ?? null,
+    latestRunRequestedAt: latestRun?.requestedAt ?? null,
+    latestRunStartedAt: latestRun?.startedAt ?? null,
+    latestRunCompletedAt: latestRun?.completedAt ?? null,
     activeRunId: activeRun?.id ?? null,
     status: latestRun?.status ?? "idle",
     lastError: providerSession?.lastError ?? null,
@@ -828,6 +842,7 @@ export function threadShellFromProjection(
     settledAt: projection.thread.settledAt,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
+    lastVisitedAt: projection.thread.lastVisitedAt,
     deletedAt: projection.thread.deletedAt,
   };
 }
@@ -840,6 +855,9 @@ type ShellThreadState = {
   readonly thread: OrchestrationV2ThreadProjection["thread"];
   readonly latestRunId: RunId | null;
   readonly latestRunStatus: OrchestrationV2ShellThreadStatus;
+  readonly latestRunRequestedAt: DateTime.Utc | null;
+  readonly latestRunStartedAt: DateTime.Utc | null;
+  readonly latestRunCompletedAt: DateTime.Utc | null;
   readonly activeRunId: RunId | null;
   readonly lastError: string | null;
   readonly pendingRuntimeRequest: OrchestrationV2ThreadProjection["runtimeRequests"][number] | null;
@@ -958,6 +976,9 @@ function shellFromState(input: {
       ? {}
       : { historyOrigin: input.state.thread.historyOrigin }),
     latestRunId: input.state.latestRunId,
+    latestRunRequestedAt: input.state.latestRunRequestedAt,
+    latestRunStartedAt: input.state.latestRunStartedAt,
+    latestRunCompletedAt: input.state.latestRunCompletedAt,
     activeRunId: input.state.activeRunId,
     status: input.state.latestRunStatus,
     lastError: input.state.lastError,
@@ -989,6 +1010,7 @@ function shellFromState(input: {
     settledAt: input.state.thread.settledAt,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,
+    lastVisitedAt: input.state.thread.lastVisitedAt,
     deletedAt: input.state.thread.deletedAt,
   };
 }
@@ -1009,6 +1031,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "thread.unsettled":
           case "thread.snoozed":
           case "thread.unsnoozed":
+          case "thread.visited":
+          case "thread.marked-unread":
           case "thread.metadata-updated":
           case "thread.runtime-mode-updated":
           case "thread.interaction-mode-updated":
@@ -2100,6 +2124,27 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS latest_run_status,
               (
+                SELECT r.requested_at
+                FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = t.thread_id
+                ORDER BY r.ordinal DESC, r.run_id DESC
+                LIMIT 1
+              ) AS latest_run_requested_at,
+              (
+                SELECT json_extract(r.payload_json, '$.startedAt')
+                FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = t.thread_id
+                ORDER BY r.ordinal DESC, r.run_id DESC
+                LIMIT 1
+              ) AS latest_run_started_at,
+              (
+                SELECT r.completed_at
+                FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = t.thread_id
+                ORDER BY r.ordinal DESC, r.run_id DESC
+                LIMIT 1
+              ) AS latest_run_completed_at,
+              (
                 SELECT r.run_id
                 FROM orchestration_v2_projection_runs r
                 WHERE r.thread_id = t.thread_id
@@ -2216,6 +2261,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   thread,
                   latestRunId: row.latest_run_id === null ? null : RunId.make(row.latest_run_id),
                   latestRunStatus: shellStatusFromStoredRunStatus(row.latest_run_status),
+                  latestRunRequestedAt:
+                    row.latest_run_requested_at === null
+                      ? null
+                      : DateTime.makeUnsafe(row.latest_run_requested_at),
+                  latestRunStartedAt:
+                    row.latest_run_started_at === null
+                      ? null
+                      : DateTime.makeUnsafe(row.latest_run_started_at),
+                  latestRunCompletedAt:
+                    row.latest_run_completed_at === null
+                      ? null
+                      : DateTime.makeUnsafe(row.latest_run_completed_at),
                   activeRunId: row.active_run_id === null ? null : RunId.make(row.active_run_id),
                   lastError: row.last_error,
                   pendingRuntimeRequest,

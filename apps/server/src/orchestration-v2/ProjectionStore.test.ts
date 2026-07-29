@@ -139,6 +139,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           archivedAt: null,
           settledOverride: null,
           settledAt: null,
+          lastVisitedAt: null,
           deletedAt: null,
         },
       });
@@ -158,6 +159,15 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       );
       assert.equal(shell?.status, "running");
       assert.equal(shell?.activeRunId, runId);
+      assert.equal(
+        shell?.latestRunRequestedAt && DateTime.toEpochMillis(shell.latestRunRequestedAt),
+        DateTime.toEpochMillis(now),
+      );
+      assert.equal(
+        shell?.latestRunStartedAt && DateTime.toEpochMillis(shell.latestRunStartedAt),
+        DateTime.toEpochMillis(now),
+      );
+      assert.isNull(shell?.latestRunCompletedAt);
 
       yield* projectionStore.apply({
         id: EventId.make("event:projection-shell-interruptible:waiting"),
@@ -212,6 +222,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         archivedAt: null,
         settledOverride: null,
         settledAt: null,
+        lastVisitedAt: null,
         deletedAt: null,
       });
       const session = {
@@ -340,6 +351,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           archivedAt: null,
           settledOverride: null,
           settledAt: null,
+          lastVisitedAt: null,
           deletedAt: null,
         },
       });
@@ -459,6 +471,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           archivedAt: null,
           settledOverride: null,
           settledAt: null,
+          lastVisitedAt: null,
           deletedAt: null,
         },
       });
@@ -495,6 +508,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           archivedAt: null,
           settledOverride: null,
           settledAt: null,
+          lastVisitedAt: null,
           deletedAt: null,
         },
       });
@@ -615,6 +629,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           archivedAt: null,
           settledOverride: null,
           settledAt: null,
+          lastVisitedAt: null,
           deletedAt: null,
         },
       });
@@ -989,6 +1004,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           archivedAt: null,
           settledOverride: null,
           settledAt: null,
+          lastVisitedAt: null,
           deletedAt: null,
         },
       });
@@ -1025,6 +1041,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           archivedAt: null,
           settledOverride: null,
           settledAt: null,
+          lastVisitedAt: null,
           deletedAt: null,
         },
       });

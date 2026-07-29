@@ -616,6 +616,7 @@ function makeTurnInput(input: {
       archivedAt: null,
       settledOverride: null,
       settledAt: null,
+      lastVisitedAt: null,
       deletedAt: null,
     },
     threadId: input.threadId,
