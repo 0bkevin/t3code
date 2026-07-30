@@ -217,6 +217,7 @@ export class BootServiceCommandError extends Schema.TaggedErrorClass<BootService
     exitCode: Schema.optional(Schema.Number),
     stdoutLength: Schema.optional(Schema.Number),
     stderrLength: Schema.optional(Schema.Number),
+    supervisor: Schema.optional(Schema.Literals(["systemd", "launchd"])),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -225,7 +226,7 @@ export class BootServiceCommandError extends Schema.TaggedErrorClass<BootService
       this.exitCode === undefined
         ? `Background setup failed while ${this.step}.`
         : `Background setup failed while ${this.step} (exit code ${this.exitCode}).`;
-    return this.step.includes("LaunchAgent")
+    return this.supervisor === "launchd"
       ? `${detail} If macOS blocked the background item, allow T3 Code in System Settings > General > Login Items & Extensions.`
       : detail;
   }
@@ -322,10 +323,20 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     step: string,
     command: string,
     args: ReadonlyArray<string>,
-    options?: { readonly timeout?: Duration.Input },
+    options?: {
+      readonly timeout?: Duration.Input;
+      readonly supervisor?: "systemd" | "launchd";
+    },
   ) {
     return yield* runner.run({ command, args, timeout: options?.timeout }).pipe(
-      Effect.mapError((cause) => new BootServiceCommandError({ step, cause })),
+      Effect.mapError(
+        (cause) =>
+          new BootServiceCommandError({
+            step,
+            cause,
+            supervisor: options?.supervisor,
+          }),
+      ),
       Effect.filterOrFail(
         (result) => result.code === 0,
         (result) =>
@@ -334,6 +345,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
             exitCode: Number(result.code),
             stdoutLength: result.stdout.length,
             stderrLength: result.stderr.length,
+            supervisor: options?.supervisor,
           }),
       ),
       Effect.tapError((error) =>
@@ -357,6 +369,39 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       Effect.map((result) => result.code === 0),
       Effect.orElseSucceed(() => false),
     );
+  });
+  const readLaunchAgentDisabled = Effect.fn("cloud.boot_service.read_launch_agent_disabled")(
+    function* () {
+      if (launchAgent === null || userId === null) {
+        return Option.none<boolean>();
+      }
+      return yield* runner
+        .run({
+          command: "/bin/launchctl",
+          args: ["print-disabled", `gui/${String(userId)}`],
+        })
+        .pipe(
+          Effect.map((result) =>
+            result.code === 0
+              ? Option.some(
+                  result.stdout
+                    .split("\n")
+                    .some(
+                      (line) =>
+                        line.includes(BOOT_SERVICE_LAUNCH_AGENT_LABEL) && line.includes("=> true"),
+                    ),
+                )
+              : Option.none<boolean>(),
+          ),
+          Effect.orElseSucceed(() => Option.none<boolean>()),
+        );
+    },
+  );
+  const runLaunchAgentStep = Effect.fn("cloud.boot_service.run_launch_agent_step")(function* (
+    step: string,
+    args: ReadonlyArray<string>,
+  ) {
+    return yield* runStep(step, "/bin/launchctl", args, { supervisor: "launchd" });
   });
 
   /**
@@ -464,6 +509,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
             Effect.mapError((cause) => new BootServiceInstallError({ cause })),
           )
         : Option.none<string>();
+    const previousLaunchAgentDisabled =
+      platform === "darwin" ? yield* readLaunchAgentDisabled() : Option.none<boolean>();
 
     yield* fs.makeDirectory(unitDir, { recursive: true }).pipe(
       Effect.andThen(
@@ -474,7 +521,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           : writeUnit(renderBootServiceUnit(plan)),
       ),
       Effect.mapError((cause) => new BootServiceInstallError({ cause })),
-      Effect.tapError(() => rollbackFailedInstall(previousUnit, previousRuntimeLink)),
+      Effect.tapError(() =>
+        rollbackFailedInstall(previousUnit, previousRuntimeLink, previousLaunchAgentDisabled),
+      ),
     );
 
     yield* Effect.gen(function* () {
@@ -482,22 +531,15 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         const domain = `gui/${String(userId)}`;
         // An explicit install repairs a background item the user previously
         // disabled in System Settings.
-        yield* runStep("enabling the LaunchAgent", "/bin/launchctl", [
+        yield* runLaunchAgentStep("enabling the LaunchAgent", [
           "enable",
           launchAgent.serviceTarget,
         ]);
         // bootout is expected to fail on first install. On repair it stops
         // the old job before bootstrap loads the new definition.
         yield* runOptionalStep("/bin/launchctl", ["bootout", launchAgent.serviceTarget]);
-        yield* runStep("loading the LaunchAgent", "/bin/launchctl", [
-          "bootstrap",
-          domain,
-          unitPath,
-        ]);
-        yield* runStep("checking the LaunchAgent", "/bin/launchctl", [
-          "print",
-          launchAgent.serviceTarget,
-        ]);
+        yield* runLaunchAgentStep("loading the LaunchAgent", ["bootstrap", domain, unitPath]);
+        yield* runLaunchAgentStep("checking the LaunchAgent", ["print", launchAgent.serviceTarget]);
         return;
       }
 
@@ -520,7 +562,11 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       // username argument: loginctl defaults to the calling user, which is
       // always right, while $USER can be stale (su without -l) or unset.
       yield* runStep("enabling lingering for this user", "loginctl", ["enable-linger"]);
-    }).pipe(Effect.tapError(() => rollbackFailedInstall(previousUnit, previousRuntimeLink)));
+    }).pipe(
+      Effect.tapError(() =>
+        rollbackFailedInstall(previousUnit, previousRuntimeLink, previousLaunchAgentDisabled),
+      ),
+    );
 
     return plan;
   }).pipe(Effect.withSpan("cloud.boot_service.install"));
@@ -533,6 +579,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const rollbackFailedInstall = Effect.fn("cloud.boot_service.rollback_failed_install")(function* (
     previousUnit: Option.Option<string>,
     previousRuntimeLink: Option.Option<string>,
+    previousLaunchAgentDisabled: Option.Option<boolean>,
   ) {
     if (platform === "darwin" && launchAgent !== null && userId !== null) {
       yield* runOptionalStep("/bin/launchctl", ["bootout", launchAgent.serviceTarget]);
@@ -543,9 +590,20 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       }
       if (Option.isSome(previousUnit)) {
         yield* writeUnit(previousUnit.value).pipe(Effect.ignore);
-        yield* runOptionalStep("/bin/launchctl", ["bootstrap", `gui/${String(userId)}`, unitPath]);
+        if (Option.getOrElse(previousLaunchAgentDisabled, () => false)) {
+          yield* runOptionalStep("/bin/launchctl", ["disable", launchAgent.serviceTarget]);
+        } else {
+          yield* runOptionalStep("/bin/launchctl", [
+            "bootstrap",
+            `gui/${String(userId)}`,
+            unitPath,
+          ]);
+        }
       } else {
         yield* fs.remove(unitPath).pipe(Effect.ignore);
+        if (Option.getOrElse(previousLaunchAgentDisabled, () => false)) {
+          yield* runOptionalStep("/bin/launchctl", ["disable", launchAgent.serviceTarget]);
+        }
       }
       return;
     }
@@ -575,16 +633,17 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
 
   const uninstall: BootService["Service"]["uninstall"] = Effect.gen(function* () {
     yield* requireSupportedPlatform;
+    const stoppedLaunchAgent =
+      platform === "darwin" && launchAgent !== null
+        ? yield* runOptionalStep("/bin/launchctl", ["bootout", launchAgent.serviceTarget])
+        : false;
     const exists = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
     if (!exists) {
-      return false;
+      return stoppedLaunchAgent;
     }
     if (platform === "darwin" && launchAgent !== null) {
-      // A disabled or already-unloaded agent returns non-zero from bootout;
-      // the plist is still safe to remove and is the durable source of truth.
-      yield* runOptionalStep("/bin/launchctl", ["bootout", launchAgent.serviceTarget]);
       yield* fs
         .remove(unitPath)
         .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -623,11 +682,13 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         Effect.orElseSucceed(() => false),
       );
       const loaded = yield* runOptionalStep("/bin/launchctl", ["print", launchAgent.serviceTarget]);
+      const disabled = yield* readLaunchAgentDisabled();
       const current =
         unit === renderBootServiceLaunchAgent(plan) &&
         entryExists &&
         activeRuntimeIsCurrent &&
-        loaded;
+        loaded &&
+        !Option.getOrElse(disabled, () => false);
       return { supported: true, installed: true, current, unitPath, logPath };
     }
 

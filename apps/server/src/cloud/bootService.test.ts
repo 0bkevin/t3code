@@ -32,6 +32,7 @@ const makeRecordingRunnerLayer = (
   options?: {
     readonly failCommand?: string;
     readonly failWhen?: (command: string, args: ReadonlyArray<string>) => boolean;
+    readonly stdoutFor?: (command: string, args: ReadonlyArray<string>) => string | undefined;
   },
 ) =>
   Layer.succeed(
@@ -45,7 +46,7 @@ const makeRecordingRunnerLayer = (
             input.command === options?.failCommand ||
             options?.failWhen?.(input.command, input.args) === true;
           return {
-            stdout: "",
+            stdout: options?.stdoutFor?.(input.command, input.args) ?? "",
             stderr: failed ? `${input.command} exploded` : "",
             code: ChildProcessSpawner.ExitCode(failed ? 1 : 0),
             timedOut: false,
@@ -170,6 +171,22 @@ it("renders a restartable per-user macOS LaunchAgent", () => {
   assert.include(
     launchAgent,
     "<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin:/bin</string>",
+  );
+});
+
+it("uses typed supervisor context for launchd recovery guidance", () => {
+  assert.include(
+    new BootService.BootServiceCommandError({
+      step: "loading the background service",
+      supervisor: "launchd",
+    }).message,
+    "System Settings > General > Login Items & Extensions",
+  );
+  assert.notInclude(
+    new BootService.BootServiceCommandError({
+      step: "checking the LaunchAgent",
+    }).message,
+    "System Settings",
   );
 });
 
@@ -451,6 +468,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
         commands.map((entry) => [entry.command, ...entry.args].join(" ")),
         [
           `npm install --prefix ${runtimeDir} --no-fund --no-audit t3@0.0.27`,
+          "/bin/launchctl print-disabled gui/501",
           "/bin/launchctl enable gui/501/com.t3tools.t3code.server",
           "/bin/launchctl bootout gui/501/com.t3tools.t3code.server",
           `/bin/launchctl bootstrap gui/501 ${launchAgentPath}`,
@@ -515,6 +533,10 @@ it.layer(NodeServices.layer)("BootService", (it) => {
         Effect.provide(
           makeRecordingRunnerLayer(repairCommands, {
             failWhen: (command, args) => command === "/bin/launchctl" && args.includes("bootstrap"),
+            stdoutFor: (command, args) =>
+              command === "/bin/launchctl" && args.includes("print-disabled")
+                ? 'disabled services = {\n  "com.t3tools.t3code.server" => true\n}\n'
+                : undefined,
           }),
         ),
         provideHostRefs(dirs.home, "darwin"),
@@ -525,6 +547,37 @@ it.layer(NodeServices.layer)("BootService", (it) => {
       assert.isTrue(isCommandError(error));
       assert.equal(yield* fs.readLink(activeRuntimeLink), previousRuntime);
       assert.equal(yield* fs.readFileString(launchAgentPath), previousLaunchAgent);
+      assert.isTrue(
+        repairCommands.some(
+          ({ command, args }) =>
+            command === "/bin/launchctl" &&
+            args.join(" ") === "disable gui/501/com.t3tools.t3code.server",
+        ),
+      );
+    }),
+  );
+
+  it.effect("stops an orphaned macOS LaunchAgent when its plist is already gone", () =>
+    Effect.gen(function* () {
+      const { dirs } = yield* makeTestContext();
+      const commands: Array<RecordedCommand> = [];
+      const service = yield* BootService.make({
+        baseDir: dirs.baseDir,
+        logsDir: dirs.logsDir,
+        cliVersion: "0.0.27",
+        host: makeHost(dirs.stableEntry),
+      }).pipe(
+        Effect.provide(makeRecordingRunnerLayer(commands)),
+        provideHostRefs(dirs.home, "darwin"),
+      );
+
+      assert.isTrue(yield* service.uninstall);
+      assert.deepEqual(commands, [
+        {
+          command: "/bin/launchctl",
+          args: ["bootout", "gui/501/com.t3tools.t3code.server"],
+        },
+      ]);
     }),
   );
 
