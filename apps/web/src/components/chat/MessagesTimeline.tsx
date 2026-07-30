@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type OrchestrationThreadActivity,
   type ScopedThreadRef,
   type ServerProviderSkill,
   type TurnId,
@@ -44,6 +45,8 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  ClockIcon,
+  CpuIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
@@ -66,7 +69,11 @@ import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
+  deriveAgentResponseStatsByTurnId,
   deriveMessagesTimelineRows,
+  formatAgentResponseDuration,
+  formatAgentResponseTokenCount,
+  formatTokensPerSecond,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
@@ -76,6 +83,7 @@ import {
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapTopPercent,
+  type AgentResponseStats,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
   TIMELINE_MINIMAP_MIN_ITEMS,
@@ -123,6 +131,8 @@ import {
 
 interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
+  statsForNerdsEnabled: boolean;
+  agentResponseStatsByTurnId: ReadonlyMap<TurnId, AgentResponseStats>;
   routeThreadKey: string;
   threadRef: ScopedThreadRef | null;
   markdownCwd: string | undefined;
@@ -150,6 +160,7 @@ const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = <div className="h-10 sm:h-12" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+const EMPTY_THREAD_ACTIVITIES: ReadonlyArray<OrchestrationThreadActivity> = [];
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -174,6 +185,8 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  statsForNerdsEnabled?: boolean;
+  threadActivities?: ReadonlyArray<OrchestrationThreadActivity>;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   anchorMessageId: MessageId | null;
@@ -209,6 +222,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  statsForNerdsEnabled = false,
+  threadActivities = EMPTY_THREAD_ACTIVITIES,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
@@ -324,6 +339,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const timelineMessages = useMemo(
+    () => timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+    [timelineEntries],
+  );
+  const agentResponseStatsByTurnId = useMemo(
+    () => deriveAgentResponseStatsByTurnId(timelineMessages, threadActivities),
+    [threadActivities, timelineMessages],
+  );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -418,6 +441,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       timestampFormat,
+      statsForNerdsEnabled,
+      agentResponseStatsByTurnId,
       routeThreadKey,
       threadRef: parseScopedThreadKey(routeThreadKey),
       markdownCwd,
@@ -433,6 +458,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }),
     [
       timestampFormat,
+      statsForNerdsEnabled,
+      agentResponseStatsByTurnId,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -1038,22 +1065,133 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         {row.showAssistantMeta ? (
           <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
             <AssistantCopyButton row={row} />
-            {!row.message.streaming && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={<p className="text-muted-foreground text-xs tabular-nums" />}
-                >
-                  {formatShortTimestamp(row.message.updatedAt, ctx.timestampFormat)}
-                </TooltipTrigger>
-                <TooltipPopup>
-                  {formatChatTimestampTooltip(row.message.updatedAt, ctx.timestampFormat)}
-                </TooltipPopup>
-              </Tooltip>
-            )}
+            {!row.message.streaming &&
+              (ctx.statsForNerdsEnabled && row.message.turnId ? (
+                <AssistantResponseStats
+                  stats={ctx.agentResponseStatsByTurnId.get(row.message.turnId) ?? null}
+                  updatedAt={row.message.updatedAt}
+                />
+              ) : (
+                <AssistantResponseTimestamp updatedAt={row.message.updatedAt} />
+              ))}
           </div>
         ) : null}
       </div>
     </>
+  );
+}
+
+function AssistantResponseTimestamp({ updatedAt }: { updatedAt: string }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
+        {formatShortTimestamp(updatedAt, ctx.timestampFormat)}
+      </TooltipTrigger>
+      <TooltipPopup>{formatChatTimestampTooltip(updatedAt, ctx.timestampFormat)}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function ResponseStatRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-6">
+      <span className="text-muted-foreground/70">{label}</span>
+      <span className="font-medium text-foreground tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+function AssistantResponseStats({
+  stats,
+  updatedAt,
+}: {
+  stats: AgentResponseStats | null;
+  updatedAt: string;
+}) {
+  if (!stats) {
+    return <AssistantResponseTimestamp updatedAt={updatedAt} />;
+  }
+
+  const tokensPerSecond = formatTokensPerSecond(stats.tokensPerSecond);
+  const duration = formatAgentResponseDuration(stats.durationMs);
+  const outputTokens =
+    stats.outputTokens !== null ? formatAgentResponseTokenCount(stats.outputTokens) : null;
+  const accessibleSummary = [
+    tokensPerSecond,
+    outputTokens !== null ? `${outputTokens} output tokens` : null,
+    `${duration} duration`,
+  ]
+    .filter((value): value is string => value !== null)
+    .join(", ");
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            className="flex cursor-help items-center gap-2 text-muted-foreground text-xs tabular-nums transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
+            aria-label={`Response stats: ${accessibleSummary}`}
+          />
+        }
+      >
+        <span className="inline-flex items-center gap-1">
+          <ZapIcon className="size-3" aria-hidden />
+          {tokensPerSecond}
+        </span>
+        {outputTokens !== null ? (
+          <span className="inline-flex items-center gap-1">
+            <CpuIcon className="size-3" aria-hidden />
+            {outputTokens}
+          </span>
+        ) : null}
+        <span className="inline-flex items-center gap-1">
+          <ClockIcon className="size-3" aria-hidden />
+          {duration}
+        </span>
+      </TooltipTrigger>
+      <TooltipPopup className="w-56 max-w-none p-1" align="start">
+        <div className="flex w-full flex-col gap-1.5 py-1">
+          <div className="mb-0.5 font-medium text-foreground">Response stats</div>
+          <ResponseStatRow
+            label="Tokens per second"
+            value={formatTokensPerSecond(stats.tokensPerSecond)}
+          />
+          <ResponseStatRow label="Duration" value={formatAgentResponseDuration(stats.durationMs)} />
+          {stats.inputTokens !== null ? (
+            <ResponseStatRow
+              label="Input tokens"
+              value={formatAgentResponseTokenCount(stats.inputTokens)}
+            />
+          ) : null}
+          {stats.cachedInputTokens !== null ? (
+            <ResponseStatRow
+              label="Cached input"
+              value={formatAgentResponseTokenCount(stats.cachedInputTokens)}
+            />
+          ) : null}
+          {stats.outputTokens !== null ? (
+            <ResponseStatRow
+              label="Output tokens"
+              value={formatAgentResponseTokenCount(stats.outputTokens)}
+            />
+          ) : null}
+          {stats.reasoningOutputTokens !== null ? (
+            <ResponseStatRow
+              label="Reasoning tokens"
+              value={formatAgentResponseTokenCount(stats.reasoningOutputTokens)}
+            />
+          ) : null}
+          {stats.toolUses !== null ? (
+            <ResponseStatRow
+              label="Tool calls"
+              value={formatAgentResponseTokenCount(stats.toolUses)}
+            />
+          ) : null}
+        </div>
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 

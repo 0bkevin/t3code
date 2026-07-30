@@ -1,11 +1,97 @@
 import { describe, expect, it } from "vite-plus/test";
+import { EventId, MessageId, TurnId } from "@t3tools/contracts";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
+  deriveAgentResponseStatsByTurnId,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
+
+describe("deriveAgentResponseStatsByTurnId", () => {
+  it("uses the latest turn usage snapshot and provider duration to calculate tps", () => {
+    const turnId = TurnId.make("turn-1");
+    const result = deriveAgentResponseStatsByTurnId(
+      [
+        {
+          id: MessageId.make("user-1"),
+          role: "user",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.make("assistant-1"),
+          role: "assistant",
+          turnId,
+          createdAt: "2026-01-01T00:00:02.000Z",
+          updatedAt: "2026-01-01T00:00:10.000Z",
+          streaming: false,
+        },
+      ],
+      [
+        {
+          id: EventId.make("usage-1"),
+          tone: "info",
+          kind: "context-window.updated",
+          summary: "Context window updated",
+          payload: {
+            lastInputTokens: 1_200,
+            lastCachedInputTokens: 800,
+            lastOutputTokens: 125,
+            lastReasoningOutputTokens: 25,
+            durationMs: 5_000,
+            toolUses: 3,
+          },
+          turnId,
+          createdAt: "2026-01-01T00:00:10.000Z",
+        },
+      ],
+    );
+
+    expect(result.get(turnId)).toEqual({
+      tokensPerSecond: 25,
+      durationMs: 5_000,
+      inputTokens: 1_200,
+      cachedInputTokens: 800,
+      outputTokens: 125,
+      reasoningOutputTokens: 25,
+      toolUses: 3,
+    });
+  });
+
+  it("falls back to elapsed response duration and skips unscoped usage", () => {
+    const turnId = TurnId.make("turn-2");
+    const messages = [
+      {
+        id: MessageId.make("assistant-2"),
+        role: "assistant" as const,
+        turnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        updatedAt: "2026-01-01T00:00:06.000Z",
+        streaming: false,
+      },
+    ];
+    const activity = {
+      id: EventId.make("usage-2"),
+      tone: "info" as const,
+      kind: "context-window.updated",
+      summary: "Context window updated",
+      payload: { outputTokens: 20 },
+      turnId,
+      createdAt: "2026-01-01T00:00:06.000Z",
+    };
+
+    expect(
+      deriveAgentResponseStatsByTurnId(messages, [activity]).get(turnId)?.tokensPerSecond,
+    ).toBe(5);
+    expect(deriveAgentResponseStatsByTurnId(messages, [{ ...activity, turnId: null }]).size).toBe(
+      0,
+    );
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {

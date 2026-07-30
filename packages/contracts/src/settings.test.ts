@@ -67,6 +67,16 @@ describe("ClientSettings environment identification", () => {
   });
 });
 
+describe("ClientSettings beta features", () => {
+  it("defaults stats for nerds off and accepts an explicit choice", () => {
+    expect(decodeClientSettings({}).statsForNerdsEnabled).toBe(false);
+    expect(decodeClientSettings({ statsForNerdsEnabled: true }).statsForNerdsEnabled).toBe(true);
+    expect(decodeClientSettingsPatch({ statsForNerdsEnabled: true }).statsForNerdsEnabled).toBe(
+      true,
+    );
+  });
+});
+
 describe("ClientSettings sidebar v2", () => {
   it("defaults the beta off with a three-day auto-settle threshold", () => {
     const settings = decodeClientSettings({});

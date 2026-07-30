@@ -7,7 +7,12 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
+import {
+  type MessageId,
+  type OrchestrationLatestTurn,
+  type OrchestrationThreadActivity,
+  type TurnId,
+} from "@t3tools/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
@@ -199,6 +204,105 @@ export function computeMessageDurationStart(
   }
 
   return result;
+}
+
+export interface AgentResponseStats {
+  readonly tokensPerSecond: number | null;
+  readonly durationMs: number;
+  readonly inputTokens: number | null;
+  readonly cachedInputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly reasoningOutputTokens: number | null;
+  readonly toolUses: number | null;
+}
+
+function finiteNonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function activityPayloadRecord(
+  activity: OrchestrationThreadActivity,
+): Record<string, unknown> | null {
+  return activity.payload && typeof activity.payload === "object"
+    ? (activity.payload as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Match each turn's latest normalized usage snapshot to its terminal assistant
+ * message. Providers expose different subsets, so every metric except duration
+ * remains nullable and the UI only renders values the provider supplied.
+ */
+export function deriveAgentResponseStatsByTurnId(
+  messages: ReadonlyArray<TimelineDurationMessage & { readonly turnId?: TurnId | null }>,
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<TurnId, AgentResponseStats> {
+  const usageByTurnId = new Map<TurnId, Record<string, unknown>>();
+  for (const activity of activities) {
+    if (activity.kind !== "context-window.updated" || activity.turnId === null) {
+      continue;
+    }
+    const payload = activityPayloadRecord(activity);
+    if (payload) {
+      usageByTurnId.set(activity.turnId, payload);
+    }
+  }
+
+  const durationStartByMessageId = computeMessageDurationStart(messages);
+  const result = new Map<TurnId, AgentResponseStats>();
+  for (const message of messages) {
+    if (message.role !== "assistant" || message.streaming || !message.turnId) {
+      continue;
+    }
+    const usage = usageByTurnId.get(message.turnId);
+    if (!usage) {
+      continue;
+    }
+
+    const measuredDurationMs = computeElapsedMs(
+      durationStartByMessageId.get(message.id) ?? message.createdAt,
+      message.updatedAt,
+    );
+    const durationMs = finiteNonNegativeNumber(usage.durationMs) ?? measuredDurationMs ?? 0;
+    const inputTokens =
+      finiteNonNegativeNumber(usage.lastInputTokens) ?? finiteNonNegativeNumber(usage.inputTokens);
+    const cachedInputTokens =
+      finiteNonNegativeNumber(usage.lastCachedInputTokens) ??
+      finiteNonNegativeNumber(usage.cachedInputTokens);
+    const outputTokens =
+      finiteNonNegativeNumber(usage.lastOutputTokens) ??
+      finiteNonNegativeNumber(usage.outputTokens);
+    const reasoningOutputTokens =
+      finiteNonNegativeNumber(usage.lastReasoningOutputTokens) ??
+      finiteNonNegativeNumber(usage.reasoningOutputTokens);
+    const tokensPerSecond =
+      outputTokens !== null && durationMs > 0 ? (outputTokens * 1_000) / durationMs : null;
+
+    result.set(message.turnId, {
+      tokensPerSecond,
+      durationMs,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      reasoningOutputTokens,
+      toolUses: finiteNonNegativeNumber(usage.toolUses),
+    });
+  }
+  return result;
+}
+
+export function formatAgentResponseTokenCount(value: number): string {
+  return new Intl.NumberFormat("en-US").format(Math.round(value));
+}
+
+export function formatAgentResponseDuration(durationMs: number): string {
+  if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
+  return `${(durationMs / 1_000).toFixed(1).replace(/\.0$/, "")}s`;
+}
+
+export function formatTokensPerSecond(value: number | null): string {
+  if (value === null) return "-- tok/s";
+  return `${value.toFixed(1)} tok/s`;
 }
 
 export function normalizeCompactToolLabel(value: string): string {
