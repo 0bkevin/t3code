@@ -45,6 +45,8 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  ClockIcon,
+  CpuIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
@@ -1111,17 +1113,43 @@ function AssistantResponseStats({
     return <AssistantResponseTimestamp updatedAt={updatedAt} />;
   }
 
+  const tokensPerSecond = formatTokensPerSecond(stats.tokensPerSecond);
+  const duration = formatAgentResponseDuration(stats.durationMs);
+  const outputTokens =
+    stats.outputTokens !== null ? formatAgentResponseTokenCount(stats.outputTokens) : null;
+  const accessibleSummary = [
+    tokensPerSecond,
+    outputTokens !== null ? `${outputTokens} output tokens` : null,
+    `${duration} duration`,
+  ]
+    .filter((value): value is string => value !== null)
+    .join(", ");
+
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          <p
-            className="cursor-help text-muted-foreground text-xs tabular-nums"
-            aria-label={`Response speed: ${formatTokensPerSecond(stats.tokensPerSecond)}`}
+          <button
+            type="button"
+            className="flex cursor-help items-center gap-2 text-muted-foreground text-xs tabular-nums transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
+            aria-label={`Response stats: ${accessibleSummary}`}
           />
         }
       >
-        {formatTokensPerSecond(stats.tokensPerSecond)}
+        <span className="inline-flex items-center gap-1">
+          <ZapIcon className="size-3" aria-hidden />
+          {tokensPerSecond}
+        </span>
+        {outputTokens !== null ? (
+          <span className="inline-flex items-center gap-1">
+            <CpuIcon className="size-3" aria-hidden />
+            {outputTokens}
+          </span>
+        ) : null}
+        <span className="inline-flex items-center gap-1">
+          <ClockIcon className="size-3" aria-hidden />
+          {duration}
+        </span>
       </TooltipTrigger>
       <TooltipPopup className="w-56 max-w-none p-1" align="start">
         <div className="flex w-full flex-col gap-1.5 py-1">

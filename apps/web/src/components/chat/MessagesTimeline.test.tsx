@@ -291,7 +291,12 @@ describe("MessagesTimeline", () => {
 
     expect(defaultMarkup).not.toContain("10.0 tok/s");
     expect(statsMarkup).toContain("10.0 tok/s");
-    expect(statsMarkup).toContain('aria-label="Response speed: 10.0 tok/s"');
+    expect(statsMarkup).toContain(
+      'aria-label="Response stats: 10.0 tok/s, 50 output tokens, 5s duration"',
+    );
+    expect(statsMarkup).toContain("lucide-zap");
+    expect(statsMarkup).toContain("lucide-cpu");
+    expect(statsMarkup).toContain("lucide-clock");
   });
 
   it("keeps assistant changed-files headers sticky below the thread header", () => {
