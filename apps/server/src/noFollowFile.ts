@@ -54,11 +54,9 @@ async function verifyFallbackHandle(
   handle: NodeFSP.FileHandle,
 ): Promise<NodeFSP.FileHandle> {
   try {
-    const [canonicalPath, pathInfo, handleInfo] = await Promise.all([
-      NodeFS.promises.realpath(absolutePath),
-      NodeFS.promises.stat(absolutePath),
-      handle.stat(),
-    ]);
+    const handleInfo = await handle.stat();
+    const canonicalPath = await NodeFS.promises.realpath(absolutePath);
+    const pathInfo = await NodeFS.promises.stat(absolutePath);
     if (
       canonicalPath !== absolutePath ||
       pathInfo.dev !== handleInfo.dev ||
