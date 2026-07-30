@@ -10,6 +10,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 
 import {
   HostProcessArguments,
+  HostProcessEnvironment,
   HostProcessExecutablePath,
   HostProcessPlatform,
   HostProcessUserId,
@@ -62,10 +63,15 @@ const makeHost = (entry: string): BootService.BootServiceHost => ({
   cliEntryPath: entry,
 });
 
-const provideHostRefs = (home: string, platform: NodeJS.Platform = "linux") =>
+const provideHostRefs = (
+  home: string,
+  platform: NodeJS.Platform = "linux",
+  pathEnvironment = "/test/bin:/usr/bin:/bin",
+) =>
   Effect.provide(
     Layer.mergeAll(
       Layer.succeed(HostProcessPlatform, platform),
+      Layer.succeed(HostProcessEnvironment, { HOME: home, PATH: pathEnvironment }),
       Layer.succeed(HostProcessUserId, 501),
       ConfigProvider.layer(ConfigProvider.fromEnv({ env: { HOME: home } })),
     ),
@@ -494,6 +500,17 @@ it.layer(NodeServices.layer)("BootService", (it) => {
       assert.isTrue(status.installed);
       assert.isTrue(status.current);
 
+      const differentPathService = yield* BootService.make({
+        baseDir: dirs.baseDir,
+        logsDir: dirs.logsDir,
+        cliVersion: "0.0.27",
+        host: makeHost(dirs.stableEntry),
+      }).pipe(
+        Effect.provide(makeRecordingRunnerLayer([])),
+        provideHostRefs(dirs.home, "darwin", "/different/setup/path"),
+      );
+      assert.isTrue((yield* differentPathService.status).current);
+
       assert.isTrue(yield* service.uninstall);
       assert.isFalse(yield* fs.exists(launchAgentPath));
     }),
@@ -575,9 +592,46 @@ it.layer(NodeServices.layer)("BootService", (it) => {
       assert.deepEqual(commands, [
         {
           command: "/bin/launchctl",
+          args: ["print", "gui/501/com.t3tools.t3code.server"],
+        },
+        {
+          command: "/bin/launchctl",
           args: ["bootout", "gui/501/com.t3tools.t3code.server"],
         },
       ]);
+    }),
+  );
+
+  it.effect("keeps the macOS plist when launchd cannot stop a loaded agent", () =>
+    Effect.gen(function* () {
+      const { dirs, fs, path } = yield* makeTestContext();
+      const launchAgentPath = path.join(
+        dirs.home,
+        "Library",
+        "LaunchAgents",
+        "com.t3tools.t3code.server.plist",
+      );
+      yield* fs.makeDirectory(path.dirname(launchAgentPath), { recursive: true });
+      yield* fs.writeFileString(launchAgentPath, "existing launch agent");
+
+      const service = yield* BootService.make({
+        baseDir: dirs.baseDir,
+        logsDir: dirs.logsDir,
+        cliVersion: "0.0.27",
+        host: makeHost(dirs.stableEntry),
+      }).pipe(
+        Effect.provide(
+          makeRecordingRunnerLayer([], {
+            failWhen: (command, args) => command === "/bin/launchctl" && args.includes("bootout"),
+          }),
+        ),
+        provideHostRefs(dirs.home, "darwin"),
+      );
+
+      const error = yield* service.uninstall.pipe(Effect.flip);
+
+      assert.isTrue(isCommandError(error));
+      assert.isTrue(yield* fs.exists(launchAgentPath));
     }),
   );
 

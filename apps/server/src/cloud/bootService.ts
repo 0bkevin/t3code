@@ -201,6 +201,24 @@ export function renderBootServiceLaunchAgent(plan: BootServicePlan): string {
   ].join("\n");
 }
 
+const LAUNCH_AGENT_PATH_BLOCK = /    <key>PATH<\/key>\n    <string>[^\n]*<\/string>\n/;
+
+function isCurrentLaunchAgentDefinition(plist: string, plan: BootServicePlan): boolean {
+  if (!LAUNCH_AGENT_PATH_BLOCK.test(plist)) {
+    return false;
+  }
+  const planWithoutPath: BootServicePlan = {
+    nodePath: plan.nodePath,
+    t3EntryPath: plan.t3EntryPath,
+    baseDir: plan.baseDir,
+    logPath: plan.logPath,
+    unitPath: plan.unitPath,
+  };
+  return (
+    plist.replace(LAUNCH_AGENT_PATH_BLOCK, "") === renderBootServiceLaunchAgent(planWithoutPath)
+  );
+}
+
 export class BootServiceUnsupportedError extends Schema.TaggedErrorClass<BootServiceUnsupportedError>()(
   "BootServiceUnsupportedError",
   { platform: Schema.String },
@@ -369,6 +387,27 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       Effect.map((result) => result.code === 0),
       Effect.orElseSucceed(() => false),
     );
+  });
+  const isLaunchAgentLoaded = Effect.fn("cloud.boot_service.is_launch_agent_loaded")(function* () {
+    if (launchAgent === null) {
+      return false;
+    }
+    return yield* runner
+      .run({
+        command: "/bin/launchctl",
+        args: ["print", launchAgent.serviceTarget],
+      })
+      .pipe(
+        Effect.map((result) => result.code === 0),
+        Effect.mapError(
+          (cause) =>
+            new BootServiceCommandError({
+              step: "checking the LaunchAgent",
+              supervisor: "launchd",
+              cause,
+            }),
+        ),
+      );
   });
   const readLaunchAgentDisabled = Effect.fn("cloud.boot_service.read_launch_agent_disabled")(
     function* () {
@@ -633,10 +672,23 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
 
   const uninstall: BootService["Service"]["uninstall"] = Effect.gen(function* () {
     yield* requireSupportedPlatform;
-    const stoppedLaunchAgent =
-      platform === "darwin" && launchAgent !== null
-        ? yield* runOptionalStep("/bin/launchctl", ["bootout", launchAgent.serviceTarget])
-        : false;
+    let stoppedLaunchAgent = false;
+    if (platform === "darwin" && launchAgent !== null) {
+      if (yield* isLaunchAgentLoaded()) {
+        yield* runLaunchAgentStep("stopping the LaunchAgent", [
+          "bootout",
+          launchAgent.serviceTarget,
+        ]);
+        stoppedLaunchAgent = true;
+      } else {
+        // Catch a job loaded between the print and bootout without treating
+        // the expected "not loaded" result as an uninstall failure.
+        stoppedLaunchAgent = yield* runOptionalStep("/bin/launchctl", [
+          "bootout",
+          launchAgent.serviceTarget,
+        ]);
+      }
+    }
     const exists = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -684,7 +736,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       const loaded = yield* runOptionalStep("/bin/launchctl", ["print", launchAgent.serviceTarget]);
       const disabled = yield* readLaunchAgentDisabled();
       const current =
-        unit === renderBootServiceLaunchAgent(plan) &&
+        isCurrentLaunchAgentDefinition(unit, plan) &&
         entryExists &&
         activeRuntimeIsCurrent &&
         loaded &&
