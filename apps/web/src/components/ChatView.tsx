@@ -149,6 +149,7 @@ import {
   CheckCircle2Icon,
   ChevronDownIcon,
   GitBranchIcon,
+  GitMergeIcon,
   TriangleAlertIcon,
   WifiOffIcon,
 } from "lucide-react";
@@ -260,6 +261,7 @@ import {
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
+  isMergedPrAutoSettlement,
   shouldShowBranchMismatchBanner,
   getStartedThreadModelChangeBlockReason,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -4158,14 +4160,24 @@ function ChatViewContent(props: ChatViewProps) {
       return null;
     }
     const isSnoozed = activeThreadSnoozed;
+    const isMergedPr =
+      !isSnoozed &&
+      isMergedPrAutoSettlement({
+        changeRequestState: activeThreadPr?.state ?? null,
+        settledOverride: activeThreadShell?.settledOverride,
+      });
     return {
-      id: `thread-${isSnoozed ? "snoozed" : "settled"}:${activeThread?.id ?? "unknown"}`,
-      variant: "info",
-      icon: isSnoozed ? <AlarmClockIcon /> : <CheckCircle2Icon />,
-      title: `This thread is ${isSnoozed ? "snoozed" : "settled"}`,
+      id: `thread-${isSnoozed ? "snoozed" : isMergedPr ? "merged" : "settled"}:${activeThread?.id ?? "unknown"}`,
+      variant: isMergedPr ? "merged" : "info",
+      icon: isSnoozed ? <AlarmClockIcon /> : isMergedPr ? <GitMergeIcon /> : <CheckCircle2Icon />,
+      title: isMergedPr
+        ? "Pull request merged"
+        : `This thread is ${isSnoozed ? "snoozed" : "settled"}`,
       description: isSnoozed
         ? "Sending a message wakes it and moves it back to Active in the sidebar."
-        : "Sending a message moves it back to Active in the sidebar.",
+        : isMergedPr
+          ? "This thread settled automatically because its pull request was merged."
+          : "Sending a message moves it back to Active in the sidebar.",
       actions: (
         <Button
           size="xs"
@@ -4187,7 +4199,9 @@ function ChatViewContent(props: ChatViewProps) {
     };
   }, [
     activeThread?.id,
+    activeThreadPr?.state,
     activeThreadSettled,
+    activeThreadShell?.settledOverride,
     activeThreadSnoozed,
     handleUnsnoozeActiveThread,
     handleUnsettleActiveThread,

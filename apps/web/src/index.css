@@ -572,6 +572,10 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     --alert-glass-tint: var(--info);
   }
 
+  .alert-glass[data-variant="merged"] {
+    --alert-glass-tint: var(--color-violet-500);
+  }
+
   .alert-glass[data-variant="success"] {
     --alert-glass-tint: var(--success);
   }

@@ -22,6 +22,7 @@ import {
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
+  isMergedPrAutoSettlement,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
   resolveThreadMetadataUpdateForNextTurn,
@@ -85,6 +86,23 @@ const readySession = {
   lastError: null,
   updatedAt: "2026-03-29T00:00:10.000Z",
 };
+
+describe("isMergedPrAutoSettlement", () => {
+  it("identifies an automatically settled merged PR", () => {
+    expect(isMergedPrAutoSettlement({ changeRequestState: "merged", settledOverride: null })).toBe(
+      true,
+    );
+  });
+
+  it("does not relabel manual settlements or non-merged PRs", () => {
+    expect(
+      isMergedPrAutoSettlement({ changeRequestState: "merged", settledOverride: "settled" }),
+    ).toBe(false);
+    expect(isMergedPrAutoSettlement({ changeRequestState: "closed", settledOverride: null })).toBe(
+      false,
+    );
+  });
+});
 
 describe("buildLoadingThreadFromShell", () => {
   it("preserves shell metadata and supplies empty detail collections", () => {

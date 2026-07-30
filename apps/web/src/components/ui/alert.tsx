@@ -14,6 +14,8 @@ const alertVariants = cva("relative rounded-xl border px-3.5 py-3 text-card-fore
       error:
         "border-destructive/32 bg-destructive/4 text-destructive-foreground [&_[data-slot=alert-description]]:text-destructive-foreground/80 [&_svg]:text-destructive",
       info: "border-info/32 bg-info/4 [&_svg]:text-info",
+      merged:
+        "border-violet-500/32 bg-violet-500/4 [&_svg]:text-violet-600 dark:[&_svg]:text-violet-300/90",
       success: "border-success/32 bg-success/4 [&_svg]:text-success",
       warning: "border-warning/32 bg-warning/4 [&_svg]:text-warning",
     },
