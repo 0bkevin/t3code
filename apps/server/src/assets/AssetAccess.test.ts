@@ -291,14 +291,16 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("issues exact capabilities for V2 image turn items outside the workspace", () =>
+  it.effect("issues exact capabilities for relative V2 image turn items inside the workspace", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = yield* fileSystem.makeTempDirectoryScoped({
+      const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-asset-image-view-",
       });
-      const imagePath = path.join(directory, "tool-output.png");
+      const imageDirectory = path.join(workspaceRoot, "images");
+      yield* fileSystem.makeDirectory(imageDirectory);
+      const imagePath = path.join(imageDirectory, "tool-output.png");
       yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
       const canonicalImagePath = yield* fileSystem.realPath(imagePath);
       const resource = {
@@ -309,7 +311,8 @@ describe("AssetAccess", () => {
 
       const result = yield* issueAssetUrl({
         resource,
-        threadImagePath: imagePath,
+        threadImagePath: path.join("images", "tool-output.png"),
+        workspaceRoot,
       });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const token = suffix.slice(0, suffix.indexOf("/"));
@@ -331,10 +334,13 @@ describe("AssetAccess", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = yield* fileSystem.makeTempDirectoryScoped({
+      const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-asset-image-view-invalid-",
       });
-      const textPath = path.join(directory, "notes.txt");
+      const outsideRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-image-view-outside-",
+      });
+      const textPath = path.join(workspaceRoot, "notes.txt");
       yield* fileSystem.writeFileString(textPath, "not an image");
       const resource = {
         _tag: "thread-image" as const,
@@ -345,14 +351,37 @@ describe("AssetAccess", () => {
       const unsupportedError = yield* issueAssetUrl({
         resource,
         threadImagePath: textPath,
+        workspaceRoot,
       }).pipe(Effect.flip);
       expect(unsupportedError._tag).toBe("AssetThreadImageNotFoundError");
 
-      const imagePath = path.join(directory, "tool-output.png");
-      const otherPath = path.join(directory, "other.png");
+      const outsidePath = path.join(outsideRoot, "outside.png");
+      yield* fileSystem.writeFile(outsidePath, new Uint8Array([137, 80, 78, 71]));
+      const outsideError = yield* issueAssetUrl({
+        resource,
+        threadImagePath: outsidePath,
+        workspaceRoot,
+      }).pipe(Effect.flip);
+      expect(outsideError._tag).toBe("AssetThreadImageNotFoundError");
+
+      const outsideLinkPath = path.join(workspaceRoot, "outside-link.png");
+      yield* fileSystem.symlink(outsidePath, outsideLinkPath);
+      const outsideLinkError = yield* issueAssetUrl({
+        resource,
+        threadImagePath: outsideLinkPath,
+        workspaceRoot,
+      }).pipe(Effect.flip);
+      expect(outsideLinkError._tag).toBe("AssetThreadImageNotFoundError");
+
+      const imagePath = path.join(workspaceRoot, "tool-output.png");
+      const otherPath = path.join(workspaceRoot, "other.png");
       yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
       yield* fileSystem.writeFile(otherPath, new Uint8Array([1, 2, 3]));
-      const result = yield* issueAssetUrl({ resource, threadImagePath: imagePath });
+      const result = yield* issueAssetUrl({
+        resource,
+        threadImagePath: imagePath,
+        workspaceRoot,
+      });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const token = suffix.slice(0, suffix.indexOf("/"));
       yield* fileSystem.remove(imagePath);

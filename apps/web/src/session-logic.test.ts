@@ -408,17 +408,25 @@ describe("V2 session presentation", () => {
       },
     ]);
 
-    expect(
-      deriveTimelineEntriesFromVisibleTurnItems({
-        visibleTurnItems: [
-          {
-            ...projectedItem,
-            item: { ...item, status: "running", completedAt: null },
-          },
-        ],
-        optimisticMessages: [],
-      }),
-    ).toEqual([]);
+    const failedEntries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        {
+          ...projectedItem,
+          item: { ...item, status: "failed" },
+        },
+      ],
+      optimisticMessages: [],
+    });
+    expect(failedEntries).toHaveLength(1);
+    expect(failedEntries[0]).toMatchObject({
+      id: item.id,
+      kind: "work",
+      entry: {
+        itemType: "image_view",
+        tone: "error",
+        toolLifecycleStatus: "failed",
+      },
+    });
   });
 
   it("waits for a dispatched turn item before adding queued input to the timeline", () => {

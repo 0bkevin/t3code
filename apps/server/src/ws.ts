@@ -1586,9 +1586,24 @@ const makeWsRpcLayer = (
                     resource,
                   });
                 }
+                const project = yield* projectService.getById(projection.thread.projectId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AssetThreadImageResolutionError({
+                        resource,
+                        cause,
+                      }),
+                  ),
+                );
+                if (Option.isNone(project)) {
+                  return yield* new AssetThreadImageNotFoundError({
+                    resource,
+                  });
+                }
                 return yield* issueAssetUrl({
                   resource,
                   threadImagePath,
+                  workspaceRoot: projection.thread.worktreePath ?? project.value.workspaceRoot,
                 });
               }
               if (input.resource._tag !== "workspace-file") {

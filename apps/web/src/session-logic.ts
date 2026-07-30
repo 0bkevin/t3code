@@ -627,8 +627,8 @@ export function deriveTimelineEntriesFromVisibleTurnItems(input: {
           projectedItem: row,
           ...attemptMetadata,
         });
+        continue;
       }
-      continue;
     }
 
     if (STANDALONE_V2_ITEM_TYPES.has(item.type)) {

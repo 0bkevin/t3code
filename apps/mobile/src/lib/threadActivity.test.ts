@@ -168,9 +168,15 @@ describe("buildThreadFeed", () => {
         projectedItem: row,
       },
     ]);
-    expect(
-      buildThreadFeed([projected({ ...imageItem, status: "running", completedAt: null }, 0)]),
-    ).toEqual([]);
+    const failed = buildThreadFeed([
+      projected({ ...imageItem, status: "failed", completedAt: imageItem.completedAt }, 0),
+    ]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.type).toBe("activity-group");
+    if (failed[0]?.type === "activity-group") {
+      expect(failed[0].activities[0]?.status).toBe("failure");
+      expect(failed[0].activities[0]?.projectedItem.item.type).toBe("image_view");
+    }
   });
 
   it("retains inherited and synthetic rows with their original projected identity", () => {

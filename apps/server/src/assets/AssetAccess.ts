@@ -220,7 +220,6 @@ const resolveCanonicalBrowserArtifact = Effect.fn("AssetAccess.resolveCanonicalB
     const config = yield* ServerConfig.ServerConfig;
     const path = yield* Path.Path;
     const fileSystem = yield* FileSystem.FileSystem;
-    const platform = yield* HostProcessPlatform;
     const [canonicalDir, canonicalFile] = yield* Effect.all([
       optionOnNotFound(fileSystem.realPath(path.join(config.stateDir, "browser-artifacts"))),
       optionOnNotFound(
@@ -233,9 +232,7 @@ const resolveCanonicalBrowserArtifact = Effect.fn("AssetAccess.resolveCanonicalB
       Effect.orElseSucceed(() => [Option.none<string>(), Option.none<string>()] as const),
     );
     if (Option.isNone(canonicalDir) || Option.isNone(canonicalFile)) return null;
-    if (
-      !canonicalPathsMatch(path.join(canonicalDir.value, normalized), canonicalFile.value, platform)
-    ) {
+    if (!canonicalPathsMatch(path.join(canonicalDir.value, normalized), canonicalFile.value)) {
       return null;
     }
     if (path.dirname(canonicalFile.value) !== canonicalDir.value) return null;
@@ -424,18 +421,12 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       break;
     }
     case "thread-image": {
-      if (
-        !input.threadImagePath ||
-        !path.isAbsolute(input.threadImagePath) ||
-        !isWorkspaceImagePreviewPath(input.threadImagePath)
-      ) {
+      if (!input.workspaceRoot || !input.threadImagePath) {
         return yield* new AssetThreadImageNotFoundError({
           resource: input.resource,
         });
       }
-      const canonicalPath = yield* optionOnNotFound(
-        fileSystem.realPath(input.threadImagePath),
-      ).pipe(
+      const workspaceRoot = yield* workspacePaths.normalizeWorkspaceRoot(input.workspaceRoot).pipe(
         Effect.mapError(
           (cause) =>
             new AssetThreadImageResolutionError({
@@ -444,12 +435,18 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             }),
         ),
       );
-      if (Option.isNone(canonicalPath)) {
+      const relativePath = path.isAbsolute(input.threadImagePath)
+        ? path.relative(workspaceRoot, input.threadImagePath)
+        : input.threadImagePath;
+      if (!isWorkspaceImagePreviewPath(relativePath)) {
         return yield* new AssetThreadImageNotFoundError({
           resource: input.resource,
         });
       }
-      const info = yield* optionOnNotFound(fileSystem.stat(canonicalPath.value)).pipe(
+      const canonicalPath = yield* resolveCanonicalWorkspaceFile({
+        workspaceRoot,
+        relativePath,
+      }).pipe(
         Effect.mapError(
           (cause) =>
             new AssetThreadImageResolutionError({
@@ -458,11 +455,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             }),
         ),
       );
-      if (
-        Option.isNone(info) ||
-        info.value.type !== "File" ||
-        !isWorkspaceImagePreviewPath(canonicalPath.value)
-      ) {
+      if (!canonicalPath || !isWorkspaceImagePreviewPath(canonicalPath)) {
         return yield* new AssetThreadImageNotFoundError({
           resource: input.resource,
         });
@@ -470,10 +463,10 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       claims = {
         version: 1,
         kind: "thread-image",
-        path: canonicalPath.value,
+        path: canonicalPath,
         expiresAt,
       };
-      fileName = path.basename(canonicalPath.value);
+      fileName = path.basename(canonicalPath);
       break;
     }
     case "project-favicon": {

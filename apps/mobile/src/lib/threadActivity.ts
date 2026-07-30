@@ -737,8 +737,8 @@ export function buildThreadFeed(
           imagePath: item.path,
           projectedItem: row,
         });
+        continue;
       }
-      continue;
     }
     const activity = toFeedActivity(row);
     entries.push({

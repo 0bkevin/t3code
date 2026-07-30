@@ -50,14 +50,13 @@ async function openLinuxPath(
 async function verifyFallbackHandle(
   absolutePath: string,
   handle: NodeFSP.FileHandle,
-  platform: NodeJS.Platform,
 ): Promise<NodeFSP.FileHandle> {
   try {
     const handleInfo = await handle.stat();
     const canonicalPath = await NodeFS.promises.realpath(absolutePath);
     const pathInfo = await NodeFS.promises.stat(absolutePath);
     if (
-      !canonicalPathsMatch(absolutePath, canonicalPath, platform) ||
+      !canonicalPathsMatch(absolutePath, canonicalPath) ||
       pathInfo.dev !== handleInfo.dev ||
       pathInfo.ino !== handleInfo.ino
     ) {
@@ -70,15 +69,8 @@ async function verifyFallbackHandle(
   }
 }
 
-export function canonicalPathsMatch(
-  absolutePath: string,
-  canonicalPath: string,
-  platform: NodeJS.Platform,
-): boolean {
-  if (canonicalPath === absolutePath) {
-    return true;
-  }
-  return platform === "win32" && canonicalPath.toLowerCase() === absolutePath.toLowerCase();
+export function canonicalPathsMatch(absolutePath: string, canonicalPath: string): boolean {
+  return canonicalPath === absolutePath;
 }
 
 async function openPathNoFollow(
@@ -91,16 +83,17 @@ async function openPathNoFollow(
     throw new Error(`Cannot safely open non-canonical path: ${absolutePath}`);
   }
 
+  const nonBlockingFlags = flags | NodeFS.constants.O_NONBLOCK;
   if (platform === "darwin") {
-    return NodeFS.promises.open(absolutePath, flags | DARWIN_O_NOFOLLOW_ANY, mode);
+    return NodeFS.promises.open(absolutePath, nonBlockingFlags | DARWIN_O_NOFOLLOW_ANY, mode);
   }
   if (platform === "linux") {
-    return openLinuxPath(absolutePath, flags, mode);
+    return openLinuxPath(absolutePath, nonBlockingFlags, mode);
   }
 
   const noFollow = NodeFS.constants.O_NOFOLLOW ?? 0;
-  const handle = await NodeFS.promises.open(absolutePath, flags | noFollow, mode);
-  return verifyFallbackHandle(absolutePath, handle, platform);
+  const handle = await NodeFS.promises.open(absolutePath, nonBlockingFlags | noFollow, mode);
+  return verifyFallbackHandle(absolutePath, handle);
 }
 
 export async function openReadableFileNoFollow(
