@@ -143,10 +143,7 @@ export const make = Effect.gen(function* () {
       threadSettlement: true,
       threadSnooze: true,
       threadVisitedTracking: true,
-      // Deliberately not advertised: the v1 reactor that served regeneration is
-      // deleted here and the v2 orchestrator port has not landed yet. Clients
-      // hide the sidebar action when the capability is absent.
-      // TODO(orchestration-v2): port thread title regeneration to the v2 runtime.
+      threadTitleRegeneration: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       ...(serverSelfUpdate === "boot-service" || serverSelfUpdate === "respawn"
         ? { serverSelfUpdateProgress: true }

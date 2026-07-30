@@ -8,13 +8,13 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-layer("044_ProjectionThreadTitleRegeneration", (it) => {
+layer("035_ProjectionThreadTitleRegeneration", (it) => {
   it.effect("adds pending title regeneration columns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 43 });
-      yield* runMigrations({ toMigrationInclusive: 44 });
+      yield* runMigrations({ toMigrationInclusive: 34 });
+      yield* runMigrations({ toMigrationInclusive: 35 });
 
       const columns = yield* sql<{ readonly name: string }>`
         PRAGMA table_info(projection_threads)

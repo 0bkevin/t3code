@@ -97,12 +97,7 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly modelSelection?: ModelSelection;
   readonly branch?: string | null;
   readonly worktreePath?: string | null;
-  /**
-   * Accepted but currently a no-op against v2 servers: the sidebar only
-   * offers regeneration when the environment advertises the
-   * threadTitleRegeneration capability, which v2 servers do not yet.
-   * TODO(orchestration-v2): dispatch a real regeneration command once ported.
-   */
+  /** Kick off an async title regeneration for the thread. */
   readonly regenerateTitle?: boolean;
 }
 
@@ -438,7 +433,8 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
     if (
       input.title !== undefined ||
       input.branch !== undefined ||
-      input.worktreePath !== undefined
+      input.worktreePath !== undefined ||
+      input.regenerateTitle !== undefined
     ) {
       result = yield* dispatch({
         type: "thread.metadata.update",
@@ -447,6 +443,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),
         ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
+        ...(input.regenerateTitle === undefined ? {} : { regenerateTitle: input.regenerateTitle }),
       });
     }
     if (input.modelSelection !== undefined) {
