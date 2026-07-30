@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import * as Clock from "effect/Clock";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -19,8 +20,10 @@ import type {
   PreviewTabId,
 } from "@t3tools/contracts";
 import { PreviewAutomationScreenshotSaveError } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as ServerConfig from "../../../config.ts";
+import { openWritableFileNoFollow } from "../../../noFollowFile.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as WorkspacePaths from "../../../workspace/WorkspacePaths.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -85,6 +88,40 @@ const writeScreenshotFile = (input: {
       new Uint8Array(Buffer.from(input.screenshotBase64, "base64")),
     );
   });
+
+class ScreenshotFileWriteError extends Data.TaggedError("ScreenshotFileWriteError")<{
+  readonly path: string;
+  readonly cause: unknown;
+}> {}
+
+const writeScreenshotFileNoFollow = Effect.fn("PreviewToolkit.writeScreenshotFileNoFollow")(
+  function* (input: { readonly absolutePath: string; readonly screenshotBase64: string }) {
+    const platform = yield* HostProcessPlatform;
+    return yield* Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: () => openWritableFileNoFollow(input.absolutePath, platform),
+        catch: (cause) => new ScreenshotFileWriteError({ path: input.absolutePath, cause }),
+      }),
+      (handle) =>
+        Effect.tryPromise({
+          try: async () => {
+            const info = await handle.stat();
+            if (!info.isFile()) {
+              throw new Error(`Expected a regular screenshot destination: ${input.absolutePath}`);
+            }
+            await handle.truncate(0);
+            await handle.writeFile(Buffer.from(input.screenshotBase64, "base64"));
+          },
+          catch: (cause) => new ScreenshotFileWriteError({ path: input.absolutePath, cause }),
+        }),
+      (handle) =>
+        Effect.tryPromise({
+          try: () => handle.close(),
+          catch: (cause) => new ScreenshotFileWriteError({ path: input.absolutePath, cause }),
+        }),
+    );
+  },
+);
 
 const saveSnapshotScreenshotArtifact = Effect.fn("PreviewToolkit.saveSnapshotScreenshotArtifact")(
   function* (input: {
@@ -204,9 +241,9 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
       return yield* fail("workspace-containment-validation");
     }
 
-    // Refuse to write through a destination that is itself a symlink: the
-    // write would follow it, and a dangling link (realPath reports NotFound)
-    // could silently create a file outside the workspace at its target.
+    // Report a stable validation stage for links already present at the final
+    // destination. The descriptor-based write below also refuses path
+    // components swapped to symlinks after this check.
     const destination = path.join(canonicalParent, path.basename(resolved.absolutePath));
     const destinationIsSymlink = yield* fileSystem.readLink(destination).pipe(
       Effect.as(true),
@@ -216,7 +253,7 @@ const saveSnapshotScreenshot = Effect.fn("PreviewToolkit.saveSnapshotScreenshot"
       return yield* fail("destination-symlink-validation");
     }
 
-    yield* writeScreenshotFile({
+    yield* writeScreenshotFileNoFollow({
       absolutePath: destination,
       screenshotBase64: input.screenshotBase64,
     }).pipe(Effect.mapError((cause) => fail("screenshot-write", cause)));

@@ -123,10 +123,11 @@ vi.mock("@pierre/diffs/react", () => {
 });
 
 vi.mock("~/assets/assetUrls", () => ({
-  useAssetUrlState: () => ({
-    _tag: "Success",
-    url: "https://environment.example/api/assets/image-token/tool-output.png",
-  }),
+  useAssetUrlStates: (_environmentId: unknown, resources: ReadonlyArray<unknown>) =>
+    resources.map(() => ({
+      _tag: "Success",
+      url: "https://environment.example/api/assets/image-token/tool-output.png",
+    })),
 }));
 
 function matchMedia() {

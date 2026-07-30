@@ -47,6 +47,17 @@ export function useAssetUrls(
   environmentId: EnvironmentId,
   resources: ReadonlyArray<AssetResource>,
 ): ReadonlyArray<string | null> {
+  const states = useAssetUrlStates(environmentId, resources);
+  return useMemo(
+    () => states.map((state) => (state._tag === "Success" ? state.url : null)),
+    [states],
+  );
+}
+
+export function useAssetUrlStates(
+  environmentId: EnvironmentId,
+  resources: ReadonlyArray<AssetResource>,
+): ReadonlyArray<AssetUrlState> {
   const preparedConnection = usePreparedConnection(environmentId);
   const results = useAtomValue(
     assetEnvironment.createUrls({
@@ -56,13 +67,16 @@ export function useAssetUrls(
   );
   return useMemo(
     () =>
-      preparedConnection._tag === "None"
-        ? resources.map(() => null)
-        : results.map((result) =>
-            AsyncResult.isSuccess(result)
-              ? resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl)
-              : null,
-          ),
+      results.map((result): AssetUrlState => {
+        if (AsyncResult.isFailure(result)) {
+          return { _tag: "Failure" };
+        }
+        if (preparedConnection._tag === "None" || !AsyncResult.isSuccess(result)) {
+          return { _tag: "Loading" };
+        }
+        const url = resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl);
+        return url === null ? { _tag: "Failure" } : { _tag: "Success", url };
+      }),
     [preparedConnection, resources, results],
   );
 }

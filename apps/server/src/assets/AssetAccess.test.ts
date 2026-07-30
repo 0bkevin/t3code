@@ -15,6 +15,14 @@ import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
 
+async function readStream(stream: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-asset-access-test-",
 });
@@ -122,10 +130,23 @@ describe("AssetAccess", () => {
       });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const token = suffix.slice(0, suffix.indexOf("/"));
-      expect(yield* resolveAsset(token, "browser-recording-demo.webm")).toEqual({
-        kind: "file",
+      const resolved = yield* resolveAsset(token, "browser-recording-demo.webm");
+      expect(resolved).toMatchObject({
+        kind: "open-file",
         path: canonicalArtifactPath,
       });
+      if (!resolved || resolved.kind !== "open-file") return;
+
+      const outsideDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-open-artifact-outside-",
+      });
+      const secretPath = path.join(outsideDir, "secret.webm");
+      yield* fileSystem.writeFileString(secretPath, "secret-bytes");
+      yield* fileSystem.remove(artifactPath);
+      yield* fileSystem.symlink(secretPath, artifactPath);
+      expect(
+        Buffer.from(yield* Effect.promise(() => readStream(resolved.stream))).toString("utf8"),
+      ).toBe("webm-bytes");
 
       // Non-media files and traversal-style names are not issuable.
       const nonMedia = yield* issueAssetUrl({
@@ -328,10 +349,15 @@ describe("AssetAccess", () => {
       const separatorIndex = suffix.indexOf("/");
       const token = suffix.slice(0, separatorIndex);
 
-      expect(yield* resolveAsset(token, "tool-output.png")).toEqual({
-        kind: "file",
+      const resolved = yield* resolveAsset(token, "tool-output.png");
+      expect(resolved).toMatchObject({
+        kind: "open-file",
         path: canonicalImagePath,
       });
+      if (!resolved || resolved.kind !== "open-file") return;
+      expect(Array.from(yield* Effect.promise(() => readStream(resolved.stream)))).toEqual([
+        137, 80, 78, 71,
+      ]);
       expect(yield* resolveAsset(token, "other.png")).toBeNull();
     }).pipe(Effect.provide(testLayer)),
   );

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import type * as NodeFS from "node:fs";
+
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
@@ -24,8 +27,10 @@ import {
   WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
   WORKSPACE_VIDEO_PREVIEW_EXTENSIONS,
 } from "@t3tools/shared/filePreview";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import * as Clock from "effect/Clock";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -42,6 +47,7 @@ import {
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import { openReadableFileNoFollow } from "../noFollowFile.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
@@ -109,7 +115,20 @@ const AssetClaimsJson = Schema.fromJsonString(AssetClaimsSchema);
 const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
-export type ResolvedAsset = { readonly kind: "file"; readonly path: string };
+export type ResolvedAsset =
+  | { readonly kind: "file"; readonly path: string }
+  | {
+      readonly kind: "open-file";
+      readonly path: string;
+      readonly stream: NodeFS.ReadStream;
+      readonly size: number;
+    };
+
+class ResolvedAssetOpenError extends Data.TaggedError("ResolvedAssetOpenError")<{
+  readonly path: string;
+  readonly resource: string;
+  readonly cause: unknown;
+}> {}
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -161,6 +180,37 @@ const statIsFile = (path: string) =>
     Effect.map((info) => Option.isSome(info) && info.value.type === "File"),
     Effect.orElseSucceed(() => false),
   );
+
+const openResolvedAssetForRequest = Effect.fn("AssetAccess.openResolvedAssetForRequest")(
+  function* (input: { readonly path: string; readonly resource: string }) {
+    const platform = yield* HostProcessPlatform;
+    const opened = yield* Effect.tryPromise({
+      try: () => openReadableFileNoFollow(input.path, platform),
+      catch: (cause) =>
+        new ResolvedAssetOpenError({
+          path: input.path,
+          resource: input.resource,
+          cause,
+        }),
+    });
+    return {
+      kind: "open-file",
+      path: input.path,
+      ...opened,
+    } satisfies ResolvedAsset;
+  },
+  (effect, input) =>
+    effect.pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to safely open resolved asset.", {
+          path: input.path,
+          resource: input.resource,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => null),
+    ),
+);
 
 /**
  * Resolve a browser artifact to its canonical path, rejecting anything that
@@ -549,10 +599,15 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   }
 
   if (claims.kind === "browser-artifact") {
-    // Re-resolved on every request: a signed token must not keep serving a
-    // path that was replaced by a symlink after issuance.
+    // Re-resolve and keep the validated descriptor open for the response so
+    // serving the asset cannot follow a path swapped after this check.
     const artifactPath = yield* resolveCanonicalBrowserArtifact(claims.fileName);
-    return artifactPath ? ({ kind: "file", path: artifactPath } satisfies ResolvedAsset) : null;
+    return artifactPath
+      ? yield* openResolvedAssetForRequest({
+          path: artifactPath,
+          resource: "browser artifact",
+        })
+      : null;
   }
 
   if (claims.kind === "thread-image") {
@@ -584,7 +639,10 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       Effect.orElseSucceed(() => Option.none()),
     );
     return Option.isSome(info) && info.value.type === "File"
-      ? ({ kind: "file", path: canonicalPath.value } satisfies ResolvedAsset)
+      ? yield* openResolvedAssetForRequest({
+          path: canonicalPath.value,
+          resource: "thread image",
+        })
       : null;
   }
 

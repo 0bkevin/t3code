@@ -98,7 +98,7 @@ import {
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
-import { useAssetUrlState } from "~/assets/assetUrls";
+import { useAssetUrlStates, type AssetUrlState } from "~/assets/assetUrls";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
@@ -1951,13 +1951,62 @@ function ImageOutputGallery({
   threadRef: ScopedThreadRef;
   className?: string;
 }) {
+  const { activeThreadEnvironmentId, onImageExpand } = use(TimelineRowCtx);
+  const resources = useMemo(
+    () =>
+      images.map((image) => ({
+        _tag: "thread-image" as const,
+        threadId: threadRef.threadId,
+        activityId: EventId.make(image.entry.imageActivityId ?? image.entry.id),
+      })),
+    [images, threadRef.threadId],
+  );
+  const assetUrls = useAssetUrlStates(activeThreadEnvironmentId, resources);
+  const [failedUrls, setFailedUrls] = useState<ReadonlySet<string>>(() => new Set());
+  const previewImages = useMemo(
+    () =>
+      images.map((image, index) => {
+        const assetUrl = assetUrls[index];
+        return {
+          id: image.entry.id,
+          name: imageFileName(image.imagePath),
+          ...(assetUrl?._tag === "Success" && !failedUrls.has(assetUrl.url)
+            ? { previewUrl: assetUrl.url }
+            : {}),
+        };
+      }),
+    [assetUrls, failedUrls, images],
+  );
+  const handleImageFailure = useCallback((url: string) => {
+    setFailedUrls((current) => {
+      if (current.has(url)) return current;
+      const next = new Set(current);
+      next.add(url);
+      return next;
+    });
+  }, []);
+  const handleImageExpand = useCallback(
+    (imageId: string) => {
+      const preview = buildExpandedImagePreview(previewImages, imageId);
+      if (preview) onImageExpand(preview);
+    },
+    [onImageExpand, previewImages],
+  );
+
   return (
     <article
       className={cn("flex max-w-full items-start gap-2 overflow-x-auto px-1 pb-1", className)}
       aria-label={images.length === 1 ? "Image output" : "Image outputs"}
     >
-      {images.map((image) => (
-        <ImageOutputThumbnail key={image.imagePath} image={image} threadRef={threadRef} />
+      {images.map((image, index) => (
+        <ImageOutputThumbnail
+          key={image.imagePath}
+          image={image}
+          assetUrl={assetUrls[index] ?? { _tag: "Loading" }}
+          failedUrls={failedUrls}
+          onImageFailure={handleImageFailure}
+          onImageExpand={handleImageExpand}
+        />
       ))}
     </article>
   );
@@ -1965,21 +2014,22 @@ function ImageOutputGallery({
 
 function ImageOutputThumbnail({
   image,
-  threadRef,
+  assetUrl,
+  failedUrls,
+  onImageFailure,
+  onImageExpand,
 }: {
   image: TimelineImageOutput;
-  threadRef: ScopedThreadRef;
+  assetUrl: AssetUrlState;
+  failedUrls: ReadonlySet<string>;
+  onImageFailure: (url: string) => void;
+  onImageExpand: (imageId: string) => void;
 }) {
-  const { activeThreadEnvironmentId, onImageExpand } = use(TimelineRowCtx);
   const imageName = imageFileName(image.imagePath);
-  const assetUrl = useAssetUrlState(activeThreadEnvironmentId, {
-    _tag: "thread-image",
-    threadId: threadRef.threadId,
-    activityId: EventId.make(image.entry.imageActivityId ?? image.entry.id),
-  });
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const loadedUrl = assetUrl._tag === "Success" && assetUrl.url !== failedUrl ? assetUrl.url : null;
-  const failed = assetUrl._tag === "Failure" || failedUrl !== null;
+  const loadedUrl =
+    assetUrl._tag === "Success" && !failedUrls.has(assetUrl.url) ? assetUrl.url : null;
+  const failed =
+    assetUrl._tag === "Failure" || (assetUrl._tag === "Success" && failedUrls.has(assetUrl.url));
 
   return (
     <div className="shrink-0" data-image-view-activity-id={image.entry.id}>
@@ -1988,18 +2038,13 @@ function ImageOutputThumbnail({
           type="button"
           className="block size-32 cursor-zoom-in overflow-hidden rounded-xl border border-border/70 bg-muted/20 p-1 transition-colors hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
           aria-label={`Preview ${imageName}`}
-          onClick={() =>
-            onImageExpand({
-              images: [{ src: loadedUrl, name: imageName }],
-              index: 0,
-            })
-          }
+          onClick={() => onImageExpand(image.entry.id)}
         >
           <img
             src={loadedUrl}
             alt={imageName}
             className="block size-full rounded-md object-contain"
-            onError={() => setFailedUrl(loadedUrl)}
+            onError={() => onImageFailure(loadedUrl)}
           />
         </button>
       ) : failed ? (
