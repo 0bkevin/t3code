@@ -766,10 +766,11 @@ export function TerminalViewport({
     const bufferUpdate = getTerminalBufferUpdate(previous, current);
     if (bufferUpdate.type === "append") {
       terminal.write(bufferUpdate.data);
+      terminal.clearSelection();
     } else if (bufferUpdate.type === "replace") {
       writeTerminalBuffer(terminal, bufferUpdate.buffer);
+      terminal.clearSelection();
     }
-    terminal.clearSelection();
 
     if (current.error !== null && current.error !== previous.error) {
       writeSystemMessage(terminal, current.error);
