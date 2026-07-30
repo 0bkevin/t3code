@@ -52,13 +52,14 @@ async function openLinuxPath(
 async function verifyFallbackHandle(
   absolutePath: string,
   handle: NodeFSP.FileHandle,
+  platform: NodeJS.Platform,
 ): Promise<NodeFSP.FileHandle> {
   try {
     const handleInfo = await handle.stat();
     const canonicalPath = await NodeFS.promises.realpath(absolutePath);
     const pathInfo = await NodeFS.promises.stat(absolutePath);
     if (
-      canonicalPath !== absolutePath ||
+      !canonicalPathsMatch(absolutePath, canonicalPath, platform) ||
       pathInfo.dev !== handleInfo.dev ||
       pathInfo.ino !== handleInfo.ino
     ) {
@@ -69,6 +70,17 @@ async function verifyFallbackHandle(
     await handle.close();
     throw cause;
   }
+}
+
+export function canonicalPathsMatch(
+  absolutePath: string,
+  canonicalPath: string,
+  platform: NodeJS.Platform,
+): boolean {
+  if (canonicalPath === absolutePath) {
+    return true;
+  }
+  return platform === "win32" && canonicalPath.toLowerCase() === absolutePath.toLowerCase();
 }
 
 async function openPathNoFollow(
@@ -92,7 +104,7 @@ async function openPathNoFollow(
   // only when its identity still matches the canonical pathname.
   const noFollow = NodeFS.constants.O_NOFOLLOW ?? 0;
   const handle = await NodeFS.promises.open(absolutePath, flags | noFollow, mode);
-  return verifyFallbackHandle(absolutePath, handle);
+  return verifyFallbackHandle(absolutePath, handle, platform);
 }
 
 export async function openReadableFileNoFollow(
