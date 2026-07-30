@@ -1270,6 +1270,175 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("windows thread activity while preserving unresolved request payloads", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_pending_approvals`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        )
+        VALUES (
+          'project-window', 'Window Project', '/tmp/window-project',
+          '{"provider":"codex","model":"gpt-5-codex"}', '[]',
+          '2026-04-10T00:00:00.000Z', '2026-04-10T00:00:01.000Z', NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode,
+          interaction_mode, branch, worktree_path, latest_turn_id,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, archived_at, deleted_at
+        )
+        VALUES (
+          'thread-window', 'project-window', 'Window Thread',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          NULL, NULL, NULL, NULL, 1, 1, 0,
+          '2026-04-10T00:00:02.000Z', '2026-04-10T00:00:03.000Z', NULL, NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+          sequence, created_at
+        )
+        VALUES
+          (
+            'approval-old', 'thread-window', NULL, 'approval', 'approval.requested',
+            'Approve old command', '{"requestId":"approval-1","requestKind":"command"}',
+            NULL, '2026-04-10T00:00:04.000Z'
+          ),
+          (
+            'user-input-old', 'thread-window', NULL, 'approval', 'user-input.requested',
+            'Answer old question',
+            '{"requestId":"input-1","questions":[{"id":"q1","header":"Choice","question":"Continue?","options":[{"label":"Yes","description":"Continue"}]}]}',
+            NULL, '2026-04-10T00:00:05.000Z'
+          ),
+          (
+            'user-input-closed', 'thread-window', NULL, 'approval', 'user-input.requested',
+            'Closed old question', '{"requestId":"input-closed"}',
+            NULL, '2026-04-10T00:00:06.000Z'
+          ),
+          (
+            'user-input-closed-resolution', 'thread-window', NULL, 'info',
+            'user-input.resolved', 'Closed old question', '{"requestId":"input-closed"}',
+            NULL, '2026-04-10T00:00:07.000Z'
+          )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_pending_approvals (
+          request_id, thread_id, turn_id, status, decision, created_at, resolved_at
+        )
+        VALUES (
+          'approval-1', 'thread-window', NULL, 'pending', NULL,
+          '2026-04-10T00:00:04.000Z', NULL
+        )
+      `;
+
+      yield* sql`
+        WITH RECURSIVE activity_sequence(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1 FROM activity_sequence WHERE value < 510
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+          sequence, created_at
+        )
+        SELECT
+          printf('recent-%04d', value),
+          'thread-window',
+          NULL,
+          'tool',
+          'command',
+          printf('Recent activity %d', value),
+          '{}',
+          value,
+          '2026-04-10T00:01:00.000Z'
+        FROM activity_sequence
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+          sequence, created_at
+        )
+        VALUES (
+          'opaque-newest', 'thread-window', NULL, 'tool', 'command',
+          'Newest sequenced activity', '{}', 511, '2026-04-10T00:01:00.000Z'
+        )
+      `;
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-window"));
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "Some") {
+        assert.equal(detail.value.hasMoreActivities, true);
+        assert.equal(detail.value.activities.length, 502);
+        assert.equal(
+          detail.value.activities.some((row) => row.id === "approval-old"),
+          true,
+        );
+        assert.equal(
+          detail.value.activities.some((row) => row.id === "user-input-old"),
+          true,
+        );
+        assert.equal(
+          detail.value.activities.some((row) => row.id === "user-input-closed"),
+          false,
+        );
+        assert.equal(
+          detail.value.activities.some((row) => row.id === "recent-0010"),
+          false,
+        );
+        assert.equal(
+          detail.value.activities.some((row) => row.id === "recent-0011"),
+          false,
+        );
+        assert.equal(
+          detail.value.activities.some((row) => row.id === "recent-0012"),
+          true,
+        );
+        assert.equal(detail.value.activities.at(-1)?.id, "opaque-newest");
+      }
+
+      yield* sql`
+        DELETE FROM projection_thread_activities
+        WHERE activity_id IN (
+          'user-input-old',
+          'user-input-closed',
+          'user-input-closed-resolution'
+        )
+          OR activity_id BETWEEN 'recent-0001' AND 'recent-0011'
+      `;
+      yield* sql`
+        UPDATE projection_threads
+        SET pending_user_input_count = 0
+        WHERE thread_id = 'thread-window'
+      `;
+
+      const fullyHydratedDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-window"),
+      );
+      assert.equal(fullyHydratedDetail._tag, "Some");
+      if (fullyHydratedDetail._tag === "Some") {
+        assert.equal(fullyHydratedDetail.value.activities.length, 501);
+        assert.equal(fullyHydratedDetail.value.hasMoreActivities, undefined);
+        assert.equal(fullyHydratedDetail.value.activities[0]?.id, "approval-old");
+      }
+    }),
+  );
+
   it.effect("uses projection_threads.latest_turn_id for bulk command and shell snapshots", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

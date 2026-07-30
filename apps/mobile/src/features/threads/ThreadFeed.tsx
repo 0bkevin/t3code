@@ -149,6 +149,7 @@ export interface ThreadFeedProps {
   readonly threadId: ThreadId;
   readonly workspaceRoot?: string | null;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
+  readonly hasMoreActivities?: boolean;
   readonly contentPresentation: ThreadContentPresentation;
   readonly agentLabel: string;
   readonly latestTurn: ThreadFeedLatestTurn | null;
@@ -1893,7 +1894,16 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onScroll={handleScroll}
             scrollEventThrottle={16}
             ListHeaderComponent={
-              usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />
+              usesNativeAutomaticInsets && props.hasMoreActivities !== true ? null : (
+                <View>
+                  {!usesNativeAutomaticInsets ? <View style={{ height: topContentInset }} /> : null}
+                  {props.hasMoreActivities === true ? (
+                    <Text className="pb-2 text-center text-xs text-foreground-secondary opacity-60">
+                      Earlier work activity not shown
+                    </Text>
+                  ) : null}
+                </View>
+              )
             }
             contentContainerStyle={{
               paddingTop: 12,
@@ -1902,6 +1912,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           />
         </View>
         {props.feed.length === 0 &&
+        props.hasMoreActivities !== true &&
         props.activeWorkStartedAt === null &&
         props.contentPresentation.kind === "ready" ? (
           <View pointerEvents="none" style={StyleSheet.absoluteFill}>

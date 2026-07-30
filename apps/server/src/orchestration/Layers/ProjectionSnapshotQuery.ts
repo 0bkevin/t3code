@@ -108,6 +108,9 @@ const ProjectionCountsRowSchema = Schema.Struct({
   projectCount: Schema.Number,
   threadCount: Schema.Number,
 });
+const ProjectionThreadActivityCountRowSchema = Schema.Struct({
+  activityCount: Schema.Number,
+});
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
 });
@@ -139,6 +142,7 @@ const ProjectionFullThreadDiffContextRowSchema = Schema.Struct({
   latestCheckpointTurnCount: Schema.NullOr(NonNegativeInt),
   toCheckpointRef: Schema.NullOr(CheckpointRef),
 });
+const THREAD_DETAIL_ACTIVITY_WINDOW = 500;
 
 const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.projects,
@@ -251,6 +255,21 @@ function mapProposedPlanRow(
     implementationThreadId: row.implementationThreadId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapThreadActivityRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadActivityDbRowSchema>,
+): OrchestrationThreadActivity {
+  return {
+    id: row.activityId,
+    tone: row.tone,
+    kind: row.kind,
+    summary: row.summary,
+    payload: row.payload,
+    turnId: row.turnId,
+    ...(row.sequence !== null ? { sequence: row.sequence } : {}),
+    createdAt: row.createdAt,
   };
 }
 
@@ -839,12 +858,128 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           payload_json AS "payload",
           sequence,
           created_at AS "createdAt"
+        FROM (
+          SELECT *
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+          ORDER BY sequence DESC, created_at DESC, activity_id DESC
+          -- The extra row tells the caller whether older work activity exists.
+          LIMIT ${THREAD_DETAIL_ACTIVITY_WINDOW + 1}
+        )
+        ORDER BY sequence ASC, created_at ASC, activity_id ASC
+      `,
+  });
+
+  const getThreadActivityCount = SqlSchema.findOne({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadActivityCountRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT COUNT(*) AS "activityCount"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
-        ORDER BY
-          sequence ASC,
-          created_at ASC,
-          activity_id ASC
+      `,
+  });
+
+  // Blocking requests must remain actionable even when their request activity
+  // predates the normal detail window. Return only the latest unresolved
+  // request row for each request id; callers merge these rows with the window.
+  const listPinnedThreadActivityRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        WITH pending_approval_activities AS (
+          SELECT
+            activity.activity_id AS "activityId",
+            activity.thread_id AS "threadId",
+            activity.turn_id AS "turnId",
+            activity.tone,
+            activity.kind,
+            activity.summary,
+            activity.payload_json AS "payload",
+            activity.sequence,
+            activity.created_at AS "createdAt",
+            ROW_NUMBER() OVER (
+              PARTITION BY pending.request_id
+              ORDER BY activity.created_at DESC, activity.activity_id DESC
+            ) AS request_order
+          FROM projection_pending_approvals AS pending
+          INNER JOIN projection_thread_activities AS activity
+            ON activity.thread_id = pending.thread_id
+            AND activity.kind = 'approval.requested'
+            AND json_extract(activity.payload_json, '$.requestId') = pending.request_id
+          WHERE pending.thread_id = ${threadId}
+            AND pending.status = 'pending'
+        ),
+        user_input_lifecycle AS (
+          SELECT
+            activity_id AS "activityId",
+            thread_id AS "threadId",
+            turn_id AS "turnId",
+            tone,
+            kind,
+            summary,
+            payload_json AS "payload",
+            sequence,
+            created_at AS "createdAt",
+            ROW_NUMBER() OVER (
+              PARTITION BY json_extract(payload_json, '$.requestId')
+              ORDER BY created_at DESC, activity_id DESC
+            ) AS request_order
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND EXISTS (
+              SELECT 1
+              FROM projection_threads
+              WHERE projection_threads.thread_id = ${threadId}
+                AND projection_threads.pending_user_input_count > 0
+            )
+            AND json_extract(payload_json, '$.requestId') IS NOT NULL
+            AND (
+              kind IN ('user-input.requested', 'user-input.resolved')
+              OR (
+                kind = 'provider.user-input.respond.failed'
+                AND (
+                  lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%stale pending user-input request%'
+                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending user-input request%'
+                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending user input request%'
+                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending codex user input request%'
+                )
+              )
+            )
+        )
+        SELECT
+          "activityId",
+          "threadId",
+          "turnId",
+          tone,
+          kind,
+          summary,
+          "payload",
+          sequence,
+          "createdAt"
+        FROM pending_approval_activities
+        WHERE request_order = 1
+        UNION ALL
+        SELECT
+          "activityId",
+          "threadId",
+          "turnId",
+          tone,
+          kind,
+          summary,
+          "payload",
+          sequence,
+          "createdAt"
+        FROM user_input_lifecycle
+        WHERE request_order = 1
+          AND kind = 'user-input.requested'
+        ORDER BY "createdAt" ASC, "activityId" ASC
       `,
   });
 
@@ -1938,6 +2073,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         messageRows,
         proposedPlanRows,
         activityRows,
+        pinnedActivityRows,
         checkpointRows,
         latestTurnRow,
         sessionRow,
@@ -1974,6 +2110,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
+        listPinnedThreadActivityRowsByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:listPinnedActivities:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:listPinnedActivities:decodeRows",
+            ),
+          ),
+        ),
         listCheckpointRowsByThread({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -2003,6 +2147,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       if (Option.isNone(threadRow)) {
         return Option.none<OrchestrationThread>();
       }
+
+      const activityWindowOverflowed = activityRows.length > THREAD_DETAIL_ACTIVITY_WINDOW;
+      const recentActivityRows = activityWindowOverflowed
+        ? activityRows.slice(activityRows.length - THREAD_DETAIL_ACTIVITY_WINDOW)
+        : activityRows;
+      const selectedActivityRows = [
+        ...new Map(
+          [...recentActivityRows, ...pinnedActivityRows].map(
+            (row) => [row.activityId, row] as const,
+          ),
+        ).values(),
+      ].toSorted(
+        (left, right) =>
+          (left.sequence ?? -1) - (right.sequence ?? -1) ||
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.activityId.localeCompare(right.activityId),
+      );
+      const hasMoreActivities = activityWindowOverflowed
+        ? (yield* getThreadActivityCount({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadDetailById:getActivityCount:query",
+                "ProjectionSnapshotQuery.getThreadDetailById:getActivityCount:decodeRow",
+              ),
+            ),
+          )).activityCount > selectedActivityRows.length
+        : false;
 
       const thread = {
         id: threadRow.value.threadId,
@@ -2038,21 +2209,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           return message;
         }),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
-        activities: activityRows.map((row) => {
-          const activity = {
-            id: row.activityId,
-            tone: row.tone,
-            kind: row.kind,
-            summary: row.summary,
-            payload: row.payload,
-            turnId: row.turnId,
-            createdAt: row.createdAt,
-          };
-          if (row.sequence !== null) {
-            return Object.assign(activity, { sequence: row.sequence });
-          }
-          return activity;
-        }),
+        activities: selectedActivityRows.map(mapThreadActivityRow),
+        ...(hasMoreActivities ? { hasMoreActivities: true } : {}),
         checkpoints: checkpointRows.map((row) => ({
           turnId: row.turnId,
           checkpointTurnCount: row.checkpointTurnCount,

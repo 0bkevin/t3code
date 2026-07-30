@@ -292,7 +292,19 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 // snapshot instead. Replaying each intervening event costs a shell refetch;
 // past this gap a single O(active-threads) snapshot is cheaper and bounded.
 // Matches the event store's default page size (DEFAULT_READ_FROM_SEQUENCE_LIMIT).
-const SHELL_RESUME_MAX_GAP = 1_000;
+const ORCHESTRATION_RESUME_MAX_GAP = 1_000;
+
+function subscriptionReplayLimit(afterSequence: number, snapshotSequence: number): number | null {
+  const eventCount = snapshotSequence - afterSequence;
+  if (
+    !Number.isSafeInteger(eventCount) ||
+    eventCount < 0 ||
+    eventCount > ORCHESTRATION_RESUME_MAX_GAP
+  ) {
+    return null;
+  }
+  return eventCount;
+}
 
 function toAuthAccessStreamEvent(
   change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
@@ -1172,7 +1184,7 @@ const makeWsRpcLayer = (
                 // is also invalid, so reset it with a snapshot. Send the snapshot
                 // followed by the buffered live tail, exactly as the
                 // no-afterSequence path does.
-                if (replayGap < 0 || replayGap > SHELL_RESUME_MAX_GAP) {
+                if (replayGap < 0 || replayGap > ORCHESTRATION_RESUME_MAX_GAP) {
                   const snapshot = yield* loadSnapshot;
                   return Stream.concat(
                     Stream.make({ kind: "snapshot" as const, snapshot }),
@@ -1263,14 +1275,64 @@ const makeWsRpcLayer = (
               // catch-up followed by the buffered/ongoing live events. Overlapping
               // events are deduped by sequence on the client.
               //
-              // Read the full range after the cursor (not the store's default
-              // page-bounded limit): the range is normally tiny (a fresh HTTP
-              // snapshot sequence) and the per-thread filter runs after reading,
-              // so a global cap could otherwise omit this thread's events.
+              // A recent cursor replays the exact global range through the
+              // per-thread filter. A stale cursor receives a current thread
+              // snapshot so catch-up never materializes an unbounded event log.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
+                const { snapshotSequence } = yield* projectionSnapshotQuery
+                  .getSnapshotSequence()
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: "Failed to load orchestration snapshot sequence",
+                          cause,
+                        }),
+                    ),
+                  );
+                const replayLimit = subscriptionReplayLimit(afterSequence, snapshotSequence);
+
+                if (replayLimit === null) {
+                  const snapshot = yield* projectionSnapshotQuery
+                    .getThreadDetailSnapshot(input.threadId)
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: `Failed to load thread ${input.threadId}`,
+                            cause,
+                          }),
+                      ),
+                    );
+
+                  if (Option.isNone(snapshot)) {
+                    return yield* new OrchestrationGetSnapshotError({
+                      message: `Thread ${input.threadId} was not found`,
+                      cause: input.threadId,
+                    });
+                  }
+
+                  const afterReplacementSnapshot =
+                    input.requestCompletionMarker === true
+                      ? Stream.concat(
+                          Stream.fromEffect(
+                            Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                          ).pipe(Stream.drain),
+                          bufferedLiveStream,
+                        )
+                      : bufferedLiveStream;
+                  return Stream.concat(
+                    Stream.make({
+                      kind: "snapshot" as const,
+                      snapshot: projectThreadDetailSnapshot(snapshot.value),
+                    }),
+                    afterReplacementSnapshot,
+                  );
+                }
+
                 const catchUpStream = orchestrationEngine
-                  .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
+                  .readEvents(afterSequence, replayLimit)
                   .pipe(
                     Stream.filter(isThisThreadDetailEvent),
                     Stream.map((event) => ({

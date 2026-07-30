@@ -32,8 +32,10 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.snapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          // This compatibility endpoint is only used to resolve projects. Keep
+          // its read model lightweight instead of hydrating every thread body.
           return yield* projectionSnapshotQuery
-            .getSnapshot()
+            .getCommandReadModel()
             .pipe(
               Effect.catch((cause) =>
                 failEnvironmentInternal("orchestration_snapshot_failed", cause),

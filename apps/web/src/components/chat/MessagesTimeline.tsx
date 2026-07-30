@@ -161,6 +161,7 @@ interface MessagesTimelineProps {
   activeTurnStartedAt: string | null;
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
+  hasMoreActivities?: boolean;
   latestTurn: TimelineLatestTurn | null;
   runningTurnId: TurnId | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
@@ -196,6 +197,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnStartedAt,
   listRef,
   timelineEntries,
+  hasMoreActivities = false,
   latestTurn,
   runningTurnId,
   turnDiffSummaryByAssistantMessageId,
@@ -467,7 +469,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  if (rows.length === 0 && !isWorking) {
+  if (rows.length === 0 && !isWorking && !hasMoreActivities) {
     if (hideEmptyPlaceholder) {
       return null;
     }
@@ -479,6 +481,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       </div>
     );
   }
+
+  const listHeader = hasMoreActivities ? (
+    <div
+      className={cn(
+        "mx-auto w-full max-w-3xl pb-2 text-center text-xs text-muted-foreground/55",
+        topFadeEnabled ? "pt-10 sm:pt-12" : "pt-3 sm:pt-4",
+      )}
+    >
+      Earlier work activity not shown
+    </div>
+  ) : topFadeEnabled ? (
+    TIMELINE_LIST_FADE_HEADER
+  ) : (
+    TIMELINE_LIST_HEADER
+  );
 
   return (
     <TimelineRowCtx value={sharedState}>
@@ -515,7 +532,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
-            ListHeaderComponent={topFadeEnabled ? TIMELINE_LIST_FADE_HEADER : TIMELINE_LIST_HEADER}
+            ListHeaderComponent={listHeader}
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />
           <TimelineMinimap

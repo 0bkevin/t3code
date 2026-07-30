@@ -459,6 +459,8 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
 
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
+    // Lightweight compatibility snapshot used for project resolution. Thread
+    // bodies are intentionally empty; clients load shell and detail separately.
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
       headers: OptionalBearerHeaders,
       success: OrchestrationReadModel,
