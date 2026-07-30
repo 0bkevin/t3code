@@ -59,10 +59,12 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "report.html")).toEqual({
         kind: "file",
         path: canonicalHtmlPath,
+        cacheControl: "private, no-cache",
       });
       expect(yield* resolveAsset(token, "report.css")).toEqual({
         kind: "file",
         path: canonicalCssPath,
+        cacheControl: "private, no-cache",
       });
       expect(yield* resolveAsset(token, "../secret.txt")).toBeNull();
       expect(yield* resolveAsset(token, ".env")).toBeNull();
@@ -176,6 +178,7 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "icon.png")).toEqual({
         kind: "file",
         path: canonicalImagePath,
+        cacheControl: "private, no-cache",
       });
       expect(yield* resolveAsset(token, "other.png")).toBeNull();
       expect(yield* resolveAsset(token, "../icon.png")).toBeNull();
@@ -202,6 +205,7 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "ignored.png")).toEqual({
         kind: "file",
         path: attachmentPath,
+        cacheControl: "private, max-age=3600",
       });
     }).pipe(Effect.provide(testLayer)),
   );
@@ -227,7 +231,11 @@ describe("AssetAccess", () => {
           faviconSuffix.slice(0, faviconSeparatorIndex),
           faviconSuffix.slice(faviconSeparatorIndex + 1),
         ),
-      ).toEqual({ kind: "file", path: canonicalFaviconPath });
+      ).toEqual({
+        kind: "file",
+        path: canonicalFaviconPath,
+        cacheControl: "private, no-cache",
+      });
 
       yield* fileSystem.remove(faviconPath);
       const fallbackResult = yield* issueAssetUrl({

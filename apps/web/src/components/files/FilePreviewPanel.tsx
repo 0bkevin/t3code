@@ -41,6 +41,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 
 import FileBrowserPanel from "./FileBrowserPanel";
+import { workspaceImagePreviewUrl } from "./workspaceImagePreview";
 import {
   type FileCommentAnnotationEntry,
   type FileCommentAnnotationGroup,
@@ -61,6 +62,7 @@ import {
   confirmProjectFileQueryData,
   getOptimisticProjectFileQueryData,
   setProjectFileQueryData,
+  useProjectFileChangeRevision,
   useProjectFileQuery,
 } from "./projectFilesQueryState";
 
@@ -120,6 +122,8 @@ type FilePostRender = NonNullable<FileOptions<unknown>["onPostRender"]>;
 function WorkspaceImagePreview(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
+  readonly cwd: string;
+  readonly relativePath: string;
   readonly absolutePath: string;
   readonly alt: string;
 }) {
@@ -128,9 +132,12 @@ function WorkspaceImagePreview(props: {
     threadId: props.threadRef.threadId,
     path: props.absolutePath,
   });
+  const revision = useProjectFileChangeRevision(props.environmentId, props.cwd, props.relativePath);
+  const resolvedUrl =
+    assetUrl._tag === "Success" ? workspaceImagePreviewUrl(assetUrl.url, revision) : null;
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
-  if (assetUrl._tag === "Failure" || (assetUrl._tag === "Success" && failedUrl === assetUrl.url)) {
+  if (assetUrl._tag === "Failure" || (resolvedUrl !== null && failedUrl === resolvedUrl)) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
         Unable to load workspace image.
@@ -142,9 +149,9 @@ function WorkspaceImagePreview(props: {
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
       <img
         className="max-h-full max-w-full object-contain"
-        src={assetUrl.url}
+        src={resolvedUrl ?? undefined}
         alt={props.alt}
-        onError={() => setFailedUrl(assetUrl.url)}
+        onError={() => setFailedUrl(resolvedUrl)}
       />
     </div>
   ) : (
@@ -975,6 +982,8 @@ export default function FilePreviewPanel({
               key={absolutePath}
               environmentId={environmentId}
               threadRef={threadRef}
+              cwd={cwd}
+              relativePath={relativePath}
               absolutePath={absolutePath}
               alt={relativePath}
             />

@@ -273,7 +273,7 @@ export const assetRouteLayer = HttpRouter.add(
     return yield* HttpServerResponse.file(asset.path, {
       status: 200,
       headers: {
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": asset.cacheControl,
         "X-Content-Type-Options": "nosniff",
       },
     }).pipe(
