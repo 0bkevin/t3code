@@ -2285,7 +2285,9 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               status: taskStatus,
               usage: null,
               startedAt: subagent.task.startedAt,
-              completedAt: settled ? now : null,
+              // Keep the activation aligned with the subagent record instead
+              // of re-stamping the completion time on rebuilt emits.
+              completedAt: settled ? (subagent.task.completedAt ?? now) : null,
               updatedAt: now,
             } satisfies OrchestrationV2SubagentActivation,
           });
