@@ -150,6 +150,29 @@ describe("buildThreadFeed", () => {
     expect(activity?.getFullDetail()).toContain('"input": "vp check"');
   });
 
+  it("projects completed V2 image items as native image output rows", () => {
+    const imageItem = {
+      ...base("item-image-output", "2026-06-20T00:00:02.000Z", 1),
+      type: "image_view" as const,
+      source: "image_view" as const,
+      path: "/tmp/tool-output.png",
+    } satisfies OrchestrationV2TurnItem;
+    const row = projected(imageItem, 0);
+
+    expect(buildThreadFeed([row])).toEqual([
+      {
+        type: "image-output",
+        id: imageItem.id,
+        createdAt: "2026-06-20T00:00:02.000Z",
+        imagePath: imageItem.path,
+        projectedItem: row,
+      },
+    ]);
+    expect(
+      buildThreadFeed([projected({ ...imageItem, status: "running", completedAt: null }, 0)]),
+    ).toEqual([]);
+  });
+
   it("retains inherited and synthetic rows with their original projected identity", () => {
     const inherited = projected(command(), 0, "inherited");
     const { providerThreadId: _providerThreadId, ...forkBase } = base(

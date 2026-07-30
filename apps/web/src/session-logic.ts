@@ -121,6 +121,13 @@ export type TimelineEntry = (
     }
   | {
       readonly id: string;
+      readonly kind: "image-output";
+      readonly createdAt: string;
+      readonly imagePath: string;
+      readonly projectedItem: OrchestrationV2ProjectedTurnItem;
+    }
+  | {
+      readonly id: string;
       readonly kind: "event";
       readonly createdAt: string;
       readonly projectedItem: OrchestrationV2ProjectedTurnItem;
@@ -607,6 +614,20 @@ export function deriveTimelineEntriesFromVisibleTurnItems(input: {
         proposedPlan,
         ...attemptMetadata,
       });
+      continue;
+    }
+
+    if (item.type === "image_view") {
+      if (item.status === "completed") {
+        entries.push({
+          id: item.id,
+          kind: "image-output",
+          createdAt,
+          imagePath: item.path,
+          projectedItem: row,
+          ...attemptMetadata,
+        });
+      }
       continue;
     }
 
