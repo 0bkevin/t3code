@@ -1,4 +1,4 @@
-import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
+import { CheckpointRef, EnvironmentId, EventId, MessageId, TurnId } from "@t3tools/contracts";
 import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
@@ -237,6 +237,61 @@ describe("MessagesTimeline", () => {
     expect(compactMarkup).not.toContain("chat-timeline-scroll-fade");
     expect(fadedMarkup).toContain('class="h-10 sm:h-12"');
     expect(fadedMarkup).toContain("chat-timeline-scroll-fade");
+  });
+
+  it("replaces assistant timestamps with response speed when stats for nerds is enabled", () => {
+    const turnId = TurnId.make("turn-with-stats");
+    const messageId = MessageId.make("assistant-with-stats");
+    const timelineEntries = [
+      {
+        id: "entry-assistant-with-stats",
+        kind: "message" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        message: {
+          id: messageId,
+          role: "assistant" as const,
+          text: "Done.",
+          turnId,
+          createdAt: MESSAGE_CREATED_AT,
+          updatedAt: "2026-03-17T19:12:33.000Z",
+          streaming: false,
+        },
+      },
+    ];
+    const threadActivities = [
+      {
+        id: EventId.make("usage-with-stats"),
+        tone: "info" as const,
+        kind: "context-window.updated",
+        summary: "Context window updated",
+        payload: {
+          lastInputTokens: 1_000,
+          lastCachedInputTokens: 750,
+          lastOutputTokens: 50,
+          lastReasoningOutputTokens: 10,
+          durationMs: 5_000,
+          toolUses: 2,
+        },
+        turnId,
+        createdAt: "2026-03-17T19:12:33.000Z",
+      },
+    ];
+
+    const defaultMarkup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={timelineEntries} />,
+    );
+    const statsMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={timelineEntries}
+        statsForNerdsEnabled
+        threadActivities={threadActivities}
+      />,
+    );
+
+    expect(defaultMarkup).not.toContain("10.0 tok/s");
+    expect(statsMarkup).toContain("10.0 tok/s");
+    expect(statsMarkup).toContain('aria-label="Response speed: 10.0 tok/s"');
   });
 
   it("keeps assistant changed-files headers sticky below the thread header", () => {

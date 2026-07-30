@@ -59,11 +59,25 @@ export function BetaSettingsPanel() {
   const sidebarAutoSettleAfterDays = useClientSettings(
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
+  const statsForNerdsEnabled = useClientSettings((settings) => settings.statsForNerdsEnabled);
   const updateSettings = useUpdateClientSettings();
 
   return (
     <SettingsPageContainer>
       <SettingsSection title="Beta features">
+        <SettingsRow
+          title="Stats for nerds"
+          description="Replace assistant response timestamps with tokens per second. Hover the rate to see duration, token usage, and tool calls when the agent provides them."
+          control={
+            <Switch
+              checked={statsForNerdsEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ statsForNerdsEnabled: Boolean(checked) })
+              }
+              aria-label="Enable stats for nerds"
+            />
+          }
+        />
         <SettingsRow
           title="Sidebar v2"
           description="One flat thread list in creation order. Active work renders as rich cards; settled threads collapse to compact rows. Settling requires an up-to-date server — on older servers threads simply stay active. Switch back any time."
