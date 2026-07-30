@@ -1,0 +1,7 @@
+#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/pingdotgg/t3code" ]; then
+  echo 1153130349
+  exit 0
+fi
+echo "unsupported gh invocation" >&2
+exit 1

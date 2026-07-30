@@ -39,6 +39,16 @@ describe("ComposerBannerStack", () => {
     expect(markup).not.toContain("will-change:transform");
   });
 
+  it("renders merged banners with the pull request violet treatment", () => {
+    const markup = renderToStaticMarkup(
+      <ComposerBannerStack items={[{ ...banner("merged"), variant: "merged" }]} />,
+    );
+
+    expect(markup).toContain('data-variant="merged"');
+    expect(markup).toContain("border-violet-500/32");
+    expect(markup).toContain("text-violet-600");
+  });
+
   it("applies item-specific surface and action layout classes", () => {
     const markup = renderToStaticMarkup(
       <ComposerBannerStack
