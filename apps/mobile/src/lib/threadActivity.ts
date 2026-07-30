@@ -385,31 +385,40 @@ function isEmptyMessage(entry: RawThreadFeedEntry): boolean {
 
 function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): ThreadFeedEntry[] {
   const grouped: ThreadFeedEntry[] = [];
+  // Mutable backing array for the trailing group so appending an activity is
+  // O(1) instead of re-copying the group (which made this loop quadratic on
+  // long tool runs). The array is only mutated while it is the trailing group.
+  let openGroupActivities: ThreadFeedActivity[] | null = null;
+  let openGroupRunId: string | null = null;
+  let openGroupHasProminent = false;
+
   for (const entry of entries) {
     if (isEmptyMessage(entry)) continue;
     if (entry.type !== "activity") {
       grouped.push(entry);
+      openGroupActivities = null;
       continue;
     }
-    const previous = grouped.at(-1);
+
     if (
-      previous?.type === "activity-group" &&
-      previous.runId === entry.runId &&
+      openGroupActivities !== null &&
+      openGroupRunId === entry.runId &&
       !entry.activity.prominent &&
-      !previous.activities.some((activity) => activity.prominent)
+      !openGroupHasProminent
     ) {
-      grouped[grouped.length - 1] = {
-        ...previous,
-        activities: [...previous.activities, entry.activity],
-      };
+      openGroupActivities.push(entry.activity);
       continue;
     }
+
+    openGroupActivities = [entry.activity];
+    openGroupRunId = entry.runId;
+    openGroupHasProminent = entry.activity.prominent === true;
     grouped.push({
       type: "activity-group",
       id: entry.id,
       createdAt: entry.createdAt,
       runId: entry.runId,
-      activities: [entry.activity],
+      activities: openGroupActivities,
     });
   }
   return grouped;

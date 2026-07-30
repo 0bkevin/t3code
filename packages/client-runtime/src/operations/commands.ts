@@ -97,6 +97,13 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly modelSelection?: ModelSelection;
   readonly branch?: string | null;
   readonly worktreePath?: string | null;
+  /**
+   * Accepted but currently a no-op against v2 servers: the sidebar only
+   * offers regeneration when the environment advertises the
+   * threadTitleRegeneration capability, which v2 servers do not yet.
+   * TODO(orchestration-v2): dispatch a real regeneration command once ported.
+   */
+  readonly regenerateTitle?: boolean;
 }
 
 export interface SetThreadRuntimeModeInput extends ThreadCommandInput {

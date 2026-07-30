@@ -101,6 +101,13 @@ export interface EnvironmentThreadShell {
    * local visited state they keep.
    */
   readonly lastVisitedAt?: string | null;
+  /**
+   * Pending title regeneration marker. Never set by the v2 orchestrator yet —
+   * the sidebar's regeneration UI is additionally gated on the
+   * threadTitleRegeneration capability, which v2 servers do not advertise.
+   * TODO(orchestration-v2): populate when title regeneration is ported.
+   */
+  readonly titleRegeneration?: { readonly requestId: string; readonly startedAt: string } | null;
   readonly deletedAt: string | null;
   readonly source: OrchestrationV2ThreadShell;
 }
