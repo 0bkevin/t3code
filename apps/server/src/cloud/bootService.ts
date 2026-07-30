@@ -550,6 +550,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         : Option.none<string>();
     const previousLaunchAgentDisabled =
       platform === "darwin" ? yield* readLaunchAgentDisabled() : Option.none<boolean>();
+    const previousLaunchAgentLoaded = platform === "darwin" ? yield* isLaunchAgentLoaded() : false;
 
     yield* fs.makeDirectory(unitDir, { recursive: true }).pipe(
       Effect.andThen(
@@ -561,7 +562,12 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       ),
       Effect.mapError((cause) => new BootServiceInstallError({ cause })),
       Effect.tapError(() =>
-        rollbackFailedInstall(previousUnit, previousRuntimeLink, previousLaunchAgentDisabled),
+        rollbackFailedInstall(
+          previousUnit,
+          previousRuntimeLink,
+          previousLaunchAgentDisabled,
+          previousLaunchAgentLoaded,
+        ),
       ),
     );
 
@@ -603,7 +609,12 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       yield* runStep("enabling lingering for this user", "loginctl", ["enable-linger"]);
     }).pipe(
       Effect.tapError(() =>
-        rollbackFailedInstall(previousUnit, previousRuntimeLink, previousLaunchAgentDisabled),
+        rollbackFailedInstall(
+          previousUnit,
+          previousRuntimeLink,
+          previousLaunchAgentDisabled,
+          previousLaunchAgentLoaded,
+        ),
       ),
     );
 
@@ -619,6 +630,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     previousUnit: Option.Option<string>,
     previousRuntimeLink: Option.Option<string>,
     previousLaunchAgentDisabled: Option.Option<boolean>,
+    previousLaunchAgentLoaded: boolean,
   ) {
     if (platform === "darwin" && launchAgent !== null && userId !== null) {
       yield* runOptionalStep("/bin/launchctl", ["bootout", launchAgent.serviceTarget]);
@@ -631,7 +643,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         yield* writeUnit(previousUnit.value).pipe(Effect.ignore);
         if (Option.getOrElse(previousLaunchAgentDisabled, () => false)) {
           yield* runOptionalStep("/bin/launchctl", ["disable", launchAgent.serviceTarget]);
-        } else {
+        } else if (previousLaunchAgentLoaded) {
           yield* runOptionalStep("/bin/launchctl", [
             "bootstrap",
             `gui/${String(userId)}`,

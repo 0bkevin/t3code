@@ -475,6 +475,7 @@ it.layer(NodeServices.layer)("BootService", (it) => {
         [
           `npm install --prefix ${runtimeDir} --no-fund --no-audit t3@0.0.27`,
           "/bin/launchctl print-disabled gui/501",
+          "/bin/launchctl print gui/501/com.t3tools.t3code.server",
           "/bin/launchctl enable gui/501/com.t3tools.t3code.server",
           "/bin/launchctl bootout gui/501/com.t3tools.t3code.server",
           `/bin/launchctl bootstrap gui/501 ${launchAgentPath}`,
@@ -570,6 +571,54 @@ it.layer(NodeServices.layer)("BootService", (it) => {
             command === "/bin/launchctl" &&
             args.join(" ") === "disable gui/501/com.t3tools.t3code.server",
         ),
+      );
+    }),
+  );
+
+  it.effect("leaves a previously stopped macOS LaunchAgent stopped after rollback", () =>
+    Effect.gen(function* () {
+      const { dirs, fs, path } = yield* makeTestContext();
+      const initialService = yield* BootService.make({
+        baseDir: dirs.baseDir,
+        logsDir: dirs.logsDir,
+        cliVersion: "0.0.27",
+        host: makeHost(dirs.stableEntry),
+      }).pipe(Effect.provide(makeRecordingRunnerLayer([])), provideHostRefs(dirs.home, "darwin"));
+      yield* initialService.install;
+
+      const launchAgentPath = path.join(
+        dirs.home,
+        "Library",
+        "LaunchAgents",
+        "com.t3tools.t3code.server.plist",
+      );
+      const previousLaunchAgent = yield* fs.readFileString(launchAgentPath);
+      const commands: Array<RecordedCommand> = [];
+      const repairService = yield* BootService.make({
+        baseDir: dirs.baseDir,
+        logsDir: dirs.logsDir,
+        cliVersion: "0.0.28",
+        host: makeHost(dirs.stableEntry),
+      }).pipe(
+        Effect.provide(
+          makeRecordingRunnerLayer(commands, {
+            failWhen: (command, args) =>
+              command === "/bin/launchctl" &&
+              (args.includes("print") || args.includes("bootstrap")),
+          }),
+        ),
+        provideHostRefs(dirs.home, "darwin"),
+      );
+
+      const error = yield* repairService.install.pipe(Effect.flip);
+
+      assert.isTrue(isCommandError(error));
+      assert.equal(yield* fs.readFileString(launchAgentPath), previousLaunchAgent);
+      assert.lengthOf(
+        commands.filter(
+          ({ command, args }) => command === "/bin/launchctl" && args.includes("bootstrap"),
+        ),
+        1,
       );
     }),
   );
