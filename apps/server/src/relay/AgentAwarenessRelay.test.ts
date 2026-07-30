@@ -799,6 +799,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         const context = yield* Effect.context<never>();
         const runFork = Effect.runForkWith(context);
         const events = yield* Queue.unbounded<OrchestrationEvent>();
+        const missingRelayCredentialRead = yield* Deferred.make<void>();
         const fetches = yield* Queue.unbounded<{
           readonly url: URL;
           readonly state: RelayAgentActivityState | null;
@@ -885,6 +886,19 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         } satisfies ExecutionEnvironmentDescriptor;
         let snapshotThreads: Array<OrchestrationThreadShell> = [thread];
         const focusedDesktopClients = yield* FocusedDesktopClients.make;
+        const observedSecretStore = ServerSecretStore.ServerSecretStore.of({
+          ...secrets.store,
+          get: (name) =>
+            secrets.store
+              .get(name)
+              .pipe(
+                Effect.tap((value) =>
+                  name === RELAY_ENVIRONMENT_CREDENTIAL_SECRET && Option.isNone(value)
+                    ? Deferred.succeed(missingRelayCredentialRead, undefined)
+                    : Effect.void,
+                ),
+              ),
+        });
 
         let tombstoneAttempts = 0;
         globalThis.fetch = (async (
@@ -919,7 +933,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         );
 
         const layer = Layer.mergeAll(
-          Layer.succeed(ServerSecretStore.ServerSecretStore, secrets.store),
+          Layer.succeed(ServerSecretStore.ServerSecretStore, observedSecretStore),
           Layer.succeed(ServerEnvironment.ServerEnvironment, {
             getEnvironmentId: Effect.succeed(environmentId),
             getDescriptor: Effect.succeed(descriptor),
@@ -974,8 +988,15 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           expect(productSpans).toContain("makePublishProof");
           expect(userSpans).not.toContain("makePublishProof");
 
+          yield* TestClock.adjust("1 second");
+          yield* secrets.store.remove(RELAY_ENVIRONMENT_CREDENTIAL_SECRET);
           const desktopFocusScope = yield* Scope.make();
           yield* focusedDesktopClients.acquire.pipe(Scope.provide(desktopFocusScope));
+          yield* Deferred.await(missingRelayCredentialRead).pipe(Effect.timeout("2 seconds"));
+          yield* secrets.setString(
+            RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+            "relay-credential-restored",
+          );
           for (let iteration = 0; iteration < 10; iteration++) {
             if (tombstoneAttempts >= 2) {
               break;

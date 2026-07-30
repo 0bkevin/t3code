@@ -354,11 +354,15 @@ export const make = Effect.gen(function* () {
     threadId: ThreadId,
     options?: { readonly desktopFocusTombstone?: boolean },
   ) {
-    if (!options?.desktopFocusTombstone && (yield* focusedDesktopClients.anyFocused)) {
-      yield* Effect.logDebug("agent activity publish skipped; desktop client focused", {
-        threadId,
-      });
-      return;
+    const desktopFocusTombstone = options?.desktopFocusTombstone === true;
+    if ((yield* focusedDesktopClients.anyFocused) !== desktopFocusTombstone) {
+      yield* Effect.logDebug(
+        desktopFocusTombstone
+          ? "desktop focus tombstone skipped; desktop is no longer focused"
+          : "agent activity publish skipped; desktop client focused",
+        { threadId },
+      );
+      return false;
     }
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
@@ -367,14 +371,14 @@ export const make = Effect.gen(function* () {
       yield* Effect.logDebug("agent activity publish skipped; publication disabled", {
         threadId,
       });
-      return;
+      return false;
     }
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
     if (!relayConfig) {
       yield* Effect.logDebug("agent activity publish skipped; relay link credentials unavailable", {
         threadId,
       });
-      return;
+      return false;
     }
     const relayClient = yield* makeRelayClient(relayConfig);
     const environmentId = yield* serverEnvironment.getEnvironmentId;
@@ -385,12 +389,12 @@ export const make = Effect.gen(function* () {
       readonly reason: string;
     }) =>
       Effect.gen(function* () {
-        if (!options?.desktopFocusTombstone && (yield* focusedDesktopClients.anyFocused)) {
+        if ((yield* focusedDesktopClients.anyFocused) !== desktopFocusTombstone) {
           yield* Effect.logDebug(
-            "agent activity publish skipped; desktop client focused during publish",
-            {
-              threadId,
-            },
+            desktopFocusTombstone
+              ? "desktop focus tombstone skipped; focus ended during publish preparation"
+              : "agent activity publish skipped; desktop client focused during publish",
+            { threadId },
           );
           return false;
         }
@@ -432,20 +436,23 @@ export const make = Effect.gen(function* () {
         return true;
       });
 
-    if (options?.desktopFocusTombstone) {
+    if (desktopFocusTombstone) {
       const publishIdentity = agentAwarenessPublishIdentity(null);
       publishConfirmDeadlines.delete(threadId);
-      yield* publishState({
+      const published = yield* publishState({
         projectId: null,
         state: null,
         reason: "desktop-focused",
       });
+      if (!published) {
+        return false;
+      }
       yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
         const nextPublishedStates = new Map(publishedStates);
         nextPublishedStates.set(threadId, publishIdentity);
         return nextPublishedStates;
       });
-      return;
+      return true;
     }
 
     const thread = yield* snapshotQuery.getThreadShellById(threadId);
@@ -471,7 +478,7 @@ export const make = Effect.gen(function* () {
         threadId,
         reason: snapshot.reason,
       });
-      return;
+      return false;
     }
 
     // Two projections need confirmation before publishing, because both can
@@ -501,10 +508,10 @@ export const make = Effect.gen(function* () {
           shell: describeThreadShellForAwareness(thread),
         });
         yield* schedulePublishConfirm(threadId);
-        return;
+        return false;
       }
       if (nowMs < deadline) {
-        return;
+        return false;
       }
       publishConfirmDeadlines.delete(threadId);
       yield* Effect.logInfo("agent activity deferred publish confirmed", {
@@ -537,19 +544,21 @@ export const make = Effect.gen(function* () {
       reason: snapshot.reason,
     });
     if (!published) {
-      return;
+      return false;
     }
     yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
       const nextPublishedStates = new Map(publishedStates);
       nextPublishedStates.set(threadId, publishIdentity);
       return nextPublishedStates;
     });
+    return true;
   });
 
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
     publishSemaphore
       .withPermits(1)(publishThreadUnsafe(threadId))
       .pipe(
+        Effect.asVoid,
         Effect.catchCause((cause) => {
           return Effect.logWarning("agent activity publish failed", {
             threadId,
@@ -596,9 +605,6 @@ export const make = Effect.gen(function* () {
   const publishDesktopFocusTombstone = Effect.fn("publishDesktopFocusTombstone")(function* (
     threadId: ThreadId,
   ) {
-    if (!(yield* focusedDesktopClients.anyFocused)) {
-      return;
-    }
     const published = yield* publishSemaphore
       .withPermits(1)(
         publishThreadUnsafe(threadId, {
@@ -606,7 +612,6 @@ export const make = Effect.gen(function* () {
         }),
       )
       .pipe(
-        Effect.as(true),
         Effect.catchCause((cause) =>
           Effect.logWarning("desktop focus agent activity tombstone failed; retrying", {
             threadId,
@@ -615,7 +620,7 @@ export const make = Effect.gen(function* () {
         ),
         withRelayClientTracing,
       );
-    if (!published) {
+    if (!published && (yield* focusedDesktopClients.anyFocused)) {
       yield* scheduleDesktopFocusTombstoneRetry(threadId);
     }
   });

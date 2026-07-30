@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -487,7 +488,17 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     desktopFocus.changes.pipe(
       Stream.changes,
       Stream.switchMap((focused) =>
-        focused ? rpcSession.client[WS_METHODS.clientReportDesktopFocus]({}) : Stream.empty,
+        focused
+          ? rpcSession.client[WS_METHODS.clientReportDesktopFocus]({}).pipe(
+              Stream.tapError((error) =>
+                Effect.logDebug("Desktop focus reporting failed; retrying.", {
+                  environmentId: target.environmentId,
+                  ...safeErrorLogAttributes(error),
+                }),
+              ),
+              Stream.retry(Schedule.spaced("1 second")),
+            )
+          : Stream.empty,
       ),
       Stream.runDrain,
       Effect.catchCause((cause) =>

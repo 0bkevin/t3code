@@ -292,11 +292,18 @@ describe("EnvironmentSupervisor", () => {
     Effect.gen(function* () {
       const focused = yield* SubscriptionRef.make(true);
       const activeReports = yield* Ref.make(0);
+      const reportAttempts = yield* Ref.make(0);
       const focusRpc = () =>
-        Stream.fromEffect(Ref.update(activeReports, (count) => count + 1)).pipe(
-          Stream.drain,
-          Stream.concat(Stream.never),
-          Stream.ensuring(Ref.update(activeReports, (count) => count - 1)),
+        Stream.fromEffect(Ref.updateAndGet(reportAttempts, (count) => count + 1)).pipe(
+          Stream.flatMap((attempt) =>
+            attempt === 1
+              ? Stream.fail(new Error("Transient focus report failure."))
+              : Stream.fromEffect(Ref.update(activeReports, (count) => count + 1)).pipe(
+                  Stream.drain,
+                  Stream.concat(Stream.never),
+                  Stream.ensuring(Ref.update(activeReports, (count) => count - 1)),
+                ),
+          ),
         );
       const rpcClient = {
         [WS_METHODS.clientReportDesktopFocus]: focusRpc,
@@ -317,12 +324,22 @@ describe("EnvironmentSupervisor", () => {
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       for (
         let iteration = 0;
+        iteration < 100 && (yield* Ref.get(reportAttempts)) !== 1;
+        iteration++
+      ) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(reportAttempts)).toBe(1);
+      yield* TestClock.adjust("1 second");
+      for (
+        let iteration = 0;
         iteration < 100 && (yield* Ref.get(activeReports)) !== 1;
         iteration++
       ) {
         yield* Effect.yieldNow;
       }
       expect(yield* Ref.get(activeReports)).toBe(1);
+      expect(yield* Ref.get(reportAttempts)).toBe(2);
 
       yield* SubscriptionRef.set(focused, false);
       for (
