@@ -141,6 +141,89 @@ export function deriveOrchestrationV2SubagentPanelState(input: {
   };
 }
 
+export interface OrchestrationV2WorkflowRunCardState {
+  readonly coordinator: OrchestrationV2Subagent;
+  readonly phases: ReadonlyArray<OrchestrationV2SubagentPhaseGroup>;
+  /** Members that claim no declared phase — rendered after the phased ones
+   * rather than dropped, so a provider that omits phase indices still shows
+   * every agent. */
+  readonly unphasedAgents: ReadonlyArray<OrchestrationV2Subagent>;
+  readonly memberCount: number;
+  readonly settledMemberCount: number;
+  readonly failedMemberCount: number;
+  readonly totalTokens: number | null;
+}
+
+/**
+ * The inline run card for one workflow coordinator. Returns null unless
+ * `coordinatorId` names a workflow-kind subagent, so callers can probe any
+ * subagent turn item with it.
+ */
+export function deriveOrchestrationV2WorkflowRunCard(input: {
+  readonly coordinatorId: OrchestrationV2Subagent["id"];
+  readonly subagents: ReadonlyArray<OrchestrationV2Subagent>;
+}): OrchestrationV2WorkflowRunCardState | null {
+  const coordinator = input.subagents.find(
+    (agent) => agent.id === input.coordinatorId && agent.kind === "workflow",
+  );
+  if (coordinator === undefined) return null;
+  const members = input.subagents
+    .filter(
+      (agent) =>
+        agent.kind !== "workflow" &&
+        agent.workflowMembership?.workflowSubagentId === coordinator.id,
+    )
+    .toSorted(
+      (left, right) =>
+        (left.workflowMembership?.agentIndex ?? 0) - (right.workflowMembership?.agentIndex ?? 0),
+    );
+  const phases = (coordinator.workflow?.phases ?? []).map((phase) => {
+    const agents = members.filter((agent) => agent.workflowMembership?.phaseIndex === phase.index);
+    return { ...phase, status: phaseStatus(agents), agents };
+  });
+  const phasedIds = new Set(phases.flatMap((phase) => phase.agents.map((agent) => agent.id)));
+  // The coordinator's usage already covers its members (the panel derivation
+  // relies on the same invariant); fall back to the member sum only when the
+  // provider reported no coordinator total at all.
+  const memberUsage = members.flatMap((agent) =>
+    agent.usage === null ? [] : [agent.usage.totalTokens],
+  );
+  return {
+    coordinator,
+    phases,
+    unphasedAgents: members.filter((agent) => !phasedIds.has(agent.id)),
+    memberCount: members.length,
+    settledMemberCount: members.filter(isSettledOrchestrationV2Subagent).length,
+    failedMemberCount: members.filter((agent) => agent.status === "failed").length,
+    totalTokens:
+      coordinator.usage?.totalTokens ??
+      (memberUsage.length === 0 ? null : memberUsage.reduce((total, tokens) => total + tokens, 0)),
+  };
+}
+
+/**
+ * Ids of workflow members whose coordinator is present as a workflow-kind
+ * subagent. The timeline hides these rows — the coordinator's run card
+ * already renders them — while members orphaned by a missing coordinator
+ * keep their own row rather than disappearing.
+ */
+export function orchestrationV2WorkflowMemberIds(
+  subagents: ReadonlyArray<OrchestrationV2Subagent>,
+): ReadonlySet<OrchestrationV2Subagent["id"]> {
+  const coordinatorIds = new Set(
+    subagents.flatMap((agent) => (agent.kind === "workflow" ? [agent.id] : [])),
+  );
+  return new Set(
+    subagents.flatMap((agent) =>
+      agent.kind !== "workflow" &&
+      agent.workflowMembership !== null &&
+      coordinatorIds.has(agent.workflowMembership.workflowSubagentId)
+        ? [agent.id]
+        : [],
+    ),
+  );
+}
+
 export const formatSubagentTokenCount = (totalTokens: number) =>
   totalTokens >= 999_500
     ? `${(totalTokens / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
