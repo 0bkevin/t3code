@@ -689,6 +689,7 @@ describe("ClaudeAdapterV2 attachments", () => {
                   }),
                 setModel: () => Effect.void,
                 interrupt: Effect.void,
+                stopTask: () => Effect.void,
                 close: Effect.void,
               }),
             forkSession: () => Effect.die("unused forkSession"),
@@ -801,6 +802,7 @@ describe("ClaudeAdapterV2 attachments", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -892,6 +894,7 @@ describe("ClaudeAdapterV2 native fork", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -1061,6 +1064,7 @@ describe("ClaudeAdapterV2 native session identity", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -1276,6 +1280,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 }),
               setModel: () => Effect.void,
               interrupt: options?.interrupt ?? Effect.void,
+              stopTask: () => Effect.void,
               close: options?.close?.(sdkMessages) ?? Effect.void,
             }),
           forkSession: () => Effect.die("unused forkSession"),

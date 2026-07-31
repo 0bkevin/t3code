@@ -187,6 +187,11 @@ interface ClaudeQueryInterruptFrame {
   readonly type: "query.interrupt";
 }
 
+interface ClaudeTaskStopFrame {
+  readonly type: "task.stop";
+  readonly taskId: string;
+}
+
 interface ClaudePermissionRequestFrame {
   readonly type: "permission.request";
   readonly toolName: string;
@@ -228,6 +233,7 @@ type ClaudeOutboundFrame =
   | ClaudePromptOfferFrame
   | ClaudeQuerySetModelFrame
   | ClaudeQueryInterruptFrame
+  | ClaudeTaskStopFrame
   | ClaudePermissionResponseFrame
   | ClaudeSessionForkFrame;
 
@@ -619,6 +625,10 @@ export function makeReplayQueryRunner(
         interrupt: replayEffect(() => {
           assertNextOutboundFrame({ type: "query.interrupt" });
         }),
+        stopTask: (taskId) =>
+          replayEffect(() => {
+            assertNextOutboundFrame({ type: "task.stop", taskId });
+          }),
         close: Effect.void,
       };
     },
