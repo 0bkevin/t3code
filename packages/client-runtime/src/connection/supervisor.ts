@@ -628,6 +628,12 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           const next = yield* Queue.take(signals);
           switch (next._tag) {
             case "Wakeup":
+              // The path-change wakeup is advisory: it only prompts a probe
+              // of a connected session. With no session to probe, a flapping
+              // interface must not cut backoff delays short.
+              if (next.reason === "network-path-changed") {
+                break;
+              }
               return ConnectionWakeups.isApplicationActiveWakeup(next.reason);
             case "ConnectRequested":
             case "DisconnectRequested":
@@ -640,11 +646,16 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     );
   });
 
-  const waitForSignal = Queue.take(signals).pipe(
-    Effect.map(
-      (next) => next._tag === "Wakeup" && ConnectionWakeups.isApplicationActiveWakeup(next.reason),
-    ),
-  );
+  const waitForSignal = Effect.gen(function* () {
+    for (;;) {
+      const next = yield* Queue.take(signals);
+      if (next._tag === "Wakeup" && next.reason === "network-path-changed") {
+        // Advisory only; see waitForRetrySignal.
+        continue;
+      }
+      return next._tag === "Wakeup" && ConnectionWakeups.isApplicationActiveWakeup(next.reason);
+    }
+  });
 
   const run = Effect.fnUntraced(function* () {
     let failureCount = 0;

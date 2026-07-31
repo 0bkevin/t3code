@@ -902,6 +902,33 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  it.effect("does not cut backoff short when the network path flaps", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        prepare: () => Effect.fail(transient()),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "backoff" && state.attempt === 1,
+      );
+      expect(yield* Ref.get(harness.prepareCount)).toBe(1);
+
+      // Advisory path-change wakeups have no session to probe during backoff
+      // and must not trigger an early retry.
+      yield* harness.wake("network-path-changed");
+      yield* harness.wake("network-path-changed");
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.prepareCount)).toBe(1);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("backoff");
+    }),
+  );
+
   it.effect("replaces the session when a probe after a network path change fails", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({

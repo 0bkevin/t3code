@@ -108,7 +108,14 @@ const wakeupsLayer = Wakeups.layer({
           // Emit an advisory wakeup on interface-type changes while active;
           // the supervisor probes the session rather than blindly replacing
           // it, which keeps flapping paths cheap.
+          // Seed the current interface type so the first flip after startup
+          // is detected; the listener only reports changes.
           let networkType: string | null = null;
+          void Network.getNetworkStateAsync()
+            .then((current) => {
+              networkType ??= current.type ?? null;
+            })
+            .catch(() => undefined);
           const networkSubscription = Network.addNetworkStateListener((state) => {
             const nextType = state.type ?? null;
             const previousType = networkType;

@@ -191,9 +191,11 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         // the gap or falls back to a fresh socket snapshot when it is too
         // large (SHELL_RESUME_MAX_GAP), so the HTTP fetch is only needed on a
         // truly cold start. This mirrors the thread-detail guard and keeps
-        // foreground resubscribes off the HTTP path.
+        // foreground resubscribes off the HTTP path. Requires the completion
+        // marker: without it nothing promotes an already-caught-up resume to
+        // "live" (the HTTP path below promotes via its snapshot item instead).
         const cached = yield* SubscriptionRef.get(state);
-        if (Option.isSome(cached.snapshot)) {
+        if (supportsCompletionMarker && Option.isSome(cached.snapshot)) {
           return {
             afterSequence: cached.snapshot.value.snapshotSequence,
             ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
