@@ -108,20 +108,21 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
     // is ignored), so without this the server's lease can lag a resume by up
     // to REPORT_INTERVAL_MS, keeping provider/VCS work paused.
     const connectedGenerations = (environmentId: EnvironmentId) =>
-      registry
-        .followStream(
-          environmentId,
-          Stream.unwrap(
-            Effect.map(EnvironmentSupervisor, (supervisor) =>
-              SubscriptionRef.changes(supervisor.state),
+      registry.followStream(
+        environmentId,
+        Stream.unwrap(
+          Effect.map(EnvironmentSupervisor, (supervisor) =>
+            // The generation dedup must live inside the per-supervisor stream:
+            // a replacement supervisor restarts generations at 1, so deduping
+            // outside followStream would suppress its first connected event.
+            SubscriptionRef.changes(supervisor.state).pipe(
+              Stream.filter((state) => state.phase === "connected"),
+              Stream.map((state) => state.generation),
+              Stream.changes,
             ),
           ),
-        )
-        .pipe(
-          Stream.filter((state) => state.phase === "connected"),
-          Stream.map((state) => `${environmentId}:${state.generation}`),
-          Stream.changes,
-        );
+        ),
+      );
     yield* Stream.concat(
       Stream.fromEffect(SubscriptionRef.get(registry.entries)),
       SubscriptionRef.changes(registry.entries),
