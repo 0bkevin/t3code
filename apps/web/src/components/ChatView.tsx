@@ -4,6 +4,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
+  type NodeId,
   type OrchestrationV2ThreadProjection,
   type ProjectScript,
   type ProjectId,
@@ -1218,6 +1219,9 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
+    reportFailure: false,
+  });
+  const stopThreadSubagent = useAtomCommand(threadEnvironment.stopSubagent, {
     reportFailure: false,
   });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
@@ -3292,6 +3296,19 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "agents");
   }, [activeThreadRef]);
+  const onStopWorkflow = useCallback(
+    (subagentId: NodeId) => {
+      if (!activeThreadRef) return;
+      void stopThreadSubagent({
+        environmentId: activeThreadRef.environmentId,
+        input: {
+          threadId: activeThreadRef.threadId,
+          subagentId,
+        },
+      });
+    },
+    [activeThreadRef, stopThreadSubagent],
+  );
   const openChangesFromThreadPanel = useCallback(() => {
     addDiffSurface();
   }, [addDiffSurface]);
@@ -6283,6 +6300,7 @@ function ChatViewContent(props: ChatViewProps) {
                 runs={serverProjection?.runs ?? EMPTY_PROJECTION_RUNS}
                 subagents={serverProjection?.subagents ?? EMPTY_PROJECTION_SUBAGENTS}
                 onOpenAgentsPanel={addAgentsSurface}
+                onStopWorkflow={onStopWorkflow}
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
                 onAnchorSizeChanged={onTimelineAnchorSizeChanged}

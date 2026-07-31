@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type NodeId,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
@@ -170,6 +171,8 @@ interface TimelineRowSharedState {
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
   /** Opens the right-panel Agents surface; null when the host view has none. */
   onOpenAgentsPanel: (() => void) | null;
+  /** Requests a stop for one workflow/subagent task; null when unavailable. */
+  onStopWorkflow: ((subagentId: NodeId) => void) | null;
 }
 
 interface TimelineRowActivityState {
@@ -237,6 +240,7 @@ interface MessagesTimelineProps {
   /** Live projection subagents — feeds the inline workflow run cards. */
   subagents?: ReadonlyArray<OrchestrationV2Subagent>;
   onOpenAgentsPanel?: (() => void) | null;
+  onStopWorkflow?: ((subagentId: NodeId) => void) | null;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -279,6 +283,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   runs: runsProp = EMPTY_TIMELINE_RUNS,
   subagents = EMPTY_TIMELINE_SUBAGENTS,
   onOpenAgentsPanel = null,
+  onStopWorkflow = null,
   anchorMessageId,
   onAnchorReady,
   onAnchorSizeChanged,
@@ -497,6 +502,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleTurnFold,
       onToggleAttemptFold,
       onOpenAgentsPanel,
+      onStopWorkflow,
     }),
     [
       timestampFormat,
@@ -517,6 +523,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleTurnFold,
       onToggleAttemptFold,
       onOpenAgentsPanel,
+      onStopWorkflow,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1446,7 +1453,14 @@ function V2SubagentEventRow(props: {
   );
   const hiddenMemberIds = useMemo(() => orchestrationV2WorkflowMemberIds(subagents), [subagents]);
   if (card !== null) {
-    return <WorkflowRunCardV2 card={card} onOpenDetails={ctx.onOpenAgentsPanel ?? undefined} />;
+    const onStopWorkflow = ctx.onStopWorkflow;
+    return (
+      <WorkflowRunCardV2
+        card={card}
+        onOpenDetails={ctx.onOpenAgentsPanel ?? undefined}
+        onStop={onStopWorkflow === null ? undefined : () => onStopWorkflow(props.item.subagentId)}
+      />
+    );
   }
   if (hiddenMemberIds.has(props.item.subagentId)) {
     return null;
