@@ -208,6 +208,10 @@ export function useThreadListActions(): {
   const executeAction = useThreadActionExecutor();
   const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
   const unsnoozeMutation = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
+  // Same double-tap guard executeAction gives the other lifecycle actions:
+  // without it a rapid second Wake/Snooze tap queues a duplicate command and,
+  // on failure, stacks one alert per tap.
+  const snoozeInFlightKeys = useRef(new Set<string>());
 
   const archiveThread = useCallback(
     (thread: EnvironmentThreadShell) => {
@@ -221,6 +225,8 @@ export function useThreadListActions(): {
   );
   const snoozeThread = useCallback(
     async (thread: EnvironmentThreadShell) => {
+      const key = scopedThreadKey(thread.environmentId, thread.id);
+      if (snoozeInFlightKeys.current.has(key)) return false;
       if (!environmentSupportsSnooze(thread.environmentId)) {
         Alert.alert(
           "Could not snooze thread",
@@ -240,25 +246,30 @@ export function useThreadListActions(): {
         return false;
       }
 
+      snoozeInFlightKeys.current.add(key);
       selectionHaptic();
-      const result = await snoozeMutation({
-        environmentId: thread.environmentId,
-        input: {
-          threadId: thread.id,
-          snoozedUntil: new Date(Date.now() + SWIPE_SNOOZE_DURATION_MS).toISOString(),
-        },
-      });
-      if (result._tag === "Failure") {
-        const error = Cause.squash(result.cause);
-        Alert.alert(
-          "Could not snooze thread",
-          error instanceof Error && error.message.trim().length > 0
-            ? error.message
-            : "The thread could not be snoozed.",
-        );
-        return false;
+      try {
+        const result = await snoozeMutation({
+          environmentId: thread.environmentId,
+          input: {
+            threadId: thread.id,
+            snoozedUntil: new Date(Date.now() + SWIPE_SNOOZE_DURATION_MS).toISOString(),
+          },
+        });
+        if (result._tag === "Failure") {
+          const error = Cause.squash(result.cause);
+          Alert.alert(
+            "Could not snooze thread",
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : "The thread could not be snoozed.",
+          );
+          return false;
+        }
+        return true;
+      } finally {
+        snoozeInFlightKeys.current.delete(key);
       }
-      return true;
     },
     [snoozeMutation],
   );
@@ -266,6 +277,8 @@ export function useThreadListActions(): {
   // the way OUT) — a thread the user can see on the shelf can always wake.
   const unsnoozeThread = useCallback(
     async (thread: EnvironmentThreadShell) => {
+      const key = scopedThreadKey(thread.environmentId, thread.id);
+      if (snoozeInFlightKeys.current.has(key)) return false;
       if (!environmentSupportsSnooze(thread.environmentId)) {
         Alert.alert(
           "Could not wake thread",
@@ -274,22 +287,27 @@ export function useThreadListActions(): {
         return false;
       }
 
+      snoozeInFlightKeys.current.add(key);
       selectionHaptic();
-      const result = await unsnoozeMutation({
-        environmentId: thread.environmentId,
-        input: { threadId: thread.id, reason: "user" },
-      });
-      if (result._tag === "Failure") {
-        const error = Cause.squash(result.cause);
-        Alert.alert(
-          "Could not wake thread",
-          error instanceof Error && error.message.trim().length > 0
-            ? error.message
-            : "The thread could not be woken.",
-        );
-        return false;
+      try {
+        const result = await unsnoozeMutation({
+          environmentId: thread.environmentId,
+          input: { threadId: thread.id, reason: "user" },
+        });
+        if (result._tag === "Failure") {
+          const error = Cause.squash(result.cause);
+          Alert.alert(
+            "Could not wake thread",
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : "The thread could not be woken.",
+          );
+          return false;
+        }
+        return true;
+      } finally {
+        snoozeInFlightKeys.current.delete(key);
       }
-      return true;
     },
     [unsnoozeMutation],
   );

@@ -484,7 +484,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ) : (
       <Pressable
         accessibilityHint={swipeAccessibilityHint}
-        accessibilityLabel={thread.title}
+        // The wake countdown is the row's whole story visually; a screen
+        // reader must hear it too, not just the Wake hint.
+        accessibilityLabel={
+          snoozedRow && props.snoozeWakeLabelText !== undefined
+            ? // The label can read "now" for the sliver between the wake
+              // passing and the next re-partition removing the row.
+              props.snoozeWakeLabelText === "now"
+              ? `${thread.title}, snoozed, wakes now`
+              : `${thread.title}, snoozed, wakes in ${props.snoozeWakeLabelText}`
+            : thread.title
+        }
         accessibilityRole="button"
         accessibilityState={{ selected }}
         className={sidebarPane ? undefined : "bg-screen"}
