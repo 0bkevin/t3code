@@ -358,15 +358,18 @@ describe("EnvironmentSupervisor", () => {
       );
       expect(yield* Ref.get(harness.prepareCount)).toBe(1);
 
-      for (const [index, delay] of [1_000, 2_000, 4_000, 8_000, 16_000, 16_000].entries()) {
-        yield* TestClock.adjust(delay);
+      // Jitter puts each delay in [rung/2, rung], so exact rung boundaries
+      // are not observable; advancing by the 16s cap always covers at least
+      // one more retry and proves the ladder keeps going past its last rung.
+      for (const [index] of [1_000, 2_000, 4_000, 8_000, 16_000, 16_000].entries()) {
+        yield* TestClock.adjust(16_000);
         yield* eventuallyState(
           supervisor.state,
-          (state) => state.phase === "backoff" && state.attempt === index + 2,
+          (state) => state.phase === "backoff" && state.attempt >= index + 2,
         );
       }
 
-      expect(yield* Ref.get(harness.prepareCount)).toBe(7);
+      expect(yield* Ref.get(harness.prepareCount)).toBeGreaterThanOrEqual(7);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
@@ -539,9 +542,10 @@ describe("EnvironmentSupervisor", () => {
       );
       expect(yield* Ref.get(harness.prepareCount)).toBe(3);
 
-      yield* TestClock.adjust("999 millis");
+      // Jittered first-rung delay lands in [500ms, 1000ms].
+      yield* TestClock.adjust("499 millis");
       expect(yield* Ref.get(harness.prepareCount)).toBe(3);
-      yield* TestClock.adjust("1 milli");
+      yield* TestClock.adjust("501 millis");
       yield* eventuallyState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.attempt === 2,
@@ -873,6 +877,55 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  it.effect("probes the active session when the network path changes", () =>
+    Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const probeCalled = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () =>
+          Ref.update(probeCount, (count) => count + 1).pipe(
+            Effect.andThen(Deferred.succeed(probeCalled, undefined)),
+          ),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("network-path-changed");
+      yield* Deferred.await(probeCalled);
+
+      expect(yield* Ref.get(probeCount)).toBe(1);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+    }),
+  );
+
+  it.effect("replaces the session when a probe after a network path change fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        probe: (attempt) =>
+          attempt === 1
+            ? Effect.fail(transient("The path changed under the socket."))
+            : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("network-path-changed");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(2);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+    }),
+  );
+
   it.effect("immediately replaces a mobile session after a long background resume", () =>
     Effect.gen(function* () {
       const probeCount = yield* Ref.make(0);
@@ -937,9 +990,9 @@ describe("EnvironmentSupervisor", () => {
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active");
-      yield* awaitState(supervisor.state, (state) => state.phase === "backoff");
-      yield* TestClock.adjust("1 second");
-      yield* eventuallyState(
+      // A failed probe already proves the session is dead: the supervisor
+      // replaces it immediately without entering backoff.
+      yield* awaitState(
         supervisor.state,
         (state) => state.phase === "connected" && state.generation === 2,
       );
@@ -961,11 +1014,8 @@ describe("EnvironmentSupervisor", () => {
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active-probe");
       yield* TestClock.adjust("3 seconds");
-      yield* awaitState(
-        supervisor.state,
-        (state) => state.phase === "backoff" && state.lastFailure?.reason === "timeout",
-      );
-      yield* TestClock.adjust("1 second");
+      // The 3s mobile probe timeout counts as a failed probe: the stale
+      // session is replaced immediately without a backoff delay.
       yield* eventuallyState(
         supervisor.state,
         (state) => state.phase === "connected" && state.generation === 2,

@@ -6,6 +6,10 @@ export type ConnectionWakeup =
   | "application-active"
   | "application-active-probe"
   | "application-active-reconnect"
+  // Advisory: the network path changed shape (e.g. WiFi to cellular) while
+  // still nominally online. The old socket often survives in appearance only,
+  // so the supervisor probes it instead of waiting for a ping timeout.
+  | "network-path-changed"
   | "credentials-changed";
 
 export function isApplicationActiveWakeup(reason: ConnectionWakeup): boolean {

@@ -187,6 +187,19 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
+        // A warm snapshot resumes via afterSequence alone; the server replays
+        // the gap or falls back to a fresh socket snapshot when it is too
+        // large (SHELL_RESUME_MAX_GAP), so the HTTP fetch is only needed on a
+        // truly cold start. This mirrors the thread-detail guard and keeps
+        // foreground resubscribes off the HTTP path.
+        const cached = yield* SubscriptionRef.get(state);
+        if (Option.isSome(cached.snapshot)) {
+          return {
+            afterSequence: cached.snapshot.value.snapshotSequence,
+            ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
+          };
+        }
+
         const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
           Effect.flatMap(
             Option.match({

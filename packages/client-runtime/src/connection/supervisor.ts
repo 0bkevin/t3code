@@ -8,6 +8,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -101,8 +102,11 @@ export interface EnvironmentSupervisorOptions {
   readonly initiallyDesired?: boolean;
 }
 
-function retryDelayMs(failureCount: number): number {
-  return RETRY_DELAYS_MS[Math.min(failureCount, RETRY_DELAYS_MS.length - 1)] ?? 16_000;
+// Equal jitter: each retry waits between half and all of its ladder rung so
+// clients sharing an environment don't reconnect in lockstep after a restart.
+function retryDelayMs(failureCount: number, random: number): number {
+  const base = RETRY_DELAYS_MS[Math.min(failureCount, RETRY_DELAYS_MS.length - 1)] ?? 16_000;
+  return Math.round(base / 2 + random * (base / 2));
 }
 
 function annotateTarget(target: ConnectionTarget) {
@@ -414,13 +418,17 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             // replaces that lease and starts a fresh attempt without backoff.
             return true;
           }
-          if (next.reason === "application-active" || next.reason === "application-active-probe") {
+          if (
+            next.reason === "application-active" ||
+            next.reason === "application-active-probe" ||
+            next.reason === "network-path-changed"
+          ) {
             const probe = yield* lease.session.probe.pipe(
               Effect.timeoutOrElse({
                 duration:
-                  next.reason === "application-active-probe"
-                    ? MOBILE_CONNECTION_PROBE_TIMEOUT
-                    : CONNECTION_PROBE_TIMEOUT,
+                  next.reason === "application-active"
+                    ? CONNECTION_PROBE_TIMEOUT
+                    : MOBILE_CONNECTION_PROBE_TIMEOUT,
                 orElse: () =>
                   Effect.fail(
                     new ConnectionTransientError({
@@ -441,7 +449,12 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
                 ),
               );
               if (probeEvent._tag === "ProbeCompleted") {
-                yield* probeEvent.exit;
+                if (Exit.isFailure(probeEvent.exit)) {
+                  // A failed health check already proves the session is dead;
+                  // replace it immediately instead of paying the retry ladder
+                  // for a failure the probe just diagnosed.
+                  return true;
+                }
                 break;
               }
               switch (probeEvent.signal._tag) {
@@ -710,7 +723,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       }
 
       failureCount += 1;
-      const delayMs = retryDelayMs(failureCount - 1);
+      const delayMs = retryDelayMs(failureCount - 1, yield* Random.next);
       pendingRetry = Option.map(attemptSpan, (previousAttempt) => ({
         previousAttempt,
         failureCount,
