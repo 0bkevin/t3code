@@ -13,7 +13,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveOrchestrationV2SubagentPanelState,
+  deriveOrchestrationV2WorkflowRunCard,
   formatSubagentTokenCount,
+  orchestrationV2WorkflowMemberIds,
 } from "./orchestrationV2Subagents.ts";
 
 const now = DateTime.makeUnsafe("2026-07-26T00:00:00.000Z");
@@ -267,5 +269,131 @@ describe("deriveOrchestrationV2SubagentPanelState", () => {
     expect(formatSubagentTokenCount(1_200)).toBe("1.2k");
     expect(formatSubagentTokenCount(999_999)).toBe("1M");
     expect(formatSubagentTokenCount(2_000_000)).toBe("2M");
+  });
+});
+
+describe("deriveOrchestrationV2WorkflowRunCard", () => {
+  const workflow = agent("workflow-1", {
+    kind: "workflow",
+    role: { name: "workflow-coordinator", source: "app_default" },
+    usage: { totalTokens: 1500 },
+    workflow: {
+      phases: [
+        { index: 0, title: "Research" },
+        { index: 1, title: "Implement" },
+      ],
+      name: "research-implement",
+      runId: "wf_run_1",
+    },
+  });
+  const researcher = agent("member-research", {
+    kind: "workflow_agent",
+    status: "completed",
+    usage: { totalTokens: 400 },
+    workflowMembership: {
+      workflowSubagentId: workflowId,
+      agentIndex: 0,
+      phaseIndex: 0,
+      attempt: 1,
+    },
+  });
+  const implementer = agent("member-implement", {
+    kind: "workflow_agent",
+    status: "running",
+    usage: { totalTokens: 500 },
+    workflowMembership: {
+      workflowSubagentId: workflowId,
+      agentIndex: 1,
+      phaseIndex: 1,
+      attempt: 1,
+    },
+  });
+
+  it("derives phases, counts, and the coordinator's usage for a coordinator id", () => {
+    const card = deriveOrchestrationV2WorkflowRunCard({
+      coordinatorId: workflowId,
+      subagents: [workflow, researcher, implementer, agent("unrelated")],
+    });
+
+    expect(card?.coordinator.id).toBe(workflowId);
+    expect(card?.phases.map((phase) => [phase.title, phase.status])).toEqual([
+      ["Research", "done"],
+      ["Implement", "running"],
+    ]);
+    expect(card?.memberCount).toBe(2);
+    expect(card?.settledMemberCount).toBe(1);
+    expect(card?.failedMemberCount).toBe(0);
+    expect(card?.totalTokens).toBe(1500);
+    expect(card?.unphasedAgents).toEqual([]);
+  });
+
+  it("returns null for anything that is not a workflow coordinator", () => {
+    const subagents = [workflow, researcher];
+    expect(
+      deriveOrchestrationV2WorkflowRunCard({
+        coordinatorId: researcher.id,
+        subagents,
+      }),
+    ).toBeNull();
+    expect(
+      deriveOrchestrationV2WorkflowRunCard({
+        coordinatorId: NodeId.make("missing"),
+        subagents,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps members without a declared phase visible and sums their usage as fallback", () => {
+    const silentCoordinator = agent("workflow-1", {
+      kind: "workflow",
+      workflow: { phases: [{ index: 0, title: "Research" }] },
+    });
+    const phaseless = agent("member-phaseless", {
+      kind: "workflow_agent",
+      usage: { totalTokens: 250 },
+      workflowMembership: {
+        workflowSubagentId: workflowId,
+        agentIndex: 2,
+        phaseIndex: null,
+        attempt: 1,
+      },
+    });
+    const card = deriveOrchestrationV2WorkflowRunCard({
+      coordinatorId: workflowId,
+      subagents: [silentCoordinator, phaseless],
+    });
+
+    expect(card?.unphasedAgents.map((member) => member.id)).toEqual([phaseless.id]);
+    // No coordinator total reported — the member sum is better than
+    // "usage unavailable" for a workflow that visibly spent tokens.
+    expect(card?.totalTokens).toBe(250);
+  });
+});
+
+describe("orchestrationV2WorkflowMemberIds", () => {
+  it("hides only members whose coordinator reached the projection", () => {
+    const workflow = agent("workflow-1", { kind: "workflow" });
+    const member = agent("member-1", {
+      kind: "workflow_agent",
+      workflowMembership: {
+        workflowSubagentId: workflowId,
+        agentIndex: 0,
+        phaseIndex: 0,
+        attempt: 1,
+      },
+    });
+    const orphan = agent("member-orphan", {
+      kind: "workflow_agent",
+      workflowMembership: {
+        workflowSubagentId: NodeId.make("missing-workflow"),
+        agentIndex: 0,
+        phaseIndex: 0,
+        attempt: 1,
+      },
+    });
+    const direct = agent("direct-1");
+
+    const hidden = orchestrationV2WorkflowMemberIds([workflow, member, orphan, direct]);
+    expect([...hidden]).toEqual([member.id]);
   });
 });
