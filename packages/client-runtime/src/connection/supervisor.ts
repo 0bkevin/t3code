@@ -450,9 +450,16 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
               );
               if (probeEvent._tag === "ProbeCompleted") {
                 if (Exit.isFailure(probeEvent.exit)) {
-                  // A failed health check already proves the session is dead;
-                  // replace it immediately instead of paying the retry ladder
-                  // for a failure the probe just diagnosed.
+                  const failure = Cause.findErrorOption(probeEvent.exit.cause);
+                  if (Option.isSome(failure) && failure.value._tag === "ConnectionBlockedError") {
+                    // Blocked failures (auth, permissions) must keep their
+                    // classification so the run loop parks in the blocked
+                    // state instead of churning immediate reconnects.
+                    yield* probeEvent.exit;
+                  }
+                  // A transiently failed health check already proves the
+                  // session is dead; replace it immediately instead of paying
+                  // the retry ladder for a failure the probe just diagnosed.
                   return true;
                 }
                 break;

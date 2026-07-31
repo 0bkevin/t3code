@@ -128,13 +128,15 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
       SubscriptionRef.changes(registry.entries),
     ).pipe(
       Stream.map((entries) => [...entries.keys()].sort()),
-      Stream.changesWith((a, b) => a.join(",") === b.join(",")),
-      Stream.switchMap(
-        (environmentIds) =>
-          Stream.mergeAll(environmentIds.map(connectedGenerations), {
-            concurrency: "unbounded",
-          }),
-        { concurrency: "unbounded" },
+      Stream.changesWith((a, b) => a.length === b.length && a.every((id, i) => id === b[i])),
+      // Default switchMap concurrency (1) interrupts the previous inner
+      // stream on every environment-set change; unbounded here would leak a
+      // subscription set per change. mergeAll inside stays unbounded so all
+      // environments are observed concurrently.
+      Stream.switchMap((environmentIds) =>
+        Stream.mergeAll(environmentIds.map(connectedGenerations), {
+          concurrency: "unbounded",
+        }),
       ),
       Stream.runForEach(() => Effect.sync(requestReport)),
       Effect.forkScoped,

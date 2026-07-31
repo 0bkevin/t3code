@@ -1,6 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -358,18 +359,24 @@ describe("EnvironmentSupervisor", () => {
       );
       expect(yield* Ref.get(harness.prepareCount)).toBe(1);
 
-      // Jitter puts each delay in [rung/2, rung], so exact rung boundaries
-      // are not observable; advancing by the 16s cap always covers at least
-      // one more retry and proves the ladder keeps going past its last rung.
-      for (const [index] of [1_000, 2_000, 4_000, 8_000, 16_000, 16_000].entries()) {
-        yield* TestClock.adjust(16_000);
+      // Jitter puts each delay in [rung/2, rung]. Read the scheduled retryAt
+      // per rung, assert it falls inside the jitter bounds (proving ladder
+      // progression and the 16s cap), then advance exactly to it.
+      for (const [index, rung] of [1_000, 2_000, 4_000, 8_000, 16_000, 16_000].entries()) {
+        const current = yield* SubscriptionRef.get(supervisor.state);
+        const now = yield* Clock.currentTimeMillis;
+        expect(current.retryAt).not.toBeNull();
+        const delay = (current.retryAt ?? now) - now;
+        expect(delay).toBeGreaterThanOrEqual(rung / 2);
+        expect(delay).toBeLessThanOrEqual(rung);
+        yield* TestClock.adjust(delay);
         yield* eventuallyState(
           supervisor.state,
-          (state) => state.phase === "backoff" && state.attempt >= index + 2,
+          (state) => state.phase === "backoff" && state.attempt === index + 2,
         );
       }
 
-      expect(yield* Ref.get(harness.prepareCount)).toBeGreaterThanOrEqual(7);
+      expect(yield* Ref.get(harness.prepareCount)).toBe(7);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
@@ -1027,6 +1034,34 @@ describe("EnvironmentSupervisor", () => {
       expect(yield* Ref.get(harness.sessionCount)).toBe(2);
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
     }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("parks in blocked when the foreground probe fails with a blocked error", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        probe: (attempt) => (attempt === 1 ? Effect.fail(blocked()) : Effect.void),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("application-active");
+      // A blocked probe failure (auth revoked, permissions) must not churn
+      // immediate reconnects; the supervisor parks until an external signal.
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "blocked" && state.lastFailure?.reason === "authentication",
+      );
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+
+      yield* harness.wake("application-active");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+    }),
   );
 
   it.effect("quickly times out a stalled mobile foreground liveness probe", () =>
