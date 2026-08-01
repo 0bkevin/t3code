@@ -30,9 +30,9 @@ jobs:
           osascript <<'APPLESCRIPT' > /tmp/icon-gui/actions.log 2>&1 || true
           tell application "System Events"
             tell process "Icon Composer"
-              click at {752, 499}
+              key code 36
               delay 5
-              click at {503, 692}
+              key code 36
               delay 8
               click menu item "Export…" of menu 1 of menu bar item "File" of menu bar 1
               delay 5
