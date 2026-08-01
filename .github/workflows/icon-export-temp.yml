@@ -26,11 +26,21 @@ jobs:
             strings "$file" 2>/dev/null | grep -iE 'pre.?tahoe|export.*png|export image|appearance|platform' | sed "s|^|$file: |" || true
           done < /tmp/icon-gui/files.txt > /tmp/icon-gui/strings.txt
           open -a "$app" "$PWD/assets/prod/app-icon.icon" || true
-          sleep 15
-          osascript -e 'tell application "System Events" to get name of every process whose background only is false' > /tmp/icon-gui/processes.txt 2>&1 || true
-          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get name of every menu item of menu 1 of menu bar item "File" of menu bar 1' > /tmp/icon-gui/file-menu.txt 2>&1 || true
-          screencapture -x /tmp/icon-gui/screen.png > /tmp/icon-gui/screencapture.log 2>&1 || true
-          cat /tmp/icon-gui/processes.txt /tmp/icon-gui/file-menu.txt /tmp/icon-gui/screencapture.log
+          sleep 8
+          osascript <<'APPLESCRIPT' > /tmp/icon-gui/actions.log 2>&1 || true
+          tell application "System Events"
+            tell process "Icon Composer"
+              click button "Agree" of window 1
+              delay 10
+              click menu item "Export…" of menu 1 of menu bar item "File" of menu bar 1
+              delay 5
+            end tell
+          end tell
+          APPLESCRIPT
+          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get entire contents of window 1' > /tmp/icon-gui/window.txt 2>&1 || true
+          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get name of every window' > /tmp/icon-gui/windows.txt 2>&1 || true
+          screencapture -x /tmp/icon-gui/export-dialog.png > /tmp/icon-gui/screencapture.log 2>&1 || true
+          cat /tmp/icon-gui/actions.log /tmp/icon-gui/windows.txt /tmp/icon-gui/window.txt /tmp/icon-gui/screencapture.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
