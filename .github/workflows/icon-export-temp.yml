@@ -11,43 +11,28 @@ permissions:
 jobs:
   export:
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: |
-            args:
-              - --filter=@t3tools/scripts...
-      - name: inspect icon composer
+      - name: probe icon composer gui
         shell: bash
         run: |
           set -x
-          mkdir -p /tmp/icon-export
-          tool="$(find /Applications -path '*Icon Composer.app/Contents/Executables/ictool' -type f | head -n 1)"
-          echo "$tool" | tee /tmp/icon-export/tool.txt
-          "$tool" --version | tee /tmp/icon-export/version.txt
-          "$tool" --help 2>&1 | tee /tmp/icon-export/help.txt || true
-          strings "$tool" | grep -iE 'pre.?tahoe|macOS|appearance|platform|rendition|export' | sort -u > /tmp/icon-export/strings.txt || true
-      - name: export generated icons
-        run: vp run icons:export
-      - name: probe macOS CLI renditions
-        shell: bash
-        run: |
-          set -x
-          tool="$(cat /tmp/icon-export/tool.txt)"
-          for rendition in Default Light Dark Tinted ClearLight ClearDark; do
-            "$tool" assets/prod/app-icon.icon --export-image --output-file "/tmp/icon-export/prod-macos-$rendition.png" --platform macOS --rendition "$rendition" --width 1024 --height 1024 --scale 1 --design-generation 26 > "/tmp/icon-export/prod-macos-$rendition.log" 2>&1 || true
-          done
-          find /tmp/icon-export -maxdepth 1 -type f -print -exec file {} \;
+          mkdir -p /tmp/icon-gui
+          app="$(find /Applications -path '*Icon Composer.app' -type d | head -n 1)"
+          echo "$app" > /tmp/icon-gui/app.txt
+          find "$app/Contents" -type f -maxdepth 4 -print > /tmp/icon-gui/files.txt
+          while IFS= read -r file; do
+            strings "$file" 2>/dev/null | grep -iE 'pre.?tahoe|export.*png|export image|appearance|platform' | sed "s|^|$file: |" || true
+          done < /tmp/icon-gui/files.txt > /tmp/icon-gui/strings.txt
+          open -a "$app" "$PWD/assets/prod/app-icon.icon" || true
+          sleep 15
+          osascript -e 'tell application "System Events" to get name of every process whose background only is false' > /tmp/icon-gui/processes.txt 2>&1 || true
+          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get name of every menu item of menu 1 of menu bar item "File" of menu bar 1' > /tmp/icon-gui/file-menu.txt 2>&1 || true
+          screencapture -x /tmp/icon-gui/screen.png > /tmp/icon-gui/screencapture.log 2>&1 || true
+          cat /tmp/icon-gui/processes.txt /tmp/icon-gui/file-menu.txt /tmp/icon-gui/screencapture.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: exported-icons-v2
-          path: |
-            assets/
-            apps/web/public/favicon*
-            apps/web/public/apple-touch-icon.png
-            /tmp/icon-export/
+          name: icon-gui-probe
+          path: /tmp/icon-gui/
