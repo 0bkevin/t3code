@@ -91,7 +91,7 @@ describe("deriveOrchestrationV2SubagentPanelState", () => {
     });
     const researcher = agent("researcher", {
       kind: "workflow_agent",
-      usage: { totalTokens: 400 },
+      usage: { totalTokens: 600 },
       workflowMembership: {
         workflowSubagentId: workflowId,
         agentIndex: 1,
