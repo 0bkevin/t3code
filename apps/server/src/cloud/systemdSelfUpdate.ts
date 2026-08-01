@@ -48,15 +48,48 @@ export const SystemdSelfUpdateReceipt = Schema.Struct({
 });
 export type SystemdSelfUpdateReceipt = typeof SystemdSelfUpdateReceipt.Type;
 
+export const SystemdSelfUpdateOperation = Schema.Literals([
+  "read-plan",
+  "write-unit",
+  "daemon-reload",
+  "restart",
+  "reset-failed",
+  "await-readiness",
+  "recover",
+]);
+export type SystemdSelfUpdateOperation = typeof SystemdSelfUpdateOperation.Type;
+
 export class SystemdSelfUpdateActivationError extends Schema.TaggedErrorClass<SystemdSelfUpdateActivationError>()(
   "SystemdSelfUpdateActivationError",
   {
-    reason: Schema.String,
+    operation: SystemdSelfUpdateOperation,
+    path: Schema.optional(Schema.String),
+    expectedVersion: Schema.optional(Schema.String),
+    actualVersion: Schema.optional(Schema.String),
+    exitCode: Schema.optional(Schema.Number),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return this.reason;
+    const exitCode = this.exitCode === undefined ? "" : ` (exit code ${String(this.exitCode)})`;
+    switch (this.operation) {
+      case "read-plan":
+        return `Could not read the staged update plan${this.path === undefined ? "" : ` at ${this.path}`}.`;
+      case "write-unit":
+        return "Could not write the systemd boot service unit.";
+      case "daemon-reload":
+        return `Could not reload systemd units${exitCode}.`;
+      case "restart":
+        return `Could not restart the systemd boot service${exitCode}.`;
+      case "reset-failed":
+        return `Could not reset the failed systemd boot service${exitCode}.`;
+      case "await-readiness":
+        return this.actualVersion === undefined
+          ? `The restarted server did not become ready${this.expectedVersion === undefined ? "" : ` as t3@${this.expectedVersion}`}.`
+          : `The restarted server reported t3@${this.actualVersion}, expected t3@${this.expectedVersion ?? "unknown"}.`;
+      case "recover":
+        return "The update failed and the previous server could not be restored.";
+    }
   }
 }
 
@@ -113,21 +146,22 @@ const writeReceipt = Effect.fn("systemdSelfUpdate.writeReceipt")(function* (
 
 const runSystemctl = Effect.fn("systemdSelfUpdate.runSystemctl")(function* (
   args: ReadonlyArray<string>,
-  failureDescription: string,
+  operation: Extract<SystemdSelfUpdateOperation, "daemon-reload" | "restart" | "reset-failed">,
 ) {
   const runner = yield* ProcessRunner.ProcessRunner;
   const result = yield* runner.run({ command: "systemctl", args }).pipe(
     Effect.mapError(
       (cause) =>
         new SystemdSelfUpdateActivationError({
-          reason: failureDescription,
+          operation,
           cause,
         }),
     ),
   );
   if (result.code !== 0) {
     return yield* new SystemdSelfUpdateActivationError({
-      reason: `${failureDescription} (exit code ${String(result.code)}).`,
+      operation,
+      exitCode: Number(result.code),
     });
   }
 });
@@ -142,18 +176,16 @@ const installUnit = Effect.fn("systemdSelfUpdate.installUnit")(function* (
     Effect.mapError(
       (cause) =>
         new SystemdSelfUpdateActivationError({
-          reason: "Could not write the systemd boot service unit.",
+          operation: "write-unit",
+          path: plan.unitPath,
           cause,
         }),
     ),
   );
-  yield* runSystemctl(["--user", "daemon-reload"], "Could not reload systemd units");
+  yield* runSystemctl(["--user", "daemon-reload"], "daemon-reload");
 });
 
-const restartBootService = runSystemctl(
-  ["--user", "restart", BOOT_SERVICE_UNIT_FILE],
-  "Could not restart the systemd boot service",
-);
+const restartBootService = runSystemctl(["--user", "restart", BOOT_SERVICE_UNIT_FILE], "restart");
 
 export interface SystemdSelfUpdateReadinessInput {
   readonly expectedVersion: string;
@@ -181,14 +213,16 @@ export const waitForSystemdSelfUpdateReadiness = Effect.fn("systemdSelfUpdate.wa
         Effect.mapError(
           (cause) =>
             new SystemdSelfUpdateActivationError({
-              reason: "Could not read the restarted server's runtime state.",
+              operation: "await-readiness",
+              expectedVersion: input.expectedVersion,
               cause,
             }),
         ),
       );
       if (Option.isNone(state) || state.value.pid === input.previousPid) {
         return yield* new SystemdSelfUpdateActivationError({
-          reason: "The restarted server has not published fresh runtime state yet.",
+          operation: "await-readiness",
+          expectedVersion: input.expectedVersion,
         });
       }
 
@@ -202,14 +236,17 @@ export const waitForSystemdSelfUpdateReadiness = Effect.fn("systemdSelfUpdate.wa
         Effect.mapError(
           (cause) =>
             new SystemdSelfUpdateActivationError({
-              reason: "The restarted server is not ready yet.",
+              operation: "await-readiness",
+              expectedVersion: input.expectedVersion,
               cause,
             }),
         ),
       );
       if (descriptor.serverVersion !== input.expectedVersion) {
         return yield* new SystemdSelfUpdateActivationError({
-          reason: `The restarted server reported t3@${descriptor.serverVersion}, expected t3@${input.expectedVersion}.`,
+          operation: "await-readiness",
+          expectedVersion: input.expectedVersion,
+          actualVersion: descriptor.serverVersion,
         });
       }
     });
@@ -220,7 +257,8 @@ export const waitForSystemdSelfUpdateReadiness = Effect.fn("systemdSelfUpdate.wa
     );
     if (Option.isNone(ready)) {
       return yield* new SystemdSelfUpdateActivationError({
-        reason: `The restarted server did not become ready as t3@${input.expectedVersion}.`,
+        operation: "await-readiness",
+        expectedVersion: input.expectedVersion,
       });
     }
   },
@@ -254,32 +292,30 @@ export const activateSystemdSelfUpdatePlan = Effect.fn("systemdSelfUpdate.activa
         yield* Effect.logError("Systemd self-update failed; restoring the previous version.").pipe(
           Effect.annotateLogs({
             targetVersion: plan.targetVersion,
-            error: activationError.reason,
+            operation: activationError.operation,
+            error: activationError.message,
           }),
         );
         const recovery = Effect.gen(function* () {
           yield* installUnit(plan, plan.previousUnit);
-          yield* runSystemctl(
-            ["--user", "reset-failed", BOOT_SERVICE_UNIT_FILE],
-            "Could not reset the failed systemd boot service",
-          );
+          yield* runSystemctl(["--user", "reset-failed", BOOT_SERVICE_UNIT_FILE], "reset-failed");
           yield* restartBootService;
           yield* waitForReadiness({
             expectedVersion: plan.fromVersion,
             previousPid: plan.currentPid,
             runtimeStatePath: plan.runtimeStatePath,
           });
-          yield* writeReceipt(plan, "rolled-back", activationError.reason).pipe(Effect.ignore);
+          yield* writeReceipt(plan, "rolled-back", activationError.message).pipe(Effect.ignore);
         });
 
         yield* recovery.pipe(
           Effect.catch((recoveryError) =>
-            writeReceipt(plan, "recovery-failed", recoveryError.reason).pipe(
+            writeReceipt(plan, "recovery-failed", recoveryError.message).pipe(
               Effect.ignore,
               Effect.andThen(
                 Effect.fail(
                   new SystemdSelfUpdateActivationError({
-                    reason: "The update failed and the previous server could not be restored.",
+                    operation: "recover",
                     cause: { activationError, recoveryError },
                   }),
                 ),
@@ -301,7 +337,8 @@ export const applySystemdSelfUpdatePlan = Effect.fn("systemdSelfUpdate.applyPlan
     Effect.mapError(
       (cause) =>
         new SystemdSelfUpdateActivationError({
-          reason: `Could not read the staged update plan at ${planPath}.`,
+          operation: "read-plan",
+          path: planPath,
           cause,
         }),
     ),

@@ -116,7 +116,8 @@ it.layer(NodeServices.layer)("systemd self-update activation", (it) => {
               input.expectedVersion === fixture.plan.targetVersion
                 ? Effect.fail(
                     new SystemdSelfUpdateActivationError({
-                      reason: "target did not become ready",
+                      operation: "await-readiness",
+                      expectedVersion: input.expectedVersion,
                     }),
                   )
                 : Effect.void,
@@ -139,7 +140,7 @@ it.layer(NodeServices.layer)("systemd self-update activation", (it) => {
       );
       const receipt = yield* readReceipt(fixture.receiptPath);
       assert.equal(receipt.phase, "rolled-back");
-      assert.equal(receipt.detail, "target did not become ready");
+      assert.equal(receipt.detail, "The restarted server did not become ready as t3@0.0.29.");
     }),
   );
 
@@ -152,13 +153,14 @@ it.layer(NodeServices.layer)("systemd self-update activation", (it) => {
         (input) =>
           Effect.fail(
             new SystemdSelfUpdateActivationError({
-              reason: `${input.expectedVersion} did not become ready`,
+              operation: "await-readiness",
+              expectedVersion: input.expectedVersion,
             }),
           ),
         { restartDelay: Duration.zero },
       ).pipe(Effect.provide(makeRunnerLayer(commands)), Effect.flip);
 
-      assert.include(error.reason, "previous server could not be restored");
+      assert.include(error.message, "previous server could not be restored");
       assert.equal((yield* readReceipt(fixture.receiptPath)).phase, "recovery-failed");
     }),
   );
