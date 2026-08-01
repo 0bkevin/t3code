@@ -97,10 +97,6 @@ export function deriveOrchestrationV2SubagentPanelState(input: {
   if (direct.length > 0) groups.push({ workflow: null, phases: [], agents: direct });
 
   const workers = input.subagents.filter((agent) => agent.kind !== "workflow");
-  // A coordinator's usage already includes its members', so counting both
-  // double-reports the thread. Only drop it when the members actually account
-  // for it: a provider that reports workflow usage but omits per-agent tokens
-  // would otherwise erase the whole workflow from the total.
   const memberTotalsByWorkflow = new Map<string, number>();
   for (const agent of workers) {
     const workflowId = agent.workflowMembership?.workflowSubagentId;
@@ -110,15 +106,15 @@ export function deriveOrchestrationV2SubagentPanelState(input: {
       (memberTotalsByWorkflow.get(workflowId) ?? 0) + (agent.usage?.totalTokens ?? 0),
     );
   }
+  const workflowIdsWithReportedUsage = new Set(
+    workflows.flatMap((workflow) => (workflow.usage === null ? [] : [workflow.id])),
+  );
   const reportedUsage = input.subagents.flatMap((agent) => {
     if (agent.usage === null) return [];
-    if (agent.kind !== "workflow") return [agent.usage.totalTokens];
-    const memberTotal = memberTotalsByWorkflow.get(agent.id);
-    if (memberTotal === undefined) return [agent.usage.totalTokens];
-    // Keep whatever the members did not account for. Dropping the coordinator
-    // outright erases the whole workflow whenever a provider reports its usage
-    // but omits per-agent tokens.
-    return memberTotal >= agent.usage.totalTokens ? [] : [agent.usage.totalTokens - memberTotal];
+    const workflowId = agent.workflowMembership?.workflowSubagentId;
+    return workflowId !== undefined && workflowIdsWithReportedUsage.has(workflowId)
+      ? []
+      : [agent.usage.totalTokens];
   });
   // Count the workers, plus any coordinator that has no members yet. A
   // coordinator with members is represented by them and would double-count;
