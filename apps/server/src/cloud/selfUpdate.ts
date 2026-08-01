@@ -19,6 +19,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -230,6 +231,44 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
       Effect.forkDetach({ startImmediately: true }),
     );
 
+  /**
+   * A successful systemd-run handoff normally ends by replacing this process,
+   * so its in-memory lock disappears with it. If the transient helper exits
+   * before that happens, release the lock so the still-healthy old server can
+   * accept a retry. The fixed transient unit remains the cross-process lock.
+   */
+  const releaseLockIfSystemdHelperStops = Effect.gen(function* () {
+    let consecutiveProbeFailures = 0;
+    for (;;) {
+      yield* Effect.sleep(Duration.seconds(1));
+      const probe = yield* runner
+        .run({
+          command: "systemctl",
+          args: ["--user", "is-active", "--quiet", SYSTEMD_SELF_UPDATE_UNIT],
+          timeout: Duration.seconds(5),
+        })
+        .pipe(Effect.exit);
+      if (Exit.isFailure(probe)) {
+        consecutiveProbeFailures += 1;
+        if (consecutiveProbeFailures < 3) {
+          continue;
+        }
+      } else {
+        consecutiveProbeFailures = 0;
+        if (probe.value.code === 0) {
+          continue;
+        }
+      }
+
+      yield* Effect.logWarning(
+        "Systemd self-update helper stopped before replacing this server; updates are retryable.",
+        { targetUnit: SYSTEMD_SELF_UPDATE_UNIT },
+      );
+      yield* Ref.set(inFlight, false);
+      return;
+    }
+  });
+
   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
     "cloud.server_self_update.update",
   )(function* (input, reportProgress = () => Effect.void) {
@@ -394,6 +433,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
             `Systemd rejected the update handoff (exit code ${String(handoff.code)}).`,
           );
         }
+        yield* releaseLockIfSystemdHelperStops.pipe(Effect.forkDetach({ startImmediately: true }));
         yield* Effect.logInfo("Server self-update staged; systemd will activate it.", {
           targetVersion,
           planPath,

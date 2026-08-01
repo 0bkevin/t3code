@@ -590,6 +590,32 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
     }),
   );
 
+  it.effect("permits a retry when the transient helper stops before replacing this process", () =>
+    Effect.gen(function* () {
+      let helperActive = true;
+      const context = yield* makeContext({
+        bootService: true,
+        failWhen: (command, args) =>
+          command === "systemctl" && args.includes("is-active") && !helperActive,
+      });
+
+      const first = yield* context.service.update({ targetVersion: "0.0.29" });
+      assert.deepEqual(first, { targetVersion: "0.0.29", method: "boot-service" });
+
+      helperActive = false;
+      yield* TestClock.adjust(Duration.seconds(2));
+      yield* Effect.yieldNow;
+
+      const retry = yield* context.service.update({ targetVersion: "0.0.30" });
+      assert.deepEqual(retry, { targetVersion: "0.0.30", method: "boot-service" });
+      assert.isTrue(
+        context.commands.some(
+          ({ command, args }) => command === "systemctl" && args.includes("is-active"),
+        ),
+      );
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("rejects a target that cannot validate the current database", () =>
     Effect.gen(function* () {
       const context = yield* makeContext({
