@@ -1,4 +1,3 @@
-import { autoAnimate } from "@formkit/auto-animate";
 import { useAtomValue } from "@effect/atom-react";
 import {
   closestCenter,
@@ -2715,11 +2714,6 @@ export default function SidebarV2() {
     setShowJumpHints(shouldShowJumpHintsNow);
   }, [shouldShowJumpHintsNow]);
 
-  const attachListAutoAnimateRef = useCallback((node: HTMLUListElement | null) => {
-    if (!node) return;
-    autoAnimate(node, { duration: 150, easing: "ease-out" });
-  }, []);
-
   // New thread defaults to the project you're in (active thread's project,
   // falling back to the top project) — same resolution the command palette
   // uses. The command palette already offers a "New thread in..." submenu
@@ -3054,7 +3048,7 @@ export default function SidebarV2() {
                 modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
                 onDragEnd={handleThreadDragEnd}
               >
-                <ul ref={attachListAutoAnimateRef} role="list" className="flex flex-col gap-px">
+                <ul role="list" className="flex flex-col gap-px">
                   <SortableContext
                     items={threadKeysBySection.active}
                     strategy={verticalListSortingStrategy}
