@@ -14,10 +14,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - name: probe icon composer gui
+      - name: export mac icons with icon composer
         shell: bash
         run: |
-          set -x
+          set -euo pipefail
           mkdir -p /tmp/icon-gui
           cat >/tmp/click.m <<'EOF'
           #import <ApplicationServices/ApplicationServices.h>
@@ -33,9 +33,10 @@ jobs:
           EOF
           clang -framework ApplicationServices /tmp/click.m -o /tmp/click
           app="$(find /Applications -path '*Icon Composer.app' -type d | head -n 1)"
+
           open -a "$app" "$PWD/assets/prod/app-icon.icon"
           sleep 8
-          osascript <<'APPLESCRIPT' || true
+          osascript <<'APPLESCRIPT'
           tell application "System Events"
             tell process "Icon Composer"
               set frontmost to true
@@ -46,39 +47,53 @@ jobs:
           sleep 5
           /tmp/click 503 692
           sleep 8
-          osascript <<'APPLESCRIPT' > /tmp/icon-gui/actions.log 2>&1 || true
-          tell application "System Events"
-            tell process "Icon Composer"
-              set frontmost to true
-              click menu item "Export…" of menu 1 of menu bar item "File" of menu bar 1
-              delay 5
-              set exportSheet to sheet 1 of window 1
-              set platformPopup to pop up button "Platform" of group 1 of scroll area 1 of group 1 of exportSheet
-              click platformPopup
-              delay 1
-              key code 125
-              key code 125
-              key code 36
-              delay 2
-              click button 2 of group 1 of exportSheet
-              delay 3
-              set saveSheet to sheet 1 of exportSheet
-              set value of text field "Export As:" of splitter group 1 of saveSheet to "black-macos-1024"
-              keystroke "g" using {command down, shift down}
-              delay 2
-              keystroke "/tmp/icon-gui"
-              key code 36
-              delay 3
-              click button "Export" of splitter group 1 of saveSheet
-              delay 8
+
+          export_current() {
+            osascript - "$1" <<'APPLESCRIPT'
+          on run argv
+            set outputName to item 1 of argv
+            tell application "System Events"
+              tell process "Icon Composer"
+                set frontmost to true
+                click menu item "Export…" of menu 1 of menu bar item "File" of menu bar 1
+                delay 4
+                set exportSheet to sheet 1 of window 1
+                set platformPopup to pop up button "Platform" of group 1 of scroll area 1 of group 1 of exportSheet
+                click platformPopup
+                delay 1
+                key code 125
+                key code 125
+                key code 36
+                delay 2
+                click button 2 of group 1 of exportSheet
+                delay 3
+                set saveSheet to sheet 1 of exportSheet
+                set value of text field "Export As:" of splitter group 1 of saveSheet to outputName
+                keystroke "g" using {command down, shift down}
+                delay 2
+                keystroke "/tmp/icon-gui"
+                key code 36
+                delay 3
+                click button "Export" of splitter group 1 of saveSheet
+                delay 8
+              end tell
             end tell
-          end tell
+          end run
           APPLESCRIPT
-          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get entire contents' > /tmp/icon-gui/all.txt 2>&1 || true
-          screencapture -x /tmp/icon-gui/screen.png || true
-          cat /tmp/icon-gui/actions.log /tmp/icon-gui/all.txt
+          }
+
+          export_current black-macos-1024
+          osascript -e 'tell application "System Events" to tell process "Icon Composer" to keystroke "w" using command down'
+          open -a "$app" "$PWD/assets/dev/app-icon.icon"
+          sleep 8
+          export_current blueprint-macos-1024
+          osascript -e 'tell application "System Events" to tell process "Icon Composer" to keystroke "w" using command down'
+          open -a "$app" "$PWD/assets/nightly/app-icon.icon"
+          sleep 8
+          export_current nightly-macos-1024
+
+          file /tmp/icon-gui/*.png
       - uses: actions/upload-artifact@v7
-        if: always()
         with:
-          name: icon-gui-probe
-          path: /tmp/icon-gui/
+          name: mac-icon-exports
+          path: /tmp/icon-gui/*.png
