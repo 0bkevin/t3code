@@ -30,7 +30,7 @@ jobs:
           osascript <<'APPLESCRIPT' > /tmp/icon-gui/actions.log 2>&1 || true
           tell application "System Events"
             tell process "Icon Composer"
-              click button "Agree" of window 1
+              click button 3 of group 1 of window 1
               delay 10
               click menu item "Export…" of menu 1 of menu bar item "File" of menu bar 1
               delay 5
