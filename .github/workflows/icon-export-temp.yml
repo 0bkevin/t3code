@@ -19,39 +19,49 @@ jobs:
         run: |
           set -x
           mkdir -p /tmp/icon-gui
+          cat >/tmp/click.m <<'EOF'
+          #import <ApplicationServices/ApplicationServices.h>
+          int main(int argc, char **argv) {
+            CGPoint p = CGPointMake(atoi(argv[1]), atoi(argv[2]));
+            CGEventRef e = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, p, kCGMouseButtonLeft); CGEventPost(kCGHIDEventTap, e); CFRelease(e);
+            usleep(200000);
+            e = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, p, kCGMouseButtonLeft); CGEventPost(kCGHIDEventTap, e); CFRelease(e);
+            usleep(100000);
+            e = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, p, kCGMouseButtonLeft); CGEventPost(kCGHIDEventTap, e); CFRelease(e);
+            return 0;
+          }
+          EOF
+          clang -framework ApplicationServices /tmp/click.m -o /tmp/click
           app="$(find /Applications -path '*Icon Composer.app' -type d | head -n 1)"
-          echo "$app" > /tmp/icon-gui/app.txt
-          find "$app/Contents" -type f -maxdepth 4 -print > /tmp/icon-gui/files.txt
-          while IFS= read -r file; do
-            strings "$file" 2>/dev/null | grep -iE 'pre.?tahoe|export.*png|export image|appearance|platform' | sed "s|^|$file: |" || true
-          done < /tmp/icon-gui/files.txt > /tmp/icon-gui/strings.txt
-          open -a "$app" "$PWD/assets/prod/app-icon.icon" || true
+          open -a "$app" "$PWD/assets/prod/app-icon.icon"
+          sleep 8
+          osascript <<'APPLESCRIPT' || true
+          tell application "System Events"
+            tell process "Icon Composer"
+              set frontmost to true
+              click button 3 of group 1 of window 1
+            end tell
+          end tell
+          APPLESCRIPT
+          sleep 5
+          /tmp/click 503 692
           sleep 8
           osascript <<'APPLESCRIPT' > /tmp/icon-gui/actions.log 2>&1 || true
           tell application "System Events"
             tell process "Icon Composer"
               set frontmost to true
-              delay 2
-              click button 3 of group 1 of window 1
-              delay 5
-              set continueButton to button 1 of scroll area 1 of group 1 of window 1
-              get {position of continueButton, size of continueButton, enabled of continueButton, actions of continueButton}
-              perform action "AXPress" of continueButton
-              delay 8
               click menu item "Export…" of menu 1 of menu bar item "File" of menu bar 1
               delay 5
               set exportSheet to sheet 1 of window 1
               set platformPopup to pop up button "Platform" of group 1 of scroll area 1 of group 1 of exportSheet
               click platformPopup
-              delay 2
-              get name of every menu item of menu 1 of platformPopup
+              delay 3
             end tell
           end tell
           APPLESCRIPT
-          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get entire contents of window 1' > /tmp/icon-gui/window.txt 2>&1 || true
-          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get name of every window' > /tmp/icon-gui/windows.txt 2>&1 || true
-          screencapture -x /tmp/icon-gui/export-dialog.png > /tmp/icon-gui/screencapture.log 2>&1 || true
-          cat /tmp/icon-gui/actions.log /tmp/icon-gui/windows.txt /tmp/icon-gui/window.txt /tmp/icon-gui/screencapture.log
+          osascript -e 'tell application "System Events" to tell process "Icon Composer" to get entire contents' > /tmp/icon-gui/all.txt 2>&1 || true
+          screencapture -x /tmp/icon-gui/screen.png || true
+          cat /tmp/icon-gui/actions.log /tmp/icon-gui/all.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
