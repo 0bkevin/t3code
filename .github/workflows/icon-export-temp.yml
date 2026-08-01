@@ -61,7 +61,16 @@ jobs:
               key code 36
               delay 2
               click button 2 of group 1 of exportSheet
-              delay 5
+              delay 3
+              set saveSheet to sheet 1 of exportSheet
+              set value of text field "Export As:" of splitter group 1 of saveSheet to "black-macos-1024"
+              keystroke "g" using {command down, shift down}
+              delay 2
+              keystroke "/tmp/icon-gui"
+              key code 36
+              delay 3
+              click button "Export" of splitter group 1 of saveSheet
+              delay 8
             end tell
           end tell
           APPLESCRIPT
