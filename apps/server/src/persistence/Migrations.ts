@@ -127,33 +127,53 @@ export class MigrationIdentityMismatchError extends Schema.TaggedErrorClass<Migr
   }
 }
 
+export class AutomaticUpdateMigrationFrontierError extends Schema.TaggedErrorClass<AutomaticUpdateMigrationFrontierError>()(
+  "AutomaticUpdateMigrationFrontierError",
+  {
+    databaseMigrationId: Schema.Int,
+    targetMigrationId: Schema.Int,
+  },
+) {
+  override get message(): string {
+    return this.databaseMigrationId > this.targetMigrationId
+      ? `This database is newer than the requested t3 build (migration ${String(this.databaseMigrationId)} vs ${String(this.targetMigrationId)}).`
+      : `The requested t3 build would migrate this database (migration ${String(this.databaseMigrationId)} to ${String(this.targetMigrationId)}), which is not safe during an automatic update.`;
+  }
+}
+
+const readPersistedMigrationIdentities = Effect.fn("readPersistedMigrationIdentities")(
+  function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = yield* sql<{ readonly name: string }>`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'effect_sql_migrations'
+    `;
+    if (tables.length === 0) {
+      return [];
+    }
+
+    return yield* sql<{
+      readonly migration_id: number;
+      readonly name: string;
+    }>`
+      SELECT migration_id, name
+      FROM effect_sql_migrations
+      ORDER BY migration_id
+    `;
+  },
+);
+
 /**
  * Refuse to run a build whose migration history disagrees with the database.
  * Unknown newer IDs are intentionally allowed so a compatible older build can
  * inspect a database created by a newer release without rewriting its history.
  */
 export const validateMigrationIdentities = Effect.fn("validateMigrationIdentities")(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const tables = yield* sql<{ readonly name: string }>`
-    SELECT name
-    FROM sqlite_master
-    WHERE type = 'table' AND name = 'effect_sql_migrations'
-  `;
-  if (tables.length === 0) {
-    return;
-  }
-
   const expectedNames = new Map<number, string>(
     migrationEntries.map(([migrationId, name]) => [migrationId, name]),
   );
-  const persisted = yield* sql<{
-    readonly migration_id: number;
-    readonly name: string;
-  }>`
-    SELECT migration_id, name
-    FROM effect_sql_migrations
-    ORDER BY migration_id
-  `;
+  const persisted = yield* readPersistedMigrationIdentities();
 
   for (const migration of persisted) {
     const expectedName = expectedNames.get(migration.migration_id);
@@ -164,6 +184,26 @@ export const validateMigrationIdentities = Effect.fn("validateMigrationIdentitie
         actualName: migration.name,
       });
     }
+  }
+});
+
+/**
+ * Automatic activation is safe only when the target and database are already
+ * on the same schema. A binary rollback cannot undo a migration, and an older
+ * target cannot safely interpret migration IDs that it does not know about.
+ */
+export const validateAutomaticUpdateMigrationFrontier = Effect.fn(
+  "validateAutomaticUpdateMigrationFrontier",
+)(function* () {
+  yield* validateMigrationIdentities();
+  const persisted = yield* readPersistedMigrationIdentities();
+  const databaseMigrationId = persisted.at(-1)?.migration_id ?? 0;
+  const targetMigrationId = migrationEntries.at(-1)?.[0] ?? 0;
+  if (databaseMigrationId !== targetMigrationId) {
+    return yield* new AutomaticUpdateMigrationFrontierError({
+      databaseMigrationId,
+      targetMigrationId,
+    });
   }
 });
 

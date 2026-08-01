@@ -535,6 +535,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(SystemdSelfUpdatePlan))),
         );
       assert.equal(plan.previousUnit, previousUnit);
+      assert.equal(plan.serviceUnit, BOOT_SERVICE_UNIT_FILE);
       assert.include(plan.nextUnit, `ExecStart=${NODE_PATH} ${pinnedEntry} serve`);
       assert.equal(
         plan.runtimeStatePath,

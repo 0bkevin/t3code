@@ -6,14 +6,17 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { PersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import {
   SystemdSelfUpdateActivationError,
   SystemdSelfUpdatePlan,
   SystemdSelfUpdateReceipt,
   activateSystemdSelfUpdatePlan,
+  waitForSystemdSelfUpdateReadiness,
 } from "./systemdSelfUpdate.ts";
 
 interface RecordedCommand {
@@ -59,6 +62,7 @@ it.layer(NodeServices.layer)("systemd self-update activation", (it) => {
         fromVersion: "0.0.28",
         targetVersion: "0.0.29",
         currentPid: 123,
+        serviceUnit: "t3code-self-update-test.service",
         unitPath,
         previousUnit,
         nextUnit: "new unit\n",
@@ -95,7 +99,7 @@ it.layer(NodeServices.layer)("systemd self-update activation", (it) => {
         commands.map(({ args }) => args),
         [
           ["--user", "daemon-reload"],
-          ["--user", "restart", "t3code.service"],
+          ["--user", "restart", "t3code-self-update-test.service"],
         ],
       );
       assert.equal((yield* readReceipt(fixture.receiptPath)).phase, "healthy");
@@ -132,10 +136,10 @@ it.layer(NodeServices.layer)("systemd self-update activation", (it) => {
         commands.map(({ args }) => args),
         [
           ["--user", "daemon-reload"],
-          ["--user", "restart", "t3code.service"],
+          ["--user", "restart", "t3code-self-update-test.service"],
           ["--user", "daemon-reload"],
-          ["--user", "reset-failed", "t3code.service"],
-          ["--user", "restart", "t3code.service"],
+          ["--user", "reset-failed", "t3code-self-update-test.service"],
+          ["--user", "restart", "t3code-self-update-test.service"],
         ],
       );
       const receipt = yield* readReceipt(fixture.receiptPath);
@@ -162,6 +166,54 @@ it.layer(NodeServices.layer)("systemd self-update activation", (it) => {
 
       assert.include(error.message, "previous server could not be restored");
       assert.equal((yield* readReceipt(fixture.receiptPath)).phase, "recovery-failed");
+    }),
+  );
+
+  it.effect("probes the runtime-readiness endpoint on the replacement process", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-systemd-ready-test-" });
+      const runtimeStatePath = path.join(directory, "server-runtime.json");
+      const encodeRuntimeState = Schema.encodeEffect(
+        Schema.fromJsonString(PersistedServerRuntimeState),
+      );
+      const encodedRuntimeState = yield* encodeRuntimeState({
+        version: 1,
+        pid: 456,
+        port: 3210,
+        origin: "http://127.0.0.1:3210",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* fs.writeFileString(runtimeStatePath, `${encodedRuntimeState}\n`);
+
+      const requests: Array<string> = [];
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                environmentId: "environment-test",
+                label: "Test environment",
+                platform: { os: "linux", arch: "x64" },
+                serverVersion: "0.0.29",
+                capabilities: { repositoryIdentity: true },
+              }),
+            ),
+          );
+        }),
+      );
+
+      yield* waitForSystemdSelfUpdateReadiness({
+        expectedVersion: "0.0.29",
+        previousPid: 123,
+        runtimeStatePath,
+      }).pipe(Effect.provide(httpClientLayer));
+
+      assert.deepEqual(requests, ["http://127.0.0.1:3210/.well-known/t3/ready"]);
     }),
   );
 });

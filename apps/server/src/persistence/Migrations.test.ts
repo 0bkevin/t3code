@@ -3,7 +3,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { MigrationIdentityMismatchError, validateMigrationIdentities } from "./Migrations.ts";
+import {
+  AutomaticUpdateMigrationFrontierError,
+  MigrationIdentityMismatchError,
+  validateAutomaticUpdateMigrationFrontier,
+  validateMigrationIdentities,
+} from "./Migrations.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
@@ -48,6 +53,51 @@ layer("migration identity validation", (it) => {
       `;
 
       yield* validateMigrationIdentities();
+    }),
+  );
+
+  it.effect("rejects automatic downgrade when the database has a newer migration", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* createTrackingTable();
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (999, 'FutureMigration')
+      `;
+
+      const error = yield* validateAutomaticUpdateMigrationFrontier().pipe(Effect.flip);
+      assert.instanceOf(error, AutomaticUpdateMigrationFrontierError);
+      assert.equal(error.databaseMigrationId, 999);
+      assert.equal(error.targetMigrationId, 35);
+    }),
+  );
+
+  it.effect("rejects automatic updates that would run migrations", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* createTrackingTable();
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (34, 'ProjectionThreadsSnoozed')
+      `;
+
+      const error = yield* validateAutomaticUpdateMigrationFrontier().pipe(Effect.flip);
+      assert.instanceOf(error, AutomaticUpdateMigrationFrontierError);
+      assert.equal(error.databaseMigrationId, 34);
+      assert.equal(error.targetMigrationId, 35);
+    }),
+  );
+
+  it.effect("allows automatic updates on the same migration frontier", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* createTrackingTable();
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (35, 'ProjectionThreadTitleRegeneration')
+      `;
+
+      yield* validateAutomaticUpdateMigrationFrontier();
     }),
   );
 });

@@ -12,7 +12,6 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
-import { BOOT_SERVICE_UNIT_FILE } from "./bootService.ts";
 
 export const SYSTEMD_SELF_UPDATE_UNIT = "t3code-self-update.service";
 export const SYSTEMD_SELF_UPDATE_DIRECTORY = "self-update";
@@ -23,7 +22,7 @@ const DEFAULT_RESTART_DELAY = Duration.seconds(2);
 const DEFAULT_READINESS_TIMEOUT = Duration.seconds(60);
 const DEFAULT_READINESS_INTERVAL = Duration.millis(500);
 const READINESS_REQUEST_TIMEOUT = Duration.seconds(2);
-const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
+const WELL_KNOWN_READY_PATH = "/.well-known/t3/ready";
 
 export class SystemdSelfUpdatePlan extends Schema.Class<SystemdSelfUpdatePlan>(
   "SystemdSelfUpdatePlan",
@@ -32,6 +31,7 @@ export class SystemdSelfUpdatePlan extends Schema.Class<SystemdSelfUpdatePlan>(
   fromVersion: Schema.String,
   targetVersion: Schema.String,
   currentPid: Schema.Int,
+  serviceUnit: Schema.String,
   unitPath: Schema.String,
   previousUnit: Schema.String,
   nextUnit: Schema.String,
@@ -185,7 +185,8 @@ const installUnit = Effect.fn("systemdSelfUpdate.installUnit")(function* (
   yield* runSystemctl(["--user", "daemon-reload"], "daemon-reload");
 });
 
-const restartBootService = runSystemctl(["--user", "restart", BOOT_SERVICE_UNIT_FILE], "restart");
+const restartBootService = (serviceUnit: string) =>
+  runSystemctl(["--user", "restart", serviceUnit], "restart");
 
 export interface SystemdSelfUpdateReadinessInput {
   readonly expectedVersion: string;
@@ -227,7 +228,7 @@ export const waitForSystemdSelfUpdateReadiness = Effect.fn("systemdSelfUpdate.wa
       }
 
       const request = HttpClientRequest.get(
-        new URL(WELL_KNOWN_ENVIRONMENT_PATH, state.value.origin).toString(),
+        new URL(WELL_KNOWN_READY_PATH, state.value.origin).toString(),
       );
       const descriptor = yield* client.execute(request).pipe(
         Effect.timeout(READINESS_REQUEST_TIMEOUT),
@@ -277,7 +278,7 @@ export const activateSystemdSelfUpdatePlan = Effect.fn("systemdSelfUpdate.activa
     yield* writeReceipt(plan, "activating").pipe(Effect.ignore);
     yield* Effect.sleep(options.restartDelay ?? DEFAULT_RESTART_DELAY);
     yield* installUnit(plan, plan.nextUnit);
-    yield* restartBootService;
+    yield* restartBootService(plan.serviceUnit);
     yield* waitForReadiness({
       expectedVersion: plan.targetVersion,
       previousPid: plan.currentPid,
@@ -298,8 +299,8 @@ export const activateSystemdSelfUpdatePlan = Effect.fn("systemdSelfUpdate.activa
         );
         const recovery = Effect.gen(function* () {
           yield* installUnit(plan, plan.previousUnit);
-          yield* runSystemctl(["--user", "reset-failed", BOOT_SERVICE_UNIT_FILE], "reset-failed");
-          yield* restartBootService;
+          yield* runSystemctl(["--user", "reset-failed", plan.serviceUnit], "reset-failed");
+          yield* restartBootService(plan.serviceUnit);
           yield* waitForReadiness({
             expectedVersion: plan.fromVersion,
             previousPid: plan.currentPid,

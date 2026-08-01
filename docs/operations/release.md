@@ -190,6 +190,23 @@ connect the new client to a server on the previous version and verify that the u
 reconnects to the matching server. Test one automatic path and the manual or desktop-managed
 guidance when those environments are available.
 
+The automatic boot-service path also requires a real systemd user-manager acceptance run. Use a
+disposable T3 home and uniquely named host and helper units, never the developer's daily
+`t3code.service`. Exercise both outcomes:
+
+1. A same-migration-frontier candidate becomes runtime-ready, the helper survives the host-unit
+   restart, and the receipt reaches `healthy` with a new runtime PID and the exact target version.
+2. A candidate that binds HTTP but never becomes runtime-ready times out, the previous unit is
+   restored, and the receipt reaches `rolled-back` with the old version command-ready again.
+
+Treat the systemd run as a release blocker when the update lifecycle changes. CI jobs without a
+user manager may skip it, but a Linux release host must record the run before publishing.
+
+```bash
+T3_SYSTEMD_SELF_UPDATE_ACCEPTANCE=1 vp test run \
+  apps/server/src/cloud/systemdSelfUpdate.acceptance.test.ts
+```
+
 ## Desktop auto-update notes
 
 - Updater runtime: `apps/desktop/src/updates/DesktopUpdates.ts`.

@@ -394,6 +394,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
           fromVersion: packageJson.version,
           targetVersion,
           currentPid: process.pid,
+          serviceUnit: BOOT_SERVICE_UNIT_FILE,
           unitPath,
           previousUnit,
           nextUnit,

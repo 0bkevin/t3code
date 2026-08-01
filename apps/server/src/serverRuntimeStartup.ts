@@ -59,6 +59,7 @@ export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
   {
     readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
+    readonly awaitReady: Effect.Effect<void, ServerRuntimeStartupError>;
     readonly markHttpListening: Effect.Effect<void>;
     readonly enqueueCommand: <A, E>(
       effect: Effect.Effect<A, E>,
@@ -300,6 +301,7 @@ export const make = Effect.gen(function* () {
 
   const commandGate = yield* makeCommandGate;
   const httpListening = yield* Deferred.make<void>();
+  const runtimeReady = yield* Deferred.make<void, ServerRuntimeStartupError>();
   const reactorScope = yield* Scope.make("sequential");
 
   yield* Effect.addFinalizer(() => Scope.close(reactorScope, Exit.void));
@@ -425,6 +427,7 @@ export const make = Effect.gen(function* () {
         });
         yield* Effect.logError("server runtime startup failed", { cause: startupExit.cause });
         yield* commandGate.failCommandReady(error);
+        yield* Deferred.fail(runtimeReady, error).pipe(Effect.orDie);
         return;
       }
 
@@ -444,6 +447,7 @@ export const make = Effect.gen(function* () {
           },
         }),
       );
+      yield* Deferred.succeed(runtimeReady, undefined).pipe(Effect.orDie);
 
       yield* Effect.logDebug("startup phase: recording startup heartbeat");
       yield* launchStartupHeartbeat;
@@ -470,6 +474,7 @@ export const make = Effect.gen(function* () {
 
   return {
     awaitCommandReady: commandGate.awaitCommandReady,
+    awaitReady: Deferred.await(runtimeReady),
     markHttpListening: Deferred.succeed(httpListening, undefined),
     enqueueCommand: commandGate.enqueueCommand,
   } satisfies ServerRuntimeStartup["Service"];

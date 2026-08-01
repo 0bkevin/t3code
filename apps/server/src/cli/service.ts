@@ -9,7 +9,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import { applySystemdSelfUpdatePlan } from "../cloud/systemdSelfUpdate.ts";
 import type * as ServerConfig from "../config.ts";
-import { validateMigrationIdentities } from "../persistence/Migrations.ts";
+import { validateAutomaticUpdateMigrationFrontier } from "../persistence/Migrations.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
@@ -169,7 +169,7 @@ const serviceValidateUpdateCommand = Command.make("_validate-update", {
       const NodeSqliteClient = yield* Effect.promise(
         () => import("../persistence/NodeSqliteClient.ts"),
       );
-      yield* validateMigrationIdentities().pipe(
+      yield* validateAutomaticUpdateMigrationFrontier().pipe(
         Effect.scoped,
         Effect.provide(NodeSqliteClient.layer({ filename: database, readonly: true })),
       );

@@ -90,9 +90,12 @@ successfully. Boot-service setup and self-update share the same process-wide ins
 they cannot mutate a pinned runtime concurrently.
 
 Before any restart, the current Node executable runs the replacement with `--version`, then asks
-the target artifact to validate its migration identities against the live database in read-only
-mode. A failed install, version preflight, or compatibility check leaves the current server running.
-Targets old enough to lack the compatibility command are not eligible for remote activation.
+the target artifact to validate the live database in read-only mode. Automatic activation requires
+the target and database to be on the exact same migration frontier. This rejects both downgrades and
+updates that would migrate the database because a binary rollback cannot undo a schema change. Use
+the manual host service update path for those releases. A failed install, version preflight, or
+compatibility check leaves the current server running. Targets old enough to lack the compatibility
+command are not eligible for remote activation.
 
 Candidate cleanup is narrower than "any failed preflight". The candidate runtime is removed only when
 the preflight process actually completes and reports a bad exit code or the wrong version: that is
@@ -118,7 +121,9 @@ For `boot-service`, the request process writes a typed plan but leaves its live 
 starts a fixed-name `t3code-self-update.service` transient unit with `systemd-run --user`; the
 transient unit has a separate cgroup and acts as the cross-process update lock. After a short grace
 period it atomically installs the candidate unit, reloads systemd, performs a blocking restart, and
-probes the public environment descriptor for the exact target version. If activation or readiness
+probes the public runtime-readiness endpoint for the exact target version. The endpoint does not
+respond until the server's command runtime is usable and its lifecycle `ready` event has been
+published, so an HTTP listener alone cannot make an activation healthy. If activation or readiness
 fails, the helper restores the previous unit, clears systemd's failed state, restarts it, and proves
 the previous version is ready. The plan and latest receipt live under the environment state
 directory's `self-update` folder for diagnosis.

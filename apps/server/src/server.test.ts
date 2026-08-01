@@ -782,6 +782,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({
           awaitCommandReady: Effect.void,
+          awaitReady: Effect.void,
           markHttpListening: Effect.void,
           enqueueCommand: (effect) => effect,
           ...options?.layers?.serverRuntimeStartup,
@@ -1356,6 +1357,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const response = yield* fetchEffect(url);
       const body = yield* responseJsonEffect<typeof testEnvironmentDescriptor>(response);
 
+      assert.equal(response.status, 200);
+      assert.deepEqual(body, testEnvironmentDescriptor);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("does not report update readiness before the runtime publishes ready", () =>
+    Effect.gen(function* () {
+      const runtimeReady = yield* Deferred.make<void>();
+      yield* buildAppUnderTest({
+        layers: {
+          serverRuntimeStartup: {
+            awaitReady: Deferred.await(runtimeReady),
+          },
+        },
+      });
+
+      const url = yield* getHttpServerUrl("/.well-known/t3/ready");
+      const responseFiber = yield* fetchEffect(url).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      assert.isUndefined(responseFiber.pollUnsafe());
+
+      yield* Deferred.succeed(runtimeReady, undefined);
+      const response = yield* Fiber.join(responseFiber);
+      const body = yield* responseJsonEffect<typeof testEnvironmentDescriptor>(response);
       assert.equal(response.status, 200);
       assert.deepEqual(body, testEnvironmentDescriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),

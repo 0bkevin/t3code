@@ -40,6 +40,7 @@ import {
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
+import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -177,13 +178,23 @@ export const serverEnvironmentHttpApiLayer = HttpApiBuilder.group(
   "metadata",
   Effect.fnUntraced(function* (handlers) {
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-    return handlers.handle(
-      "descriptor",
-      Effect.fn("environment.metadata.descriptor")(function* (args) {
-        yield* annotateEnvironmentRequest(args.endpoint.name);
-        return yield* serverEnvironment.getDescriptor;
-      }, traceRelayRequest),
-    );
+    const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+    return handlers
+      .handle(
+        "descriptor",
+        Effect.fn("environment.metadata.descriptor")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          return yield* serverEnvironment.getDescriptor;
+        }, traceRelayRequest),
+      )
+      .handle(
+        "ready",
+        Effect.fn("environment.metadata.ready")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* startup.awaitReady.pipe(Effect.orDie);
+          return yield* serverEnvironment.getDescriptor;
+        }, traceRelayRequest),
+      );
   }),
 );
 
