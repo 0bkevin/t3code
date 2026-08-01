@@ -30,9 +30,13 @@ jobs:
           osascript <<'APPLESCRIPT' > /tmp/icon-gui/actions.log 2>&1 || true
           tell application "System Events"
             tell process "Icon Composer"
-              key code 36
+              set frontmost to true
+              delay 2
+              click button 3 of group 1 of window 1
               delay 5
-              key code 36
+              set continueButton to button 1 of scroll area 1 of group 1 of window 1
+              get {position of continueButton, size of continueButton, enabled of continueButton, actions of continueButton}
+              perform action "AXPress" of continueButton
               delay 8
               click menu item "Export…" of menu 1 of menu bar item "File" of menu bar 1
               delay 5
