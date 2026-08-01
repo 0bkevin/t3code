@@ -1,0 +1,49 @@
+name: temporary icon export
+
+on:
+  push:
+    branches:
+      - fix/normalize-app-icon-glyph-size
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: blacksmith-6vcpu-macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+      - name: inspect icon composer
+        shell: bash
+        run: |
+          tool="$(find /Applications -path '*Icon Composer.app/Contents/Executables/ictool' -type f | head -n 1)"
+          echo "tool=$tool"
+          "$tool" --version
+          "$tool" --help 2>&1 | tee /tmp/ictool-help.txt || true
+          strings "$tool" | grep -iE 'pre.?tahoe|platform|rendition|export' | sort -u | tail -100 | tee /tmp/ictool-strings.txt || true
+      - name: export generated icons
+        run: vp run icons:export
+      - name: export full bleed macOS probe
+        shell: bash
+        run: |
+          mkdir -p /tmp/icon-probe
+          tool="$(find /Applications -path '*Icon Composer.app/Contents/Executables/ictool' -type f | head -n 1)"
+          "$tool" assets/prod/app-icon.icon --export-image --output-file /tmp/icon-probe/prod-macos.png --platform macOS --rendition Default --width 1024 --height 1024 --scale 1 --design-generation 26 || true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: exported-icons
+          path: |
+            assets/
+            apps/web/public/favicon*
+            apps/web/public/apple-touch-icon.png
+            /tmp/ictool-help.txt
+            /tmp/ictool-strings.txt
+            /tmp/icon-probe/
