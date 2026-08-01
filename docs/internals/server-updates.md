@@ -66,10 +66,15 @@ flowchart TD
     H --> I[Run version preflight]
     I -->|bad code or version| J[Remove candidate runtime and keep current server]
     I -->|cannot run preflight| J2[Keep candidate and current server]
-    I -->|passes| K{Handoff method}
-    K -->|boot-service| L[Rewrite and restart T3 systemd unit]
+    I -->|passes| I2[Run target database compatibility check]
+    I2 -->|fails| J2
+    I2 -->|passes| K{Handoff method}
+    K -->|boot-service| L[Stage plan and start transient systemd helper]
     K -->|respawn| M[Start delayed replacement and exit current process]
-    L --> N[Reconnect with fresh backoff]
+    L --> L2[Helper activates unit and verifies target]
+    L2 -->|target fails| L3[Restore and verify previous unit]
+    L2 -->|target ready| N[Reconnect with fresh backoff]
+    L3 --> N
     M --> N
     N --> O[Replacement publishes ready at target version]
 ```
@@ -84,8 +89,10 @@ The update service permits one update at a time. It installs `t3@<version>` unde
 successfully. Boot-service setup and self-update share the same process-wide installation lock, so
 they cannot mutate a pinned runtime concurrently.
 
-Before any restart, the current Node executable runs the replacement with `--version`. A failed
-install, failed preflight, or wrong reported version leaves the current server running.
+Before any restart, the current Node executable runs the replacement with `--version`, then asks
+the target artifact to validate its migration identities against the live database in read-only
+mode. A failed install, version preflight, or compatibility check leaves the current server running.
+Targets old enough to lack the compatibility command are not eligible for remote activation.
 
 Candidate cleanup is narrower than "any failed preflight". The candidate runtime is removed only when
 the preflight process actually completes and reports a bad exit code or the wrong version: that is
@@ -107,10 +114,14 @@ authorization; it does not uninstall the host service.
 
 ## Process Handoff
 
-For `boot-service`, the server atomically rewrites the T3-managed user unit to point at the verified
-runtime and reloads systemd. It acknowledges the handoff, then restarts the unit after the same
-short grace period used by foreground respawn. A rejected deferred restart restores the previous
-unit and is logged by the still-running process.
+For `boot-service`, the request process writes a typed plan but leaves its live unit untouched. It
+starts a fixed-name `t3code-self-update.service` transient unit with `systemd-run --user`; the
+transient unit has a separate cgroup and acts as the cross-process update lock. After a short grace
+period it atomically installs the candidate unit, reloads systemd, performs a blocking restart, and
+probes the public environment descriptor for the exact target version. If activation or readiness
+fails, the helper restores the previous unit, clears systemd's failed state, restarts it, and proves
+the previous version is ready. The plan and latest receipt live under the environment state
+directory's `self-update` folder for diagnosis.
 
 For `respawn`, the server starts a detached, delayed replacement that replays the original CLI
 arguments. It then acknowledges the request and schedules the current process to exit. The delays
@@ -118,10 +129,10 @@ give the acknowledgement time to cross direct or relayed connections before the 
 
 Progress-capable servers emit `downloading` before installing the pinned runtime and `installing`
 before preflight and handoff. A terminal stream event acknowledges that restart is scheduled. The
-client then enters `resuming`, waits for the replacement lifecycle stream to publish `ready` with
-the target version, and only then completes the operation. It watches for the intentional
-disconnect's first backoff state and requests one fresh retry, which clears historical backoff debt
-without adding a separate reconnect loop.
+client then enters `resuming`, waits for the intentional disconnect before accepting a new lifecycle
+event, and requests one fresh retry to clear historical backoff debt. The first new `ready` event
+must report the target version. A verified rollback therefore becomes an immediate wrong-version
+error instead of looking like a two-minute timeout.
 
 ## Release Invariant
 
@@ -134,7 +145,9 @@ the hosted web deployment depends on that release. See [Release Checklist](../op
 - Capability contract: `packages/contracts/src/environment.ts`
 - Update RPC contract: `packages/contracts/src/server.ts` and `packages/contracts/src/rpc.ts`
 - Capability detection and handoff: `apps/server/src/cloud/selfUpdate.ts`
+- Systemd activation, health check, and rollback: `apps/server/src/cloud/systemdSelfUpdate.ts`
 - Host service commands: `apps/server/src/cli/service.ts`
 - Pinned runtime installation: `apps/server/src/cloud/pinnedRuntime.ts`
+- Migration identity validation: `apps/server/src/persistence/Migrations.ts`
 - Client version comparison: `apps/web/src/versionSkew.ts`
 - Shared update action: `apps/web/src/components/ServerUpdateAction.tsx`

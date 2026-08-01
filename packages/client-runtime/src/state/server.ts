@@ -86,6 +86,43 @@ export class ServerUpdateResumeTimeoutError extends Schema.TaggedErrorClass<Serv
   }
 }
 
+export class ServerUpdateRestartTimeoutError extends Schema.TaggedErrorClass<ServerUpdateRestartTimeoutError>()(
+  "ServerUpdateRestartTimeoutError",
+  {
+    environmentId: Schema.String,
+    targetVersion: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `The server accepted t3@${this.targetVersion} but did not restart.`;
+  }
+}
+
+export class ServerUpdateWrongVersionError extends Schema.TaggedErrorClass<ServerUpdateWrongVersionError>()(
+  "ServerUpdateWrongVersionError",
+  {
+    environmentId: Schema.String,
+    targetVersion: Schema.String,
+    actualVersion: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `The server resumed on t3@${this.actualVersion} instead of t3@${this.targetVersion}.`;
+  }
+}
+
+export const validateResumedServerVersion = Effect.fn("server.validateResumedUpdateVersion")(
+  function* (input: {
+    readonly environmentId: EnvironmentId;
+    readonly targetVersion: string;
+    readonly actualVersion: string;
+  }) {
+    if (input.actualVersion !== input.targetVersion) {
+      return yield* new ServerUpdateWrongVersionError(input);
+    }
+  },
+);
+
 export class ServerUpdateProgressIncompleteError extends Schema.TaggedErrorClass<ServerUpdateProgressIncompleteError>()(
   "ServerUpdateProgressIncompleteError",
   {
@@ -446,6 +483,7 @@ export function createServerEnvironmentAtoms<R, E>(
         atomRegistry.get(configValueAtom(target.environmentId))?.environment.serverVersion ??
         targetVersion;
       let currentStage: ServerUpdateStage = "downloading";
+      let transportAlreadyDisconnected = false;
       atomRegistry.set(stateAtom, {
         status: "running",
         stage: currentStage,
@@ -500,9 +538,14 @@ export function createServerEnvironmentAtoms<R, E>(
                       ),
                       Effect.exit,
                     );
+                  const terminalResult = yield* Ref.get(terminal);
+                  transportAlreadyDisconnected =
+                    Option.isSome(terminalResult) &&
+                    Exit.isFailure(streamExit) &&
+                    isLegacyUpdateHandoffLoss(streamExit.cause);
                   return yield* resolveServerUpdateProgressResult(
                     targetVersion,
-                    yield* Ref.get(terminal),
+                    terminalResult,
                     streamExit,
                   );
                 })
@@ -521,6 +564,7 @@ export function createServerEnvironmentAtoms<R, E>(
                     // Older servers can tear down the transport before their
                     // unary acknowledgement arrives. Treat only that transport
                     // loss as a handoff, then prove it by waiting for target ready.
+                    transportAlreadyDisconnected = true;
                     return { targetVersion, method: selfUpdateMethod };
                   }
                   return yield* Effect.failCause(exit.cause);
@@ -537,26 +581,40 @@ export function createServerEnvironmentAtoms<R, E>(
           }),
         );
 
-        // The update restart is intentional. As soon as the supervisor sees
-        // that first failed connection, discard any prior backoff debt and
-        // retry immediately instead of carrying an old 16-second delay.
-        yield* environmentRegistry.stateChanges(target.environmentId).pipe(
-          Stream.filter((state) => state.phase === "backoff"),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.andThen(environmentRegistry.retryNow(target.environmentId)),
-          Effect.timeoutOption(Duration.seconds(30)),
-          Effect.ignore,
-          Effect.forkChild,
-        );
+        // Subscribe before following lifecycle again so a cached ready event
+        // from the still-running old process cannot satisfy the update. The
+        // helper waits before restarting, giving this listener time to attach.
+        if (!transportAlreadyDisconnected) {
+          const disconnected = yield* environmentRegistry.stateChanges(target.environmentId).pipe(
+            Stream.filter((state) => state.phase === "backoff"),
+            Stream.take(1),
+            Stream.runHead,
+            Effect.timeoutOption(Duration.seconds(30)),
+            Effect.map(Option.flatten),
+          );
+          if (Option.isNone(disconnected)) {
+            return yield* new ServerUpdateRestartTimeoutError({
+              environmentId: target.environmentId,
+              targetVersion,
+            });
+          }
+          // The update restart is intentional. Discard any prior backoff debt
+          // instead of carrying an old 16-second delay into recovery.
+          yield* environmentRegistry.retryNow(target.environmentId);
+        } else {
+          // Legacy servers may close the RPC before this listener can attach.
+          // If the supervisor is still waiting, clear that delay; if it has
+          // already reconnected, do not interrupt the healthy replacement.
+          const state = yield* environmentRegistry.state(target.environmentId);
+          if (state.phase === "backoff") {
+            yield* environmentRegistry.retryNow(target.environmentId);
+          }
+        }
 
         const resumed = yield* environmentRegistry
           .followStream(target.environmentId, subscribe(WS_METHODS.subscribeServerLifecycle, {}))
           .pipe(
-            Stream.filter(
-              (event) =>
-                event.type === "ready" && event.payload.environment.serverVersion === targetVersion,
-            ),
+            Stream.filter((event) => event.type === "ready"),
             Stream.runHead,
             Effect.timeoutOption(Duration.seconds(120)),
             Effect.map(Option.flatten),
@@ -567,6 +625,11 @@ export function createServerEnvironmentAtoms<R, E>(
             targetVersion,
           });
         }
+        yield* validateResumedServerVersion({
+          environmentId: target.environmentId,
+          targetVersion,
+          actualVersion: resumed.value.payload.environment.serverVersion,
+        });
 
         atomRegistry.set(stateAtom, IDLE_SERVER_UPDATE_STATE);
         return result;

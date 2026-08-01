@@ -34,6 +34,8 @@ import {
   resolveServerUpdateProgressResult,
   serverUpdateStateForProgressEvent,
   serverUpdateStateForServerVersion,
+  ServerUpdateWrongVersionError,
+  validateResumedServerVersion,
 } from "./server.ts";
 
 const CONFIG = {
@@ -151,6 +153,27 @@ describe("server state projection", () => {
       targetVersion: "0.0.31",
     });
   });
+
+  it.effect("reports the rollback version as soon as the server resumes", () =>
+    Effect.gen(function* () {
+      const error = yield* validateResumedServerVersion({
+        environmentId: TARGET.environmentId,
+        targetVersion: "0.0.31",
+        actualVersion: "0.0.30",
+      }).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ServerUpdateWrongVersionError);
+      expect(error.message).toBe("The server resumed on t3@0.0.30 instead of t3@0.0.31.");
+    }),
+  );
+
+  it.effect("accepts the requested version after reconnect", () =>
+    validateResumedServerVersion({
+      environmentId: TARGET.environmentId,
+      targetVersion: "0.0.31",
+      actualVersion: "0.0.31",
+    }),
+  );
 
   it("keeps active update state and hides stale failures after a version change", () => {
     const running = {

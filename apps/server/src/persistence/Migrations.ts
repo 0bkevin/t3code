@@ -11,6 +11,8 @@
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -112,6 +114,59 @@ export const makeMigrationLoader = (throughId?: number) =>
  */
 const run = Migrator.make({});
 
+export class MigrationIdentityMismatchError extends Schema.TaggedErrorClass<MigrationIdentityMismatchError>()(
+  "MigrationIdentityMismatchError",
+  {
+    migrationId: Schema.Int,
+    expectedName: Schema.String,
+    actualName: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Migration ${String(this.migrationId)} is recorded as '${this.actualName}', but this t3 build expects '${this.expectedName}'.`;
+  }
+}
+
+/**
+ * Refuse to run a build whose migration history disagrees with the database.
+ * Unknown newer IDs are intentionally allowed so a compatible older build can
+ * inspect a database created by a newer release without rewriting its history.
+ */
+export const validateMigrationIdentities = Effect.fn("validateMigrationIdentities")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `;
+  if (tables.length === 0) {
+    return;
+  }
+
+  const expectedNames = new Map<number, string>(
+    migrationEntries.map(([migrationId, name]) => [migrationId, name]),
+  );
+  const persisted = yield* sql<{
+    readonly migration_id: number;
+    readonly name: string;
+  }>`
+    SELECT migration_id, name
+    FROM effect_sql_migrations
+    ORDER BY migration_id
+  `;
+
+  for (const migration of persisted) {
+    const expectedName = expectedNames.get(migration.migration_id);
+    if (expectedName !== undefined && expectedName !== migration.name) {
+      return yield* new MigrationIdentityMismatchError({
+        migrationId: migration.migration_id,
+        expectedName,
+        actualName: migration.name,
+      });
+    }
+  }
+});
+
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
 }
@@ -129,6 +184,7 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
+  yield* validateMigrationIdentities();
   const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0

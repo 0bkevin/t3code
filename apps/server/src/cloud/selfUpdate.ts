@@ -24,8 +24,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
-import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import {
   BOOT_SERVICE_UNIT_ENV,
@@ -34,6 +34,14 @@ import {
   renderBootServiceUnit,
 } from "./bootService.ts";
 import { ensurePinnedRuntimeInstalled, removePinnedRuntimeInstallation } from "./pinnedRuntime.ts";
+import {
+  SYSTEMD_SELF_UPDATE_DIRECTORY,
+  SYSTEMD_SELF_UPDATE_PLAN_FILE,
+  SYSTEMD_SELF_UPDATE_RECEIPT_FILE,
+  SYSTEMD_SELF_UPDATE_UNIT,
+  SystemdSelfUpdatePlan,
+  writeSystemdSelfUpdatePlan,
+} from "./systemdSelfUpdate.ts";
 
 /**
  * Lets a connected client replace this server with another published `t3`
@@ -221,11 +229,6 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
       Effect.andThen(restart),
       Effect.forkDetach({ startImmediately: true }),
     );
-  const writeUnitAtomically = (filePath: string, contents: string) =>
-    writeFileStringAtomically({ filePath, contents }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-    );
 
   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
     "cloud.server_self_update.update",
@@ -301,6 +304,33 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
         );
       }
 
+      // Run this command from the target artifact while the known-good server
+      // is still alive. Older artifacts without the compatibility check, or a
+      // build whose migration identities disagree with this database, cannot
+      // be activated remotely.
+      const databasePreflight = yield* runner
+        .run({
+          command: host.execPath,
+          args: [
+            runtimePaths.entryPath,
+            "service",
+            "_validate-update",
+            "--database",
+            serverConfig.dbPath,
+          ],
+          timeout: PREFLIGHT_TIMEOUT,
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            failWith(`Could not verify t3@${targetVersion} against this database.`, cause),
+          ),
+        );
+      if (databasePreflight.code !== 0) {
+        return yield* failWith(
+          `The installed t3@${targetVersion} is not compatible with this server's database (exit code ${String(databasePreflight.code)}).`,
+        );
+      }
+
       if (activeMethod === "boot-service") {
         const homeDir = env.HOME ?? "";
         const unitPath = path.join(homeDir, ".config", "systemd", "user", BOOT_SERVICE_UNIT_FILE);
@@ -311,98 +341,63 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
           );
         // Same shape bootService.install writes, so host lifecycle commands
         // still recognize the unit as current.
-        const unit = renderBootServiceUnit({
+        const nextUnit = renderBootServiceUnit({
           nodePath: host.execPath,
           t3EntryPath: runtimePaths.entryPath,
           baseDir: serverConfig.baseDir,
           logPath: path.join(serverConfig.logsDir, "boot-service.log"),
           unitPath,
         });
-        yield* writeUnitAtomically(unitPath, unit).pipe(
-          Effect.mapError((cause) => failWith("Could not update the systemd unit.", cause)),
-        );
-
-        const reloadSystemd = Effect.fn("cloud.server_self_update.reload_systemd")(function* () {
-          const reload = yield* runner
-            .run({ command: "systemctl", args: ["--user", "daemon-reload"] })
-            .pipe(Effect.mapError((cause) => failWith("Could not reload systemd units.", cause)));
-          if (reload.code !== 0) {
-            return yield* failWith(
-              `Reloading systemd units failed (exit code ${String(reload.code)}).`,
-            );
-          }
-        });
-
-        yield* reloadSystemd().pipe(
-          Effect.catch((reloadError) =>
-            writeUnitAtomically(unitPath, previousUnit).pipe(
-              Effect.mapError((rollbackCause) =>
-                failWith("Could not restore the previous systemd unit.", {
-                  reloadError,
-                  rollbackCause,
-                }),
-              ),
-              // Systemd should still have the old unit in memory after the
-              // failed reload, but retry after restoring in case it applied a
-              // partial update before returning an error.
-              Effect.andThen(reloadSystemd().pipe(Effect.ignore)),
-              Effect.andThen(Effect.fail(reloadError)),
-            ),
-          ),
-        );
-        yield* Effect.logInfo("Server self-update installed; restarting boot service.", {
+        const updateDirectory = path.join(serverConfig.stateDir, SYSTEMD_SELF_UPDATE_DIRECTORY);
+        const planPath = path.join(updateDirectory, SYSTEMD_SELF_UPDATE_PLAN_FILE);
+        const plan = new SystemdSelfUpdatePlan({
+          version: 1,
+          fromVersion: packageJson.version,
           targetVersion,
+          currentPid: process.pid,
+          unitPath,
+          previousUnit,
+          nextUnit,
+          runtimeStatePath: serverConfig.serverRuntimeStatePath,
+          receiptPath: path.join(updateDirectory, SYSTEMD_SELF_UPDATE_RECEIPT_FILE),
         });
-        // Restart after the acknowledgement has had time to cross any relay
-        // hop. --no-block queues the restart job and exits before systemd
-        // stops this unit: a blocking restart's SIGTERM reaches the systemctl
-        // child (it shares this service's cgroup), which read as a restart
-        // failure and rolled the new unit back while the old server finished
-        // shutting down. With the handoff race gone, a non-zero exit or spawn
-        // error means systemd genuinely rejected the job while this process is
-        // still alive, so restoring the previous unit below stays correct.
-        yield* scheduleRestart(
-          Effect.gen(function* () {
-            const restart = yield* runner
-              .run({
-                command: "systemctl",
-                args: ["--user", "restart", "--no-block", BOOT_SERVICE_UNIT_FILE],
-              })
-              .pipe(
-                Effect.mapError((cause) =>
-                  failWith("Could not restart the systemd boot service.", cause),
-                ),
-              );
-            if (restart.code !== 0) {
-              return yield* failWith(
-                `Restarting the systemd boot service failed (exit code ${String(restart.code)}).`,
-              );
-            }
-          }).pipe(
-            Effect.catch((restartError) =>
-              writeUnitAtomically(unitPath, previousUnit).pipe(
-                Effect.andThen(reloadSystemd()),
-                Effect.mapError((rollbackError) =>
-                  failWith("Could not restore the previous systemd unit.", {
-                    restartError,
-                    rollbackError,
-                  }),
-                ),
-                Effect.andThen(Effect.fail(restartError)),
-              ),
-            ),
-            Effect.catch((error) =>
-              Effect.logError("Server self-update could not restart the boot service.").pipe(
-                Effect.annotateLogs({ targetVersion, error: error.reason }),
-                // Permit a retry only after the failed handoff was rolled
-                // back. A queued restart returns while this process is still
-                // shutting down; releasing the lock then would let a second
-                // update rewrite the unit mid-teardown.
-                Effect.andThen(Ref.set(inFlight, false)),
-              ),
-            ),
-          ),
+        yield* writeSystemdSelfUpdatePlan(planPath, plan).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError((cause) => failWith("Could not stage the systemd update plan.", cause)),
         );
+
+        // The transient unit has its own cgroup, so it survives the restart of
+        // t3code.service and remains responsible for readiness and rollback.
+        const handoff = yield* runner
+          .run({
+            command: "systemd-run",
+            args: [
+              "--user",
+              "--collect",
+              "--service-type=exec",
+              `--unit=${SYSTEMD_SELF_UPDATE_UNIT}`,
+              host.execPath,
+              host.cliEntryPath,
+              "service",
+              "_apply-update",
+              "--plan",
+              planPath,
+            ],
+            timeout: PREFLIGHT_TIMEOUT,
+          })
+          .pipe(
+            Effect.mapError((cause) => failWith("Could not hand the update to systemd.", cause)),
+          );
+        if (handoff.code !== 0) {
+          return yield* failWith(
+            `Systemd rejected the update handoff (exit code ${String(handoff.code)}).`,
+          );
+        }
+        yield* Effect.logInfo("Server self-update staged; systemd will activate it.", {
+          targetVersion,
+          planPath,
+        });
       } else {
         // Spawn the shim before acknowledging the RPC so ENOENT/EACCES and
         // other launch failures leave this server alive and return a useful

@@ -2,11 +2,14 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Terminal from "effect/Terminal";
-import { Command, GlobalFlag, Prompt } from "effect/unstable/cli";
+import { Command, Flag, GlobalFlag, Prompt } from "effect/unstable/cli";
+import { FetchHttpClient } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
+import { applySystemdSelfUpdatePlan } from "../cloud/systemdSelfUpdate.ts";
 import type * as ServerConfig from "../config.ts";
+import { validateMigrationIdentities } from "../persistence/Migrations.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
@@ -142,6 +145,38 @@ const serviceStatusCommand = Command.make("status", projectLocationFlags).pipe(
   ),
 );
 
+/** Internal entrypoint launched by systemd-run outside t3code.service. */
+const serviceApplyUpdateCommand = Command.make("_apply-update", {
+  plan: Flag.string("plan"),
+}).pipe(
+  Command.withHidden,
+  Command.withHandler(({ plan }) =>
+    applySystemdSelfUpdatePlan(plan).pipe(
+      Effect.provide(Layer.mergeAll(ProcessRunner.layer, FetchHttpClient.layer)),
+    ),
+  ),
+);
+
+/** Target-artifact preflight used before the running server is stopped. */
+const serviceValidateUpdateCommand = Command.make("_validate-update", {
+  database: Flag.string("database"),
+}).pipe(
+  Command.withHidden,
+  Command.withHandler(({ database }) =>
+    Effect.gen(function* () {
+      // Keep node:sqlite behind the same lazy bundle boundary as normal server
+      // startup; most service commands never open the database.
+      const NodeSqliteClient = yield* Effect.promise(
+        () => import("../persistence/NodeSqliteClient.ts"),
+      );
+      yield* validateMigrationIdentities().pipe(
+        Effect.scoped,
+        Effect.provide(NodeSqliteClient.layer({ filename: database, readonly: true })),
+      );
+    }),
+  ),
+);
+
 export const offerServiceDuringOnboarding = Effect.gen(function* () {
   const service = yield* BootService.BootService;
   const { supported, installed, current } = yield* service.status;
@@ -195,5 +230,7 @@ export const serviceCommand = Command.make("service").pipe(
     serviceUninstallCommand,
     serviceUpdateCommand,
     serviceStatusCommand,
+    serviceApplyUpdateCommand,
+    serviceValidateUpdateCommand,
   ]),
 );

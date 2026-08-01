@@ -59,6 +59,10 @@ Keep the web or desktop app open while the server restarts. The update completes
 replacement server reports the requested version and is ready to accept commands. The warning and
 progress rail then disappear.
 
+When a background-service replacement cannot become ready, T3 Code restores and verifies the
+previous server version automatically. The update remains failed so you can retry after reading the
+reported reason, but the remote server should remain reachable.
+
 If a step fails:
 
 1. Retry the offered action once.

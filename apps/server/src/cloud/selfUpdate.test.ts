@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
@@ -23,35 +24,14 @@ import {
   renderBootServiceUnit,
 } from "./bootService.ts";
 import * as SelfUpdate from "./selfUpdate.ts";
+import {
+  SYSTEMD_SELF_UPDATE_DIRECTORY,
+  SYSTEMD_SELF_UPDATE_PLAN_FILE,
+  SYSTEMD_SELF_UPDATE_UNIT,
+  SystemdSelfUpdatePlan,
+} from "./systemdSelfUpdate.ts";
 
 const NODE_PATH = "/usr/local/bin/node";
-
-const eventuallyFileString = Effect.fn("test.eventuallyFileString")(function* (
-  filePath: string,
-  expected: string,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  for (let iteration = 0; iteration < 1_000; iteration += 1) {
-    const contents = yield* fs.readFileString(filePath);
-    if (contents === expected) {
-      return;
-    }
-    // The rollback performs real filesystem I/O on a detached fiber, which
-    // advancing TestClock does not await.
-    yield* Effect.yieldNow;
-  }
-  return yield* Effect.die(new Error(`Expected file contents were not observed at ${filePath}.`));
-});
-
-const eventuallyTrue = Effect.fn("test.eventuallyTrue")(function* (predicate: () => boolean) {
-  for (let iteration = 0; iteration < 1_000; iteration += 1) {
-    if (predicate()) {
-      return;
-    }
-    yield* Effect.yieldNow;
-  }
-  return yield* Effect.die(new Error("Expected condition was not observed."));
-});
 
 interface RecordedCommand {
   readonly command: string;
@@ -445,7 +425,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
       assert.deepEqual(result, { targetVersion: "0.0.29", method: "respawn" });
       assert.deepEqual(
         context.commands.map((entry) => entry.command),
-        [NODE_PATH, "npm", NODE_PATH],
+        [NODE_PATH, "npm", NODE_PATH, NODE_PATH],
       );
     }).pipe(Effect.provide(TestClock.layer())),
   );
@@ -506,6 +486,7 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
         [
           `npm install --prefix ${context.path.join(context.baseDir, "runtime/versions/0.0.29")} --no-fund --no-audit t3@0.0.29`,
           `${NODE_PATH} ${pinnedEntry} --version`,
+          `${NODE_PATH} ${pinnedEntry} service _validate-update --database ${context.path.join(context.baseDir, "userdata/state.sqlite")}`,
         ],
       );
 
@@ -521,9 +502,17 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("rewrites the systemd unit and restarts the boot service", () =>
+  it.effect("stages the systemd unit and hands activation to a transient service", () =>
     Effect.gen(function* () {
       const context = yield* makeContext({ bootService: true });
+      const unitPath = context.path.join(
+        context.home,
+        ".config",
+        "systemd",
+        "user",
+        BOOT_SERVICE_UNIT_FILE,
+      );
+      const previousUnit = yield* context.fs.readFileString(unitPath);
       const result = yield* context.service.update({ targetVersion: "0.0.29" });
       assert.deepEqual(result, { targetVersion: "0.0.29", method: "boot-service" });
 
@@ -531,46 +520,55 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
         context.baseDir,
         "runtime/versions/0.0.29/node_modules/t3/dist/bin.mjs",
       );
-      const unit = yield* context.fs.readFileString(
-        context.path.join(context.home, ".config", "systemd", "user", "t3code.service"),
+      // The RPC process does not rewrite the unit it is currently running
+      // under. The independent transient service applies the staged unit.
+      assert.equal(yield* context.fs.readFileString(unitPath), previousUnit);
+      const planPath = context.path.join(
+        context.baseDir,
+        "userdata",
+        SYSTEMD_SELF_UPDATE_DIRECTORY,
+        SYSTEMD_SELF_UPDATE_PLAN_FILE,
       );
-      assert.include(unit, `ExecStart=${NODE_PATH} ${pinnedEntry} serve`);
+      const plan = yield* context.fs
+        .readFileString(planPath)
+        .pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(SystemdSelfUpdatePlan))),
+        );
+      assert.equal(plan.previousUnit, previousUnit);
+      assert.include(plan.nextUnit, `ExecStart=${NODE_PATH} ${pinnedEntry} serve`);
+      assert.equal(
+        plan.runtimeStatePath,
+        context.path.join(context.baseDir, "userdata/server-runtime.json"),
+      );
       assert.deepEqual(
         context.commands.map((entry) => entry.command),
-        ["npm", NODE_PATH, "systemctl"],
+        ["npm", NODE_PATH, NODE_PATH, "systemd-run"],
       );
-      assert.deepEqual(context.commands[2]?.args, ["--user", "daemon-reload"]);
-
-      // Restart waits until after the update acknowledgement can flush.
-      yield* TestClock.adjust(Duration.seconds(10));
-      assert.deepEqual(context.commands[3], {
-        command: "systemctl",
-        args: ["--user", "restart", "--no-block", "t3code.service"],
-      });
+      assert.include(context.commands[3]?.args ?? [], `--unit=${SYSTEMD_SELF_UPDATE_UNIT}`);
+      assert.include(context.commands[3]?.args ?? [], planPath);
       assert.lengthOf(context.spawns, 0);
-      // systemd replaces the process; the server must not exit itself.
       assert.equal(context.exitCount(), 0);
 
-      // The queued restart returns while this process is still shutting
-      // down; the lock must stay held so a second update cannot rewrite the
-      // unit mid-teardown.
+      // The lock stays held after a successful handoff because the transient
+      // service is now responsible for replacing this process.
       const concurrentError = yield* context.service
         .update({ targetVersion: "0.0.30" })
         .pipe(Effect.flip);
       assert.include(concurrentError.reason, "already in progress");
-    }).pipe(Effect.provide(TestClock.layer())),
+    }),
   );
 
-  it.effect("restores the previous unit and permits a retry when systemd restart fails", () =>
+  it.effect("leaves the live unit untouched and permits a retry when the handoff fails", () =>
     Effect.gen(function* () {
-      let failRestart = true;
+      let failHandoff = true;
       const context = yield* makeContext({
         bootService: true,
         failWhen: (command, args) => {
-          if (command !== "systemctl" || args[1] !== "restart" || !failRestart) {
+          if (command !== "systemd-run" || !failHandoff) {
             return false;
           }
-          failRestart = false;
+          assert.include(args, `--unit=${SYSTEMD_SELF_UPDATE_UNIT}`);
+          failHandoff = false;
           return true;
         },
       });
@@ -583,29 +581,20 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
       );
       const previousUnit = yield* context.fs.readFileString(unitPath);
 
-      const first = yield* context.service.update({ targetVersion: "0.0.29" });
-      assert.deepEqual(first, { targetVersion: "0.0.29", method: "boot-service" });
-      yield* TestClock.adjust(Duration.seconds(10));
-      yield* eventuallyFileString(unitPath, previousUnit);
-      yield* eventuallyTrue(() => context.commands.at(-1)?.args[1] === "daemon-reload");
-      assert.deepEqual(
-        context.commands.slice(-2).map((entry) => entry.args),
-        [
-          ["--user", "restart", "--no-block", BOOT_SERVICE_UNIT_FILE],
-          ["--user", "daemon-reload"],
-        ],
-      );
+      const first = yield* context.service.update({ targetVersion: "0.0.29" }).pipe(Effect.flip);
+      assert.include(first.reason, "Systemd rejected the update handoff");
+      assert.equal(yield* context.fs.readFileString(unitPath), previousUnit);
 
       const retry = yield* context.service.update({ targetVersion: "0.0.30" });
       assert.deepEqual(retry, { targetVersion: "0.0.30", method: "boot-service" });
-    }).pipe(Effect.provide(TestClock.layer())),
+    }),
   );
 
-  it.effect("restores the previous systemd unit when daemon-reload fails", () =>
+  it.effect("rejects a target that cannot validate the current database", () =>
     Effect.gen(function* () {
       const context = yield* makeContext({
         bootService: true,
-        failWhen: (command) => command === "systemctl",
+        failWhen: (command, args) => command === NODE_PATH && args.includes("_validate-update"),
       });
       const unitPath = context.path.join(
         context.home,
@@ -617,16 +606,15 @@ it.layer(NodeServices.layer)("ServerSelfUpdate.update", (it) => {
       const previousUnit = yield* context.fs.readFileString(unitPath);
 
       const error = yield* context.service.update({ targetVersion: "0.0.29" }).pipe(Effect.flip);
-      assert.include(error.reason, "Reloading systemd units failed");
+      assert.include(error.reason, "not compatible with this server's database");
       assert.equal(yield* context.fs.readFileString(unitPath), previousUnit);
       assert.deepEqual(
         context.commands.map((entry) => entry.command),
-        ["npm", NODE_PATH, "systemctl", "systemctl"],
+        ["npm", NODE_PATH, NODE_PATH],
       );
 
-      yield* TestClock.adjust(Duration.seconds(10));
       assert.lengthOf(context.spawns, 0);
       assert.equal(context.exitCount(), 0);
-    }).pipe(Effect.provide(TestClock.layer())),
+    }),
   );
 });
