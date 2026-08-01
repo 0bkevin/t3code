@@ -10,37 +10,44 @@ permissions:
 
 jobs:
   export:
-    runs-on: blacksmith-6vcpu-macos-26
-    timeout-minutes: 20
+    runs-on: xcode-27
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: probe icon composer exports
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+      - name: inspect icon composer
         shell: bash
         run: |
           set -x
-          mkdir -p /tmp/icon-probe
-          tool=/Applications/Xcode_26.0.1.app/Contents/Applications/Icon\ Composer.app/Contents/Executables/ictool
-          "$tool" --version
-          "$tool" --help 2>&1 | tee /tmp/icon-probe/ictool-help.txt || true
-          find /Applications -path '*Icon Composer.app/Contents/Executables/ictool' -type f -print > /tmp/icon-probe/tools.txt
-          while IFS= read -r candidate; do
-            printf '\n%s\n' "$candidate" >> /tmp/icon-probe/versions.txt
-            "$candidate" --version >> /tmp/icon-probe/versions.txt 2>&1 || true
-          done < /tmp/icon-probe/tools.txt
-          strings "$tool" | grep -iE 'pre.?tahoe|macOS|appearance|platform|rendition|export' | sort -u > /tmp/icon-probe/ictool-strings.txt || true
-          for platform in iOS macOS 'macOS pre-Tahoe' macOS-pre-Tahoe; do
-            for appearance in Light Default; do
-              slug="$(echo "$platform-$appearance" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')"
-              "$tool" assets/prod/app-icon.icon --export-preview "$platform" "$appearance" 1024 1024 1 "/tmp/icon-probe/prod-$slug.png" > "/tmp/icon-probe/prod-$slug.log" 2>&1 || true
-            done
+          mkdir -p /tmp/icon-export
+          tool="$(find /Applications -path '*Icon Composer.app/Contents/Executables/ictool' -type f | head -n 1)"
+          echo "$tool" | tee /tmp/icon-export/tool.txt
+          "$tool" --version | tee /tmp/icon-export/version.txt
+          "$tool" --help 2>&1 | tee /tmp/icon-export/help.txt || true
+          strings "$tool" | grep -iE 'pre.?tahoe|macOS|appearance|platform|rendition|export' | sort -u > /tmp/icon-export/strings.txt || true
+      - name: export generated icons
+        run: vp run icons:export
+      - name: probe macOS CLI renditions
+        shell: bash
+        run: |
+          set -x
+          tool="$(cat /tmp/icon-export/tool.txt)"
+          for rendition in Default Light Dark Tinted ClearLight ClearDark; do
+            "$tool" assets/prod/app-icon.icon --export-image --output-file "/tmp/icon-export/prod-macos-$rendition.png" --platform macOS --rendition "$rendition" --width 1024 --height 1024 --scale 1 --design-generation 26 > "/tmp/icon-export/prod-macos-$rendition.log" 2>&1 || true
           done
-          for variant in dev nightly prod; do
-            "$tool" "assets/$variant/app-icon.icon" --export-preview iOS Light 1024 1024 1 "/tmp/icon-probe/$variant-ios.png" > "/tmp/icon-probe/$variant-ios.log" 2>&1 || true
-          done
-          ls -lah /tmp/icon-probe
-          file /tmp/icon-probe/*
+          find /tmp/icon-export -maxdepth 1 -type f -print -exec file {} \;
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: icon-probe
-          path: /tmp/icon-probe/
+          name: exported-icons-v2
+          path: |
+            assets/
+            apps/web/public/favicon*
+            apps/web/public/apple-touch-icon.png
+            /tmp/icon-export/
