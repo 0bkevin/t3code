@@ -957,7 +957,7 @@ export const makeCodexSessionRuntime = (
             const next = new Map(current);
             next.set(item.agentThreadId, {
               agentThreadId: item.agentThreadId,
-              nickname: undefined,
+              nickname: item.agentPath.split("/").findLast((segment) => segment.length > 0),
               role: undefined,
               agentPath: item.agentPath,
               depth: undefined,
@@ -989,13 +989,19 @@ export const makeCodexSessionRuntime = (
         if (!child) {
           return false;
         }
+        const childIdentity = {
+          agentThreadId: child.agentThreadId,
+          ...(child.nickname ? { nickname: child.nickname } : {}),
+          ...(child.role ? { role: child.role } : {}),
+          ...(child.agentPath ? { agentPath: child.agentPath } : {}),
+        };
         switch (notification.method) {
           case "turn/started":
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
               method: "collabAgent/turnStarted",
-              payload: { agentThreadId: child.agentThreadId },
+              payload: childIdentity,
             });
             return true;
           case "turn/completed":
@@ -1004,7 +1010,7 @@ export const makeCodexSessionRuntime = (
               threadId: options.threadId,
               method: "collabAgent/turnCompleted",
               payload: {
-                agentThreadId: child.agentThreadId,
+                ...childIdentity,
                 turn: notification.params.turn,
               },
             });
@@ -1015,7 +1021,7 @@ export const makeCodexSessionRuntime = (
               threadId: options.threadId,
               method: "collabAgent/statusChanged",
               payload: {
-                agentThreadId: child.agentThreadId,
+                ...childIdentity,
                 status: notification.params.status,
               },
             });
@@ -1026,7 +1032,7 @@ export const makeCodexSessionRuntime = (
               threadId: options.threadId,
               method: "collabAgent/tokenUsage",
               payload: {
-                agentThreadId: child.agentThreadId,
+                ...childIdentity,
                 tokenUsage: notification.params.tokenUsage,
               },
             });
@@ -1038,7 +1044,7 @@ export const makeCodexSessionRuntime = (
               threadId: options.threadId,
               method: "collabAgent/item",
               payload: {
-                agentThreadId: child.agentThreadId,
+                ...childIdentity,
                 item: notification.params.item,
               },
             });
@@ -1048,7 +1054,7 @@ export const makeCodexSessionRuntime = (
               kind: "notification",
               threadId: options.threadId,
               method: "collabAgent/closed",
-              payload: { agentThreadId: child.agentThreadId },
+              payload: childIdentity,
             });
             return true;
           default:

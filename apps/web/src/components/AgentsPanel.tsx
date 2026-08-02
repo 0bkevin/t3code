@@ -35,7 +35,9 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   pending: { dotClass: "bg-info", label: "Working" },
   running: { dotClass: "bg-info", label: "Working" },
   waiting: { dotClass: "bg-info", label: "Working" },
-  idle: { dotClass: "bg-info/50", label: "Idle · resumable" },
+  // Idle reads as settled (muted, not sky): a resting Codex child looks done
+  // unless resumed — live-test: sky idle dots read as stuck in-progress.
+  idle: { dotClass: "bg-muted-foreground/50", label: "Idle · resumable" },
   completed: { dotClass: "bg-success", label: "Completed" },
   failed: { dotClass: "bg-destructive", label: "Failed" },
   cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
@@ -329,17 +331,11 @@ export function AgentsPanel({ model }: { model: AgentPanelModel }) {
   const settledWorkflows = model.workflows.filter((group) => !workflowIsLive(group));
   const liveDirect = model.directAgents.filter(
     (agent) =>
-      agent.status === "running" ||
-      agent.status === "pending" ||
-      agent.status === "waiting" ||
-      agent.status === "idle",
+      agent.status === "running" || agent.status === "pending" || agent.status === "waiting",
   );
   const settledDirect = model.directAgents.filter(
     (agent) =>
-      agent.status !== "running" &&
-      agent.status !== "pending" &&
-      agent.status !== "waiting" &&
-      agent.status !== "idle",
+      agent.status !== "running" && agent.status !== "pending" && agent.status !== "waiting",
   );
 
   return (

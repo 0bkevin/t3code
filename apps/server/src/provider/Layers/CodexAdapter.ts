@@ -523,7 +523,11 @@ function mapCollabAgentEvent(
   const nickname = typeof payload.nickname === "string" ? payload.nickname : undefined;
   const role =
     (typeof payload.role === "string" ? payload.role : undefined) ?? pathLeaf ?? "general-purpose";
-  const title = nickname ?? pathLeaf ?? agentThreadId;
+  // A bare thread id is not a name. Omitting the title lets the client fold
+  // keep the real one from task.started instead of clobbering it (probe
+  // finding: progress rows renamed math_one to its UUID).
+  const knownName = nickname ?? pathLeaf;
+  const title = knownName ?? agentThreadId;
 
   switch (event.method) {
     case "collabAgent/started":
@@ -692,6 +696,7 @@ function mapCollabAgentEvent(
           payload: {
             taskId,
             description: title,
+            ...(knownName ? { title: knownName } : {}),
             typedUsage,
             timelineBypass: true,
           },
@@ -723,6 +728,7 @@ function mapCollabAgentEvent(
           payload: {
             taskId,
             description: title,
+            ...(knownName ? { title: knownName } : {}),
             summary,
             timelineBypass: true,
           },
