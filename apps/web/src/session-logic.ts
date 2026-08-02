@@ -659,6 +659,18 @@ export function hasActionableProposedPlan(
  * - task.updated is fold input only (status patches are not narrative).
  * Unattributed rows always stay: over-hiding loses the only terminal signal.
  */
+/** Agent (non-background) task.started rows seed spawn CTA batches. */
+function isAgentTaskStartedActivity(activity: OrchestrationThreadActivity): boolean {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  if (!payload || typeof payload.taskId !== "string") {
+    return false;
+  }
+  return !isBackgroundTaskActivity(payload);
+}
+
 function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
   const payload =
     activity.payload && typeof activity.payload === "object"
@@ -689,7 +701,11 @@ export function deriveWorkLogEntries(
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
     if (activity.kind === "tool.started") continue;
-    if (activity.kind === "task.started") continue;
+    // Agent task.started rows are CTA seeds: they carry the true spawn turn,
+    // which is the batch key (completions of background subagents arrive
+    // under later synthetic turns and must not start new batches). They
+    // collapse into the batch's single CTA row, never render standalone.
+    if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
     if (activity.kind === "task.updated") continue;
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
@@ -743,7 +759,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);
-  const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
+  const isTaskActivity =
+    activity.kind === "task.started" ||
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
       ? payload.summary
@@ -870,13 +889,25 @@ function collapseDerivedWorkLogEntries(
   // contains or how their progress rows interleave (quiet-timeline
   // guarantee).
   const spawnRowIndex = new Map<string, number>();
+  // Batch membership is decided once, at the FIRST row seen for a taskId.
+  // Claude background subagents settle between turns, so their completion
+  // rows carry fresh synthetic turn ids (or none) — keying each row by its
+  // own turn splintered one batch into a stream of "Kicked off N subagents"
+  // rows (live-test finding, thread 7ac7ef05).
+  const groupKeyByTaskId = new Map<string, string>();
   for (const entry of entries) {
     const isTaskRow =
       entry.taskId !== undefined &&
       !entry.isBackgroundTask &&
-      (entry.activityKind === "task.progress" || entry.activityKind === "task.completed");
+      (entry.activityKind === "task.started" ||
+        entry.activityKind === "task.progress" ||
+        entry.activityKind === "task.completed");
     if (isTaskRow && entry.taskId !== undefined) {
-      const groupKey = agentSpawnGroupKey(entry);
+      const rememberedKey = groupKeyByTaskId.get(entry.taskId);
+      const groupKey = rememberedKey ?? agentSpawnGroupKey(entry);
+      if (rememberedKey === undefined) {
+        groupKeyByTaskId.set(entry.taskId, groupKey);
+      }
       const workflowId = groupKey.startsWith("wf:") ? groupKey.slice(3) : null;
       const existingIndex = spawnRowIndex.get(groupKey);
       if (existingIndex !== undefined) {
