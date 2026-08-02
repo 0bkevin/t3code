@@ -1455,6 +1455,16 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
+      // Wait for the three task.* runtime events to prove the lifecycle
+      // handlers processed the emissions (no wall-clock sleeps under the
+      // test clock).
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type.startsWith("task.")),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
       const session = yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
@@ -1495,8 +1505,7 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session",
       } as unknown as SDKMessage);
 
-      // Let the stream handlers process the emitted messages.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      yield* Fiber.join(taskEventsFiber);
 
       yield* adapter.interruptTurn(session.threadId);
 

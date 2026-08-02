@@ -3168,7 +3168,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
         const endedAt =
           typeof patch.end_time === "number" && Number.isFinite(patch.end_time)
-            ? new Date(patch.end_time).toISOString()
+            ? DateTime.formatIso(DateTime.makeUnsafe(patch.end_time))
             : undefined;
         yield* offerRuntimeEvent({
           ...base,
