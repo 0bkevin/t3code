@@ -555,7 +555,27 @@ function mapCollabAgentEvent(
           },
         ];
       }
-      // started/interacted → the child is (again) actively driven.
+      if (activityKind === "started") {
+        // Wire-probe finding: children often register via subAgentActivity
+        // alone (no thread/started with a spawn source), so this is the one
+        // shot at a task.started with a real name — agentPath leaf beats a
+        // bare thread-id title.
+        return [
+          {
+            ...base,
+            type: "task.started",
+            payload: {
+              taskId,
+              description: title,
+              title,
+              role,
+              ...(agentPath ? { agentPath } : {}),
+              timelineBypass: true,
+            },
+          },
+        ];
+      }
+      // interacted → the child is (again) actively driven.
       return [
         {
           ...base,

@@ -84,3 +84,33 @@ describe("threadBackgroundLiveness", () => {
     expect(getThreadBackgroundLiveness(threadId)).toBeNull();
   });
 });
+
+describe("idle handling", () => {
+  it("an all-idle fleet is not live; resuming revives it", () => {
+    const threadId = "t-live-4";
+    recordTaskLiveness({
+      threadId,
+      taskId: "c1",
+      taskType: undefined,
+      status: "running",
+      kind: "updated",
+    });
+    expect(getThreadBackgroundLiveness(threadId)).toBe("working");
+    recordTaskLiveness({
+      threadId,
+      taskId: "c1",
+      taskType: undefined,
+      status: "idle",
+      kind: "updated",
+    });
+    expect(getThreadBackgroundLiveness(threadId)).toBeNull();
+    recordTaskLiveness({
+      threadId,
+      taskId: "c1",
+      taskType: undefined,
+      status: "running",
+      kind: "updated",
+    });
+    expect(getThreadBackgroundLiveness(threadId)).toBe("working");
+  });
+});

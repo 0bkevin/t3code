@@ -1782,13 +1782,34 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(entries).toHaveLength(1);
   });
 
-  it("suppresses timelineBypass rows (Codex children, workflow members)", () => {
+  it("folds timelineBypass agent rows into one CTA (Codex children, workflow members)", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
         kind: "task.progress",
         summary: "child work",
         tone: "info",
         payload: { taskId: "child-1", timelineBypass: true },
+      }),
+      makeActivity({
+        kind: "task.progress",
+        summary: "child work again",
+        tone: "info",
+        payload: { taskId: "child-2", timelineBypass: true },
+      }),
+    ]);
+    // Not suppressed outright (a Codex fleet's rows are ALL bypassed and
+    // still need a CTA anchor) — but never more than the batch's single row.
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.agentSpawn?.agentTaskIds).toEqual(["child-1", "child-2"]);
+  });
+
+  it("timelineBypass non-agent rows (background shells) stay suppressed", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.progress",
+        summary: "stall",
+        tone: "info",
+        payload: { taskId: "sh-1", taskType: "local_bash", timelineBypass: true },
       }),
     ]);
     expect(entries).toHaveLength(0);

@@ -668,7 +668,16 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
     return false;
   }
   if (payload.timelineBypass === true) {
-    return true;
+    // Bypassed agent lifecycle rows still feed the spawn CTA: collapse folds
+    // every such row into its batch's single row, so letting them through
+    // preserves the quiet-timeline invariant while giving Codex children —
+    // whose rows are ALL bypassed — a CTA anchor (wire-probe finding: no
+    // CTA ever formed for a Codex fleet).
+    const isAgentTaskRow =
+      (activity.kind === "task.progress" || activity.kind === "task.completed") &&
+      typeof payload.taskId === "string" &&
+      !isBackgroundTaskActivity(payload);
+    return !isAgentTaskRow;
   }
   return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
 }

@@ -71,8 +71,11 @@ export function recordTaskLiveness(input: {
   const bucket =
     taskType !== undefined && MONITOR_TASK_TYPES.has(taskType) ? state.monitors : state.agents;
 
+  // Idle counts as not-live: a resting (resumable) Codex child isn't doing
+  // anything, and an all-idle fleet must not pin the thread at Working.
   const terminal =
     input.kind === "completed" ||
+    input.status === "idle" ||
     (input.status !== undefined && TERMINAL_STATUSES.has(input.status));
   if (terminal) {
     bucket.delete(input.taskId);
