@@ -78,6 +78,10 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  /** Grouping key for subagent lifecycle rows (one row per agent). */
+  taskId?: string;
+  /** Agent role (subagent_type) for labeled timeline rows. */
+  agentRole?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -624,6 +628,30 @@ export function hasActionableProposedPlan(
   return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
+/**
+ * Quiet-timeline guarantee: the work log carries the parent's narrative plus
+ * at most one row per agent. Everything an agent does internally lives in the
+ * Agents surface:
+ * - timelineBypass rows (Codex children, workflow members) never render here;
+ * - tool rows attributed to an owning agent (payload.agentId) are re-homed;
+ * - task.progress ticks collapse into one row per taskId;
+ * - task.updated is fold input only (status patches are not narrative).
+ * Unattributed rows always stay: over-hiding loses the only terminal signal.
+ */
+function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  if (!payload) {
+    return false;
+  }
+  if (payload.timelineBypass === true) {
+    return true;
+  }
+  return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
@@ -632,9 +660,12 @@ export function deriveWorkLogEntries(
   for (const activity of ordered) {
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
+    if (activity.kind === "task.updated") continue;
+    if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
+    if (isAgentInternalActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));
   }
   return collapseDerivedWorkLogEntries(entries).map((entry) => {
@@ -756,6 +787,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
   }
+  if (isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0) {
+    entry.taskId = payload.taskId;
+  }
+  if (isTaskActivity && typeof payload?.role === "string" && payload.role.length > 0) {
+    entry.agentRole = payload.role;
+  }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
@@ -767,7 +804,24 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
+  // Subagent rows collapse by identity, not adjacency: with concurrent
+  // agents, one agent's progress rows interleave with another's, and each
+  // agent still gets exactly one row (quiet-timeline guarantee).
+  const taskRowIndex = new Map<string, number>();
   for (const entry of entries) {
+    const isTaskRow =
+      entry.taskId !== undefined &&
+      (entry.activityKind === "task.progress" || entry.activityKind === "task.completed");
+    if (isTaskRow) {
+      const existingIndex = taskRowIndex.get(entry.taskId!);
+      if (existingIndex !== undefined) {
+        collapsed[existingIndex] = mergeDerivedWorkLogEntries(collapsed[existingIndex]!, entry);
+        continue;
+      }
+      taskRowIndex.set(entry.taskId!, collapsed.length);
+      collapsed.push(entry);
+      continue;
+    }
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
       collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
@@ -847,6 +901,14 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
+  // Subagent lifecycle rows collapse by agent identity: one row per agent,
+  // progress ticks fold into it, the terminal row wins the label.
+  if (
+    entry.taskId &&
+    (entry.activityKind === "task.progress" || entry.activityKind === "task.completed")
+  ) {
+    return `task${entry.taskId}`;
+  }
   if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
     return undefined;
   }

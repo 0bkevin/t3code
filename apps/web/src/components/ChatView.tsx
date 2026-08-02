@@ -139,6 +139,13 @@ import {
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { AgentsPanel } from "./AgentsPanel";
+import { AgentsLiveStrip } from "./chat/AgentsLiveStrip";
+import { WorkflowRunCard } from "./chat/WorkflowRunCard";
+import {
+  deriveAgentPanelModel,
+  foldSubagentActivities,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -2050,6 +2057,13 @@ function ChatViewContent(props: ChatViewProps) {
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  // Native subagent fold: memoized by activity-list identity, shared by the
+  // Agents surface, live strip, and workflow cards. v2Projection is null
+  // until orchestration-v2 lands (source precedence lives in the derive).
+  const agentPanelModel = useMemo(
+    () => deriveAgentPanelModel({ agents: foldSubagentActivities(threadActivities) }),
+    [threadActivities],
+  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -3132,6 +3146,10 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
+  const addAgentsSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "agents");
+  }, [activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -5703,6 +5721,8 @@ function ChatViewContent(props: ChatViewProps) {
         timestampFormat={timestampFormat}
         mode="embedded"
       />
+    ) : activeRightPanelSurface?.kind === "agents" ? (
+      <AgentsPanel model={agentPanelModel} />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (
@@ -5892,6 +5912,37 @@ function ChatViewContent(props: ChatViewProps) {
                   )}
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
+                  ) : null}
+                  {agentPanelModel.workflows.some(
+                    (group) =>
+                      group.workflow.status === "running" ||
+                      group.workflow.status === "pending" ||
+                      group.workflow.status === "waiting",
+                  ) ? (
+                    // Interim mount: workflow run cards live above the composer
+                    // until the virtualized timeline gains a card row kind
+                    // (converges with orchestration-v2's V2LifecycleRow).
+                    <div className="mx-auto w-full max-w-3xl px-1">
+                      {agentPanelModel.workflows
+                        .filter(
+                          (group) =>
+                            group.workflow.status === "running" ||
+                            group.workflow.status === "pending" ||
+                            group.workflow.status === "waiting",
+                        )
+                        .map((group) => (
+                          <WorkflowRunCard
+                            key={group.workflow.id}
+                            group={group}
+                            onOpenAgents={addAgentsSurface}
+                          />
+                        ))}
+                    </div>
+                  ) : null}
+                  {agentPanelModel.liveCount > 0 ? (
+                    <div className="mx-auto w-full max-w-3xl px-1 pb-1">
+                      <AgentsLiveStrip model={agentPanelModel} onOpen={addAgentsSurface} />
+                    </div>
                   ) : null}
                   <div
                     className="relative"
@@ -6134,6 +6185,7 @@ function ChatViewContent(props: ChatViewProps) {
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
+          onAddAgents={addAgentsSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
@@ -6161,6 +6213,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
+            onAddAgents={addAgentsSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}

@@ -80,6 +80,8 @@ interface WorkLogEntry {
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
+  /** Grouping key for subagent lifecycle rows (one row per agent). */
+  taskId?: string;
 }
 
 type RawThreadFeedEntry =
@@ -235,6 +237,26 @@ function resolvePendingUserInputAnswer(
   return normalizeDraftAnswer(draft?.selectedOptionLabel);
 }
 
+/**
+ * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
+ * activity lives in the Agents sheet, not the work log. task.completed rows
+ * are kept — with no workflow card on mobile they are the terminal signal
+ * (a surface that hides rows must keep its own terminal signal).
+ */
+function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  if (!payload) {
+    return false;
+  }
+  if (payload.timelineBypass === true && activity.kind !== "task.completed") {
+    return true;
+  }
+  return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+}
+
 function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): DerivedWorkLogEntry[] {
@@ -243,9 +265,12 @@ function deriveWorkLogEntries(
   for (const activity of ordered) {
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
+    if (activity.kind === "task.updated") continue;
+    if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
+    if (isAgentInternalActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));
   }
   return collapseDerivedWorkLogEntries(entries);
@@ -284,10 +309,15 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? payload.detail
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
+  const taskId =
+    isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0
+      ? payload.taskId
+      : undefined;
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
+    ...(taskId ? { taskId } : {}),
     label: taskLabel || activity.summary,
     tone:
       activity.kind === "task.progress"
@@ -352,7 +382,23 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
+  // Subagent rows collapse by identity, not adjacency (quiet-timeline
+  // guarantee; mirrors web's session-logic).
+  const taskRowIndex = new Map<string, number>();
   for (const entry of entries) {
+    const isTaskRow =
+      entry.taskId !== undefined &&
+      (entry.activityKind === "task.progress" || entry.activityKind === "task.completed");
+    if (isTaskRow && entry.taskId !== undefined) {
+      const existingIndex = taskRowIndex.get(entry.taskId);
+      if (existingIndex !== undefined) {
+        collapsed[existingIndex] = mergeDerivedWorkLogEntries(collapsed[existingIndex]!, entry);
+        continue;
+      }
+      taskRowIndex.set(entry.taskId, collapsed.length);
+      collapsed.push(entry);
+      continue;
+    }
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
       collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
