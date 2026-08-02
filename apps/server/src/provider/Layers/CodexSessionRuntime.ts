@@ -950,6 +950,20 @@ export const makeCodexSessionRuntime = (
           notification.params.item.type === "subAgentActivity"
         ) {
           const item = notification.params.item;
+          // Never register the session's ROOT thread as its own child. The
+          // wire emits subAgentActivity {agentPath: "/root", interacted}
+          // about the root during collab runs; registering it intercepted
+          // every subsequent root notification — including the final
+          // assistant message and turn/completed — so the thread hung
+          // "working" after all subagents finished (live-probe finding).
+          const rootProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+          if (
+            item.agentThreadId === rootProviderThreadId ||
+            item.agentPath === "/root" ||
+            item.agentPath === "/"
+          ) {
+            return false;
+          }
           yield* Ref.update(collabChildAgentsRef, (current) => {
             if (current.has(item.agentThreadId)) {
               return current;
@@ -982,6 +996,12 @@ export const makeCodexSessionRuntime = (
         // become agent-scoped synthetic events instead of parent chatter.
         const providerConversationId = readNotificationThreadId(notification);
         if (!providerConversationId) {
+          return false;
+        }
+        // Belt-and-braces: the root thread's traffic must never be
+        // intercepted, whatever the registry says.
+        const interceptRootId = currentProviderThreadId(yield* Ref.get(sessionRef));
+        if (providerConversationId === interceptRootId) {
           return false;
         }
         const children = yield* Ref.get(collabChildAgentsRef);
