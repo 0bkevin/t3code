@@ -1812,3 +1812,37 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(entries).toHaveLength(0);
   });
 });
+
+describe("rerun workflows", () => {
+  it("each workflow run gets its own CTA row (distinct coordinator ids)", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.progress",
+        summary: "run 1",
+        tone: "info",
+        payload: { taskId: "wf-run1", taskType: "local_workflow", workflowName: "math-check" },
+        turnId: "turn-1",
+        sequence: 1,
+      }),
+      makeActivity({
+        kind: "task.completed",
+        summary: "run 1 done",
+        tone: "info",
+        payload: { taskId: "wf-run1", status: "completed", taskType: "local_workflow" },
+        turnId: "turn-1",
+        sequence: 2,
+      }),
+      makeActivity({
+        kind: "task.progress",
+        summary: "run 2",
+        tone: "info",
+        payload: { taskId: "wf-run2", taskType: "local_workflow", workflowName: "math-check" },
+        turnId: "turn-2",
+        sequence: 3,
+      }),
+    ]);
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows.map((row) => row.agentSpawn!.workflowId)).toEqual(["wf-run1", "wf-run2"]);
+    expect(spawnRows.map((row) => row.turnId)).toEqual(["turn-1", "turn-2"]);
+  });
+});
