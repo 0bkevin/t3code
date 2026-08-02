@@ -269,6 +269,12 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
 
 /** Tool-like row with neither clear success nor failure (empty, incomplete, in progress, etc.). */
 export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolean {
+  // Spawn CTA rows are never neutral-hidden: mid-run they derive from
+  // task.progress (tone "thinking") and the neutral filter was swallowing
+  // them exactly while the fleet ran — the one moment they matter most.
+  if (entry.agentSpawn !== undefined) {
+    return false;
+  }
   if (!workLogEntryIsToolLike(entry)) {
     return false;
   }
@@ -871,7 +877,15 @@ function collapseDerivedWorkLogEntries(
           : [...(existing.agentSpawn?.agentTaskIds ?? []), entry.taskId];
         collapsed[existingIndex] = {
           ...mergeDerivedWorkLogEntries(existing, entry),
-          // The CTA row keeps the group identity, not the last agent's.
+          // The CTA row keeps the group's ANCHOR identity, not the last
+          // agent's: id/createdAt/turnId stay pinned to the spawn point so
+          // the row renders where the run launched instead of drifting to
+          // the newest progress tick (mid-run it drifted below the whole
+          // conversation, reading as "no visualization"), and the stable id
+          // keeps React state/virtualization sane.
+          id: existing.id,
+          createdAt: existing.createdAt,
+          turnId: existing.turnId ?? null,
           ...(existing.taskId !== undefined ? { taskId: existing.taskId } : {}),
           label: existing.label,
           agentSpawn: { workflowId, agentTaskIds },
