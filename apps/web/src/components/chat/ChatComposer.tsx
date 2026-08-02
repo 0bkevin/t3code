@@ -182,6 +182,7 @@ import {
   PenLineIcon,
   SparklesIcon,
   MicIcon,
+  SquareIcon,
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
@@ -1290,6 +1291,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     config: {
       provider: settings.voiceTranscriptionProvider,
       apiKey: settings.voiceTranscriptionApiKey,
+      model: settings.voiceTranscriptionModel,
     },
     onTranscript: appendVoiceTranscript,
   });
@@ -3127,14 +3129,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             </div>
           </div>
 
-          {voiceTranscription.status !== "idle" ? (
-            <VoiceTranscriptionPanel
-              status={voiceTranscription.status}
-              elapsedMs={voiceTranscription.elapsedMs}
-              levels={voiceTranscription.levels}
-              onStop={voiceTranscription.stop}
-            />
-          ) : settings.voiceTranscriptionEnabled && voiceTranscription.error ? (
+          {voiceTranscription.status === "idle" &&
+          settings.voiceTranscriptionEnabled &&
+          voiceTranscription.error ? (
             <p className="mx-4 mb-2 text-xs text-destructive" role="alert">
               {voiceTranscription.error}
             </p>
@@ -3160,7 +3157,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 showMobilePendingAnswerActions && "hidden sm:flex",
               )}
             >
-              <div className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {voiceTranscription.status !== "idle" ? (
+                <VoiceTranscriptionPanel
+                  status={voiceTranscription.status}
+                  elapsedMs={voiceTranscription.elapsedMs}
+                  levels={voiceTranscription.levels}
+                />
+              ) : null}
+              <div
+                className={
+                  voiceTranscription.status === "idle"
+                    ? "-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                    : "hidden"
+                }
+              >
                 {noProviderAvailable ? (
                   <Button
                     type="button"
@@ -3244,9 +3254,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
               >
                 {settings.voiceTranscriptionEnabled &&
-                voiceTranscription.status === "idle" &&
                 !isComposerApprovalState &&
-                pendingUserInputs.length === 0 ? (
+                pendingUserInputs.length === 0 &&
+                voiceTranscription.status !== "transcribing" ? (
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -3256,14 +3266,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           variant="ghost"
                           disabled={isConnecting || projectSelectionRequired}
                           className="rounded-full text-muted-foreground"
-                          onClick={() => void voiceTranscription.start()}
-                          aria-label="Start dictation"
+                          onClick={() =>
+                            voiceTranscription.status === "recording"
+                              ? voiceTranscription.stop()
+                              : void voiceTranscription.start()
+                          }
+                          aria-label={
+                            voiceTranscription.status === "recording"
+                              ? "Stop dictation"
+                              : "Start dictation"
+                          }
                         >
-                          <MicIcon className="size-4" />
+                          {voiceTranscription.status === "recording" ? (
+                            <SquareIcon className="size-3 fill-current" />
+                          ) : (
+                            <MicIcon className="size-4" />
+                          )}
                         </Button>
                       }
                     />
-                    <TooltipPopup side="top">Start dictation</TooltipPopup>
+                    <TooltipPopup side="top">
+                      {voiceTranscription.status === "recording"
+                        ? "Stop dictation"
+                        : "Start dictation"}
+                    </TooltipPopup>
                   </Tooltip>
                 ) : null}
                 <ComposerFooterPrimaryActions

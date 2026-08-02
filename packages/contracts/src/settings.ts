@@ -138,6 +138,7 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("openai" as const)),
   ),
   voiceTranscriptionApiKey: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  voiceTranscriptionModel: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
@@ -723,6 +724,7 @@ export const ClientSettingsPatch = Schema.Struct({
   voiceTranscriptionEnabled: Schema.optionalKey(Schema.Boolean),
   voiceTranscriptionProvider: Schema.optionalKey(VoiceTranscriptionProvider),
   voiceTranscriptionApiKey: Schema.optionalKey(TrimmedString),
+  voiceTranscriptionModel: Schema.optionalKey(TrimmedString),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
