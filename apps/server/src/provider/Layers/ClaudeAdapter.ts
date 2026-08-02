@@ -199,6 +199,8 @@ interface ClaudeTaskAgentState {
   workflowName: string | undefined;
   skipTranscript: boolean;
   runHandles: TaskRunHandles | undefined;
+  /** Set when this task was launched from inside a subagent. */
+  owningAgentId: string | undefined;
 }
 
 interface ClaudeSessionContext {
@@ -951,6 +953,7 @@ function taskLinkageFor(
   }
   return {
     ...(agent.taskType ? { taskType: agent.taskType } : {}),
+    ...(agent.owningAgentId ? { agentId: agent.owningAgentId } : {}),
     ...(agent.description ? { title: agent.description } : {}),
     ...(agent.subagentType ? { role: agent.subagentType } : {}),
     ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),
@@ -2753,6 +2756,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             workflowName: existing?.workflowName,
             skipTranscript: existing?.skipTranscript ?? false,
             runHandles,
+            owningAgentId: existing?.owningAgentId,
           });
         }
       }
@@ -3079,6 +3083,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_started": {
+        // A task launched by a tool that itself ran inside a subagent (the
+        // in-flight tool carries agentId from parent_tool_use_id) is
+        // agent-internal: a subagent's background shell, not parent work.
+        const launchingTool = message.tool_use_id
+          ? Array.from(context.inFlightTools.values()).find(
+              (tool) => tool.itemId === message.tool_use_id,
+            )
+          : undefined;
+        const owningAgentId = launchingTool?.agentId;
         // Remember the agent identity so every later task.* payload for this
         // taskId is self-describing (identity must survive activity retention).
         context.taskAgents.set(message.task_id, {
@@ -3090,6 +3103,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           workflowName: message.workflow_name,
           skipTranscript: message.skip_transcript === true,
           runHandles: context.taskAgents.get(message.task_id)?.runHandles,
+          owningAgentId,
         });
         yield* offerRuntimeEvent({
           ...base,
@@ -3098,6 +3112,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             taskId: RuntimeTaskId.make(message.task_id),
             description: message.description,
             ...(message.task_type ? { taskType: message.task_type } : {}),
+            ...(owningAgentId ? { agentId: owningAgentId } : {}),
             ...(message.description ? { title: message.description } : {}),
             ...(message.subagent_type ? { role: message.subagent_type } : {}),
             ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),

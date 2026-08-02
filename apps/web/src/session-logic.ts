@@ -679,6 +679,18 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
+  // A task owned by an agent (a subagent's own background shell) is
+  // agent-internal regardless of bypass tagging.
+  if (
+    (activity.kind === "task.started" ||
+      activity.kind === "task.progress" ||
+      activity.kind === "task.updated" ||
+      activity.kind === "task.completed") &&
+    typeof payload.agentId === "string" &&
+    payload.agentId.trim().length > 0
+  ) {
+    return true;
+  }
   if (payload.timelineBypass === true) {
     // Bypassed agent lifecycle rows still feed the spawn CTA: collapse folds
     // every such row into its batch's single row, so letting them through

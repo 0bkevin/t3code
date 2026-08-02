@@ -62,9 +62,17 @@ export function recordTaskLiveness(input: {
   readonly taskType: string | undefined;
   readonly status: string | undefined;
   readonly kind: "started" | "progress" | "updated" | "completed";
+  /** Present when the task is a subagent's internal work. */
+  readonly agentId?: string | undefined;
 }): void {
   const taskType = input.taskType;
   if (taskType !== undefined && INERT_TASK_TYPES.has(taskType)) {
+    return;
+  }
+  // A subagent's internal task (its own shells) is covered by the agent's
+  // liveness; counting it separately would keep threads Monitoring/Working
+  // after the agent itself settled.
+  if (input.agentId !== undefined) {
     return;
   }
   const state = stateFor(input.threadId);

@@ -317,6 +317,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
   const fields: Record<string, unknown> = {};
   for (const key of [
     "taskType",
+    "agentId",
     "title",
     "role",
     "model",
@@ -1879,12 +1880,14 @@ const make = Effect.gen(function* () {
             taskId: string;
             taskType?: string;
             status?: string;
+            agentId?: string;
           };
           recordTaskLiveness({
             threadId: thread.id,
             taskId: payload.taskId,
             taskType: payload.taskType,
             status: payload.status,
+            agentId: payload.agentId,
             kind:
               event.type === "task.started"
                 ? "started"

@@ -510,6 +510,12 @@ const taskAgentLinkageFields = {
   /** SDK task_type (subagent/shell/monitor/local_workflow/…), repeated on
    * every row so folds can classify without the start row. */
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * Owning agent when the task itself was launched from inside a subagent
+   * (e.g. a subagent's background shell). Clients treat such tasks as
+   * agent-internal and keep them out of the parent work log.
+   */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   title: Schema.optional(TrimmedNonEmptyStringSchema),
   role: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
