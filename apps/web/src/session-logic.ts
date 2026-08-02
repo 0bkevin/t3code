@@ -1,5 +1,6 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
+import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -100,6 +101,8 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   collapseKey?: string;
   toolCallId?: string;
   isWorkflowCoordinator?: boolean;
+  /** Shell/monitor/plan tasks: ordinary work-log rows, never spawn CTAs. */
+  isBackgroundTask?: boolean;
 }
 
 export interface PendingApproval {
@@ -812,6 +815,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   ) {
     entry.isWorkflowCoordinator = true;
   }
+  if (isTaskActivity && payload && isBackgroundTaskActivity(payload)) {
+    entry.isBackgroundTask = true;
+  }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
@@ -852,6 +858,7 @@ function collapseDerivedWorkLogEntries(
   for (const entry of entries) {
     const isTaskRow =
       entry.taskId !== undefined &&
+      !entry.isBackgroundTask &&
       (entry.activityKind === "task.progress" || entry.activityKind === "task.completed");
     if (isTaskRow && entry.taskId !== undefined) {
       const groupKey = agentSpawnGroupKey(entry);

@@ -105,6 +105,26 @@ const RECENT_ACTIVITY_LIMIT = 6;
 const SUMMARY_CHAR_LIMIT = 180;
 const ROSTER_LIMIT = 100;
 
+/**
+ * SDK task types that are agents. Everything else (shell, monitor, plan,
+ * unknown-but-typed) is background work and stays out of the roster. Rows
+ * with no taskType at all are kept: workflow members and Codex children are
+ * synthesized without one, and excluding them would empty the panel.
+ */
+const AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
+  "subagent",
+  "agent",
+  "local_workflow",
+  "remote_agent",
+  "workflow",
+]);
+
+/** True when this activity's payload describes a non-agent background task. */
+export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
+  const taskType = typeof payload.taskType === "string" ? payload.taskType : undefined;
+  return taskType !== undefined && !AGENT_TASK_TYPES.has(taskType);
+}
+
 function bounded(value: string): string {
   return value.length <= SUMMARY_CHAR_LIMIT ? value : `${value.slice(0, SUMMARY_CHAR_LIMIT - 1)}…`;
 }
@@ -440,9 +460,11 @@ export function foldSubagentActivities(
       case "task.started": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
-        // Plan-mode "tasks" and other ambient work are not agents.
+        // Only real agents join the roster. Shells, monitors, and plan-mode
+        // tasks are background work — they render in the ordinary work log,
+        // not the Agents surface (a "Run 12s stall" shell is not a subagent).
         const taskType = asString(payload.taskType);
-        if (taskType === "plan") break;
+        if (taskType !== undefined && !AGENT_TASK_TYPES.has(taskType)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         // Order-robustness: a start row arriving after a terminal state is a
@@ -464,6 +486,7 @@ export function foldSubagentActivities(
       case "task.progress": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
+        if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
@@ -494,6 +517,7 @@ export function foldSubagentActivities(
       case "task.updated": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
+        if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         const status = asRuntimeStatus(payload.status);
@@ -510,6 +534,7 @@ export function foldSubagentActivities(
       case "task.completed": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
+        if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;

@@ -507,6 +507,9 @@ export type TaskRunHandles = typeof TaskRunHandles.Type;
  * All fields optional: old emitters and old rows decode unchanged.
  */
 const taskAgentLinkageFields = {
+  /** SDK task_type (subagent/shell/monitor/local_workflow/…), repeated on
+   * every row so folds can classify without the start row. */
+  taskType: Schema.optional(TrimmedNonEmptyStringSchema),
   title: Schema.optional(TrimmedNonEmptyStringSchema),
   role: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -535,7 +538,6 @@ export type TaskAgentLinkage = typeof TaskAgentLinkage.Type;
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
-  taskType: Schema.optional(TrimmedNonEmptyStringSchema),
   ...taskAgentLinkageFields,
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;

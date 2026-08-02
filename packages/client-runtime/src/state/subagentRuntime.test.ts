@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
   deriveAgentPanelModel,
@@ -437,5 +437,24 @@ describe("formatSubagentTokenCount", () => {
     expect(formatSubagentTokenCount(41200)).toBe("41.2k");
     expect(formatSubagentTokenCount(247000)).toBe("247k");
     expect(formatSubagentTokenCount(1_400_000)).toBe("1.4M");
+  });
+});
+
+describe("background task exclusion", () => {
+  it("shells and monitors never join the roster (from any lifecycle row)", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "shell-1", taskType: "shell", title: "Run 12s stall" }),
+      activity("task.progress", { taskId: "shell-2", taskType: "shell", title: "Run stall" }),
+      activity("task.completed", { taskId: "mon-1", taskType: "monitor", status: "completed" }),
+      activity("task.started", { taskId: "agent-1", taskType: "subagent", title: "Real agent" }),
+    ]);
+    expect(agents.map((agent) => agent.id)).toEqual(["agent-1"]);
+  });
+
+  it("rows without a taskType stay in the roster (workflow members, Codex children)", () => {
+    const agents = fold([
+      activity("task.progress", { taskId: "wf-1:wf:0", status: "running", parentAgentId: "wf-1" }),
+    ]);
+    expect(agents).toHaveLength(1);
   });
 });

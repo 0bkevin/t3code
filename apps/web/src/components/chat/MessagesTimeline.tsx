@@ -1977,7 +1977,17 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   ).length;
   const waiting = agents.filter((agent) => agent.status === "waiting").length;
   const failed = agents.filter((agent) => agent.status === "failed").length;
-  const live = running + waiting > 0;
+  // The coordinator's own status is authoritative for workflows: dynamic
+  // spawns mean the member list can be momentarily all-settled while the
+  // run is still mid-flight (the "completed" lie from live testing). A
+  // workflow is live until the coordinator itself reaches a terminal state.
+  const coordinatorStatus = workflowGroup?.workflow.status;
+  const coordinatorSettled =
+    coordinatorStatus === "completed" ||
+    coordinatorStatus === "failed" ||
+    coordinatorStatus === "cancelled" ||
+    coordinatorStatus === "interrupted";
+  const live = workflowGroup !== undefined ? !coordinatorSettled : running + waiting > 0;
   const totalTokens = agents.reduce(
     (sum, agent) => sum + (agent.usage?.totalTokens ?? 0),
     spawn.workflowId ? (workflowGroup?.workflow.usage?.totalTokens ?? 0) : 0,

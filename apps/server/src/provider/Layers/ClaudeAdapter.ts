@@ -950,6 +950,7 @@ function taskLinkageFor(
     return {};
   }
   return {
+    ...(agent.taskType ? { taskType: agent.taskType } : {}),
     ...(agent.description ? { title: agent.description } : {}),
     ...(agent.subagentType ? { role: agent.subagentType } : {}),
     ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),

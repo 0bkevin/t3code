@@ -315,6 +315,7 @@ function requestKindFromCanonicalRequestType(
 function taskLinkageActivityFields(payload: Record<string, unknown>): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
   for (const key of [
+    "taskType",
     "title",
     "role",
     "model",
