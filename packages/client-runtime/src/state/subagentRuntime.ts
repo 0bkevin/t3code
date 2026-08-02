@@ -116,17 +116,27 @@ const NON_AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
   "shell",
   "local_bash",
   "monitor",
+  "monitor_mcp",
+  "dream",
   "plan",
 ]);
 
+function isNonAgentTaskType(taskType: string | undefined): boolean {
+  return taskType !== undefined && NON_AGENT_TASK_TYPES.has(taskType);
+}
+
 /** True when this activity's payload describes a non-agent background task. */
 export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
-  // Owned by another agent (a subagent's internal shell): not a roster row.
-  if (typeof payload.agentId === "string" && payload.agentId.trim().length > 0) {
-    return true;
-  }
   const taskType = typeof payload.taskType === "string" ? payload.taskType : undefined;
-  return taskType !== undefined && NON_AGENT_TASK_TYPES.has(taskType);
+  const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+  // A subagent's internal SHELLS are background (its own liveness covers
+  // them) — but a nested AGENT spawned from inside a subagent is still an
+  // agent and belongs in the roster (review finding: agentId alone hid
+  // nested agents entirely).
+  if (ownedByAgent) {
+    return taskType === undefined || isNonAgentTaskType(taskType);
+  }
+  return isNonAgentTaskType(taskType);
 }
 
 function bounded(value: string): string {

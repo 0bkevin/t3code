@@ -12,7 +12,7 @@
  * The client-supplied path is a hint from the workflow's runHandles; it is
  * never trusted beyond these checks.
  */
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -38,15 +38,17 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
   }
 
   const root = yield* Effect.tryPromise({
-    try: () => NodeFS.realpath(scriptsRoot()),
-    catch: () => new OrchestrationGetWorkflowScriptError({ message: "Script root unavailable." }),
+    try: () => NodeFSP.realpath(scriptsRoot()),
+    catch: (cause) =>
+      new OrchestrationGetWorkflowScriptError({ message: "Script root unavailable.", cause }),
   });
 
   // Realpath the FILE itself (not just its directory): a symlink named
   // like a script inside a contained directory must not escape.
   const resolved = yield* Effect.tryPromise({
-    try: () => NodeFS.realpath(requested),
-    catch: () => new OrchestrationGetWorkflowScriptError({ message: "Script not found." }),
+    try: () => NodeFSP.realpath(requested),
+    catch: (cause) =>
+      new OrchestrationGetWorkflowScriptError({ message: "Script not found.", cause }),
   });
 
   if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {
@@ -56,34 +58,42 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
     return yield* fail("Resolved script is not a .js file.");
   }
 
-  const stat = yield* Effect.tryPromise({
-    try: () => NodeFS.stat(resolved),
-    catch: () => new OrchestrationGetWorkflowScriptError({ message: "Script not readable." }),
-  });
-  if (!stat.isFile()) {
-    return yield* fail("Script path is not a file.");
-  }
-
-  const handle = yield* Effect.tryPromise({
-    try: () => NodeFS.open(resolved, "r"),
-    catch: () => new OrchestrationGetWorkflowScriptError({ message: "Script not readable." }),
-  });
-  const truncated = stat.size > SCRIPT_BYTE_CAP;
-  const buffer = Buffer.alloc(Math.min(stat.size, SCRIPT_BYTE_CAP));
-  yield* Effect.tryPromise({
+  // TOCTOU-safe read (review finding): open FIRST, then verify what was
+  // actually opened via the file descriptor. Re-checking the path after
+  // open would race against a swap; fstat on the handle cannot.
+  const read = yield* Effect.tryPromise({
     try: async () => {
+      const handle = await NodeFSP.open(resolved, "r");
       try {
-        await handle.read(buffer, 0, buffer.length, 0);
+        const stat = await handle.stat();
+        if (!stat.isFile()) {
+          throw new Error("not a regular file");
+        }
+        // The opened inode must be the same one realpath resolved to: a
+        // process swapping the path between realpath and open changes the
+        // inode, which this comparison catches.
+        const pathStat = await NodeFSP.lstat(resolved);
+        if (stat.ino !== pathStat.ino || stat.dev !== pathStat.dev) {
+          throw new Error("file changed between resolution and open");
+        }
+        const truncated = stat.size > SCRIPT_BYTE_CAP;
+        const buffer = Buffer.alloc(Math.min(stat.size, SCRIPT_BYTE_CAP));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        return {
+          contents: buffer.subarray(0, bytesRead).toString("utf8"),
+          truncated,
+        };
       } finally {
         await handle.close();
       }
     },
-    catch: () => new OrchestrationGetWorkflowScriptError({ message: "Script read failed." }),
+    catch: (cause) =>
+      new OrchestrationGetWorkflowScriptError({ message: "Script read failed.", cause }),
   });
 
   return {
     scriptPath: resolved,
-    contents: buffer.toString("utf8"),
-    truncated,
+    contents: read.contents,
+    truncated: read.truncated,
   };
 });

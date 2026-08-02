@@ -1447,6 +1447,7 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedErrorClass
   "OrchestrationGetWorkflowScriptError",
   {
     message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 

@@ -32,7 +32,8 @@ import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionT
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { clearThreadLiveness, recordTaskLiveness } from "../threadBackgroundLiveness.ts";
+import { ThreadBackgroundLivenessService } from "../Services/ThreadBackgroundLiveness.ts";
+import { ThreadBackgroundLivenessLive } from "./ThreadBackgroundLiveness.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -801,6 +802,7 @@ export function runtimeEventToActivities(
 }
 
 const make = Effect.gen(function* () {
+  const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -1882,7 +1884,7 @@ const make = Effect.gen(function* () {
             status?: string;
             agentId?: string;
           };
-          recordTaskLiveness({
+          threadBackgroundLiveness.recordTaskLiveness({
             threadId: thread.id,
             taskId: payload.taskId,
             taskType: payload.taskType,
@@ -1900,7 +1902,7 @@ const make = Effect.gen(function* () {
           break;
         }
         case "session.exited":
-          clearThreadLiveness(thread.id);
+          threadBackgroundLiveness.clearThreadLiveness(thread.id);
           break;
         default:
           break;
@@ -1979,4 +1981,9 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  // Same module-level layer const as the snapshot query provides: Effect's
+  // layer memo-map dedupes by reference, so both see ONE registry instance.
+  Layer.provide(ThreadBackgroundLivenessLive),
+);

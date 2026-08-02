@@ -2,8 +2,9 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { afterAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, assert, describe } from "vite-plus/test";
 import { readWorkflowScript } from "./workflowScriptQuery.ts";
 
 const root = NodePath.join(NodeOS.homedir(), ".claude", "projects", "__wf_script_test__");
@@ -25,23 +26,33 @@ afterAll(() => {
 });
 
 describe("readWorkflowScript containment", () => {
-  it("serves a real script under the projects root", async () => {
-    const result = await Effect.runPromise(readWorkflowScript({ scriptPath }));
-    expect(result.contents).toContain("export const meta");
-    expect(result.truncated).toBe(false);
-  });
+  effectIt.effect("serves a real script under the projects root", () =>
+    Effect.gen(function* () {
+      const result = yield* readWorkflowScript({ scriptPath });
+      assert.include(result.contents, "export const meta");
+      assert.equal(result.truncated, false);
+    }),
+  );
 
-  it("rejects relative and non-js paths", async () => {
-    await expect(Effect.runPromise(readWorkflowScript({ scriptPath: "run.js" }))).rejects.toThrow();
-    await expect(
-      Effect.runPromise(readWorkflowScript({ scriptPath: scriptPath.replace(".js", ".ts") })),
-    ).rejects.toThrow();
-  });
+  effectIt.effect("rejects relative and non-js paths", () =>
+    Effect.gen(function* () {
+      const relative = yield* Effect.exit(readWorkflowScript({ scriptPath: "run.js" }));
+      assert.equal(relative._tag, "Failure");
+      const nonJs = yield* Effect.exit(
+        readWorkflowScript({ scriptPath: scriptPath.replace(".js", ".ts") }),
+      );
+      assert.equal(nonJs._tag, "Failure");
+    }),
+  );
 
-  it("rejects paths outside the root and symlink escapes", async () => {
-    await expect(Effect.runPromise(readWorkflowScript({ scriptPath: outside }))).rejects.toThrow();
-    // A symlink INSIDE the root pointing outside must also fail (realpath
-    // re-containment of the leaf).
-    await expect(Effect.runPromise(readWorkflowScript({ scriptPath: link }))).rejects.toThrow();
-  });
+  effectIt.effect("rejects paths outside the root and symlink escapes", () =>
+    Effect.gen(function* () {
+      const escaped = yield* Effect.exit(readWorkflowScript({ scriptPath: outside }));
+      assert.equal(escaped._tag, "Failure");
+      // A symlink INSIDE the root pointing outside must also fail (realpath
+      // re-containment of the leaf).
+      const sneaky = yield* Effect.exit(readWorkflowScript({ scriptPath: link }));
+      assert.equal(sneaky._tag, "Failure");
+    }),
+  );
 });

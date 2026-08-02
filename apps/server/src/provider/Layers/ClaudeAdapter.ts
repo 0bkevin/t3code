@@ -2334,18 +2334,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // re-homed by the quiet-timeline filter.
     const streamParentToolUseId = (message as { parent_tool_use_id?: string | null })
       .parent_tool_use_id;
-    if (
-      streamParentToolUseId !== null &&
-      streamParentToolUseId !== undefined &&
-      (event.type === "content_block_start" || event.type === "content_block_delta") &&
-      !(
+    if (streamParentToolUseId !== null && streamParentToolUseId !== undefined) {
+      // Drop only the subagent's narration (text/thinking); tool_use blocks
+      // and their input_json_delta frames must flow so attributed tool items
+      // keep their inputs (review finding: dropping deltas emptied inputs).
+      const dropStart =
         event.type === "content_block_start" &&
-        (event.content_block.type === "tool_use" ||
-          event.content_block.type === "server_tool_use" ||
-          event.content_block.type === "mcp_tool_use")
-      )
-    ) {
-      return;
+        event.content_block.type !== "tool_use" &&
+        event.content_block.type !== "server_tool_use" &&
+        event.content_block.type !== "mcp_tool_use";
+      const dropDelta =
+        event.type === "content_block_delta" &&
+        (event.delta.type === "text_delta" || event.delta.type === "thinking_delta");
+      if (dropStart || dropDelta) {
+        return;
+      }
     }
 
     if (event.type === "message_delta") {
@@ -4312,14 +4315,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // background subagents/shells keep running and keep burning tokens.
       // Stop every live task first (best-effort per task: one refusal must
       // not strand the rest or block the turn interrupt), then interrupt.
-      const stopTask = context.query.stopTask;
-      if (stopTask && context.liveTaskIds.size > 0) {
+      if (context.query.stopTask && context.liveTaskIds.size > 0) {
         const liveIds = Array.from(context.liveTaskIds);
         yield* Effect.forEach(
           liveIds,
           (taskId) =>
             Effect.tryPromise({
-              try: () => stopTask(taskId),
+              // Invoke through the query object: SDK methods rely on `this`.
+              try: () => context.query.stopTask!(taskId),
               catch: () => undefined,
             }).pipe(Effect.ignore),
           { concurrency: 8, discard: true },
