@@ -307,27 +307,52 @@ function WorkflowScriptView({
   );
 }
 
-function PhaseHeader({ phase }: { phase: AgentPanelWorkflowGroup["phases"][number] }) {
+/**
+ * Collapsible phase section (Claude Code Background-tasks pattern): live
+ * phases open by default, done phases collapsed to header + member dot row.
+ * User toggles override the default and stick for the phase's lifetime.
+ */
+function PhaseSection({ phase }: { phase: AgentPanelWorkflowGroup["phases"][number] }) {
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? phase.state === "running";
   return (
-    <div
-      className={cn(
-        "mt-2 flex items-center gap-1.5 px-1.5 text-[.65rem] font-medium uppercase tracking-wider",
-        phase.state === "done"
-          ? "text-success-foreground"
-          : phase.state === "running"
-            ? "text-info-foreground"
-            : "text-muted-foreground/70",
-      )}
-    >
-      {phase.state === "done" ? <Check aria-hidden className="size-3" /> : null}
-      <span>{phase.title}</span>
-      <span className="font-normal normal-case text-muted-foreground/70">
-        {phase.state === "pending" && phase.members.length === 0
-          ? "pending"
-          : phase.state === "done"
-            ? `${phase.settledCount} done`
-            : `${phase.activeCount} active · ${phase.settledCount} done`}
-      </span>
+    <div>
+      <button
+        type="button"
+        onClick={() => setUserOpen(!open)}
+        aria-expanded={open}
+        className={cn(
+          "mt-2 flex w-full items-center gap-1.5 rounded-sm px-1.5 text-left text-[.65rem] font-medium uppercase tracking-wider hover:bg-accent/40",
+          phase.state === "done"
+            ? "text-success-foreground"
+            : phase.state === "running"
+              ? "text-info-foreground"
+              : "text-muted-foreground/70",
+        )}
+      >
+        {open ? (
+          <ChevronDown aria-hidden className="size-3 shrink-0" />
+        ) : (
+          <ChevronRight aria-hidden className="size-3 shrink-0" />
+        )}
+        {phase.state === "done" ? <Check aria-hidden className="size-3" /> : null}
+        <span>{phase.title}</span>
+        <span className="font-normal normal-case text-muted-foreground/70">
+          {phase.state === "pending" && phase.members.length === 0
+            ? "pending"
+            : phase.state === "done"
+              ? `${phase.settledCount} done`
+              : `${phase.activeCount} active · ${phase.settledCount} done`}
+        </span>
+        {!open && phase.members.length > 0 ? (
+          <span className="ml-auto flex items-center gap-0.5">
+            {phase.members.map((member) => (
+              <StatusDot key={member.id} status={member.status} />
+            ))}
+          </span>
+        ) : null}
+      </button>
+      {open ? phase.members.map((member) => <AgentRow key={member.id} agent={member} />) : null}
     </div>
   );
 }
@@ -385,12 +410,7 @@ function LiveWorkflowSection({
         />
       ) : null}
       {group.phases.map((phase) => (
-        <div key={phase.index}>
-          <PhaseHeader phase={phase} />
-          {phase.members.map((member) => (
-            <AgentRow key={member.id} agent={member} />
-          ))}
-        </div>
+        <PhaseSection key={phase.index} phase={phase} />
       ))}
       {group.unphasedMembers.map((member) => (
         <AgentRow key={member.id} agent={member} />

@@ -221,6 +221,8 @@ interface ClaudeSessionContext {
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   readonly taskAgents: Map<string, ClaudeTaskAgentState>;
+  /** Task ids that have started and not yet reached a terminal state. */
+  readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -232,6 +234,8 @@ interface ClaudeSessionContext {
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly interrupt: () => Promise<void>;
+  /** SDK Query.stopTask — present on real queries; optional for test doubles. */
+  readonly stopTask?: (taskId: string) => Promise<void>;
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
@@ -3105,6 +3109,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           runHandles: context.taskAgents.get(message.task_id)?.runHandles,
           owningAgentId,
         });
+        context.liveTaskIds.add(message.task_id);
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
@@ -3155,6 +3160,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const patch = message.patch;
         const status =
           patch.status !== undefined ? CLAUDE_TASK_PATCH_STATUS[patch.status] : undefined;
+        if (status === "completed" || status === "failed" || status === "cancelled") {
+          context.liveTaskIds.delete(message.task_id);
+        }
         const endedAt =
           typeof patch.end_time === "number" && Number.isFinite(patch.end_time)
             ? new Date(patch.end_time).toISOString()
@@ -3177,6 +3185,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       }
       case "task_notification": {
+        context.liveTaskIds.delete(message.task_id);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3662,6 +3671,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const inFlightTools = new Map<number, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
       const taskAgents = new Map<string, ClaudeTaskAgentState>();
+      const liveTaskIds = new Set<string>();
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
 
@@ -4105,6 +4115,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         inFlightTools,
         claudeTasks,
         taskAgents,
+        liveTaskIds,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
@@ -4296,6 +4307,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
+      // Stop-everything semantics: users reach for Stop precisely when a
+      // fleet ran away. interrupt() alone only ends the parent turn —
+      // background subagents/shells keep running and keep burning tokens.
+      // Stop every live task first (best-effort per task: one refusal must
+      // not strand the rest or block the turn interrupt), then interrupt.
+      const stopTask = context.query.stopTask;
+      if (stopTask && context.liveTaskIds.size > 0) {
+        const liveIds = Array.from(context.liveTaskIds);
+        yield* Effect.forEach(
+          liveIds,
+          (taskId) =>
+            Effect.tryPromise({
+              try: () => stopTask(taskId),
+              catch: () => undefined,
+            }).pipe(Effect.ignore),
+          { concurrency: 8, discard: true },
+        );
+      }
       yield* Effect.tryPromise({
         try: () => context.query.interrupt(),
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),

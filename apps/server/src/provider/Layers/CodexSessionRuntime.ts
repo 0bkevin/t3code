@@ -782,6 +782,8 @@ export const makeCodexSessionRuntime = (
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     const collabChildAgentsRef = yield* Ref.make(new Map<string, CollabChildAgentState>());
+    /** Child provider-thread id → its currently running provider turn id. */
+    const collabChildLiveTurnsRef = yield* Ref.make(new Map<string, string>());
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -1016,7 +1018,18 @@ export const makeCodexSessionRuntime = (
           ...(child.agentPath ? { agentPath: child.agentPath } : {}),
         };
         switch (notification.method) {
-          case "turn/started":
+          case "turn/started": {
+            const childTurnId =
+              typeof (notification.params as { turn?: { id?: unknown } }).turn?.id === "string"
+                ? ((notification.params as { turn: { id: string } }).turn.id as string)
+                : undefined;
+            if (childTurnId) {
+              yield* Ref.update(collabChildLiveTurnsRef, (current) => {
+                const next = new Map(current);
+                next.set(child.agentThreadId, childTurnId);
+                return next;
+              });
+            }
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
@@ -1024,7 +1037,13 @@ export const makeCodexSessionRuntime = (
               payload: childIdentity,
             });
             return true;
+          }
           case "turn/completed":
+            yield* Ref.update(collabChildLiveTurnsRef, (current) => {
+              const next = new Map(current);
+              next.delete(child.agentThreadId);
+              return next;
+            });
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
@@ -1581,6 +1600,21 @@ export const makeCodexSessionRuntime = (
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
+          // Stop-everything: children are full threads with their own turns;
+          // interrupting only the parent leaves the fleet running. Interrupt
+          // each live child turn first, best-effort per child.
+          const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
+          yield* Effect.forEach(
+            Array.from(liveChildTurns.entries()),
+            ([childThreadId, childTurnId]) =>
+              client
+                .request("turn/interrupt", {
+                  threadId: childThreadId,
+                  turnId: childTurnId,
+                })
+                .pipe(Effect.ignore),
+            { concurrency: 8, discard: true },
+          );
           const effectiveTurnId = turnId ?? session.activeTurnId;
           if (!effectiveTurnId) {
             return;
