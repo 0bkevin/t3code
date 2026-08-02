@@ -571,6 +571,28 @@ export function foldSubagentActivities(
     }
   }
 
+  // Consistency pass: when a workflow coordinator has settled, members that
+  // never received their own terminal row cannot still be in-flight — the
+  // run is over. Cascade the coordinator's outcome so stalled member rows
+  // don't read as working forever (live-test finding: statuses drifted
+  // whenever member terminal rows were lost or never emitted).
+  for (const agent of agents.values()) {
+    if (agent.kind !== "workflow" || !isTerminalSubagentStatus(agent.status)) {
+      continue;
+    }
+    for (const member of agents.values()) {
+      if (member.parentAgentId !== agent.id) {
+        continue;
+      }
+      if (isTerminalSubagentStatus(member.status) || member.status === "idle") {
+        continue;
+      }
+      member.status = agent.status === "completed" ? "completed" : "interrupted";
+      member.completedAt = member.completedAt ?? agent.completedAt ?? agent.updatedAt;
+      member.updatedAt = agent.updatedAt;
+    }
+  }
+
   let roster = Array.from(agents.values());
   if (roster.length > ROSTER_LIMIT) {
     // Prefer live, then waiting/idle, then newest settled.

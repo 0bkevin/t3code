@@ -458,3 +458,39 @@ describe("background task exclusion", () => {
     expect(agents).toHaveLength(1);
   });
 });
+
+describe("coordinator settle cascade", () => {
+  it("members without their own terminal row settle when the coordinator does", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "wf-1", taskType: "local_workflow" }),
+      activity("task.progress", {
+        taskId: "wf-1:wf:0",
+        title: "stalled member",
+        status: "running",
+        parentAgentId: "wf-1",
+      }),
+      activity("task.completed", {
+        taskId: "wf-1",
+        status: "completed",
+        taskType: "local_workflow",
+      }),
+    ]);
+    const member = agents.find((agent) => agent.id === "wf-1:wf:0");
+    expect(member?.status).toBe("completed");
+    expect(member?.completedAt).not.toBeNull();
+  });
+
+  it("a failed coordinator marks unfinished members interrupted, not completed", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "wf-2", taskType: "local_workflow" }),
+      activity("task.progress", {
+        taskId: "wf-2:wf:0",
+        status: "running",
+        parentAgentId: "wf-2",
+      }),
+      activity("task.completed", { taskId: "wf-2", status: "failed", taskType: "local_workflow" }),
+    ]);
+    const member = agents.find((agent) => agent.id === "wf-2:wf:0");
+    expect(member?.status).toBe("interrupted");
+  });
+});

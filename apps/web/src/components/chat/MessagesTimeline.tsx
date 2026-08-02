@@ -1997,22 +1997,19 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   const workflowName =
     workflowGroup?.workflow.workflowName ?? workflowGroup?.workflow.title ?? null;
 
-  const dotClass = live
-    ? waiting > 0
-      ? "bg-warning"
-      : "bg-info"
-    : failed > 0
-      ? "bg-destructive"
-      : "bg-success";
+  // One steady in-flight presentation (monitoring-pill rule): waiting and
+  // stalled agents read as working; only settled states differentiate.
+  const working = running + waiting;
+  const dotClass = live ? "bg-info" : failed > 0 ? "bg-destructive" : "bg-success";
   const lead = live
     ? `Kicked off ${agentCount} subagent${agentCount === 1 ? "" : "s"}`
     : `Ran ${agentCount} subagent${agentCount === 1 ? "" : "s"}`;
   const status = live
     ? livePhase
-      ? `${livePhase.title} · ${livePhase.activeCount} active`
-      : waiting > 0
-        ? `${running} running · ${waiting} waiting`
-        : `${running} running`
+      ? `${livePhase.title} · ${livePhase.activeCount} working`
+      : working > 0
+        ? `${working} working`
+        : "working"
     : failed > 0
       ? `${failed} failed`
       : "✓ completed";
@@ -2030,7 +2027,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
         {workflowName ? <span className="text-muted-foreground"> · {workflowName}</span> : null}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[.7rem] text-muted-foreground">
-        <span className={cn(waiting > 0 && live && "text-warning-foreground")}>{status}</span>
+        <span>{status}</span>
         {totalTokens > 0 ? (
           <span className="tabular-nums">Σ {formatSubagentTokenCount(totalTokens)}</span>
         ) : null}

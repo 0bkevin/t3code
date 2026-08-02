@@ -25,10 +25,16 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
+/**
+ * In-flight states all present as Working (one steady state, per the
+ * monitoring-pill design: detail belongs in the activity sub-line, and a
+ * stalled/waiting/queued subagent is still the fleet doing its job, not a
+ * user problem). Only settled states differentiate.
+ */
 const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; label: string }> = {
-  pending: { dotClass: "bg-muted-foreground/40", label: "Queued" },
-  running: { dotClass: "bg-info", label: "Running" },
-  waiting: { dotClass: "bg-warning", label: "Waiting" },
+  pending: { dotClass: "bg-info", label: "Working" },
+  running: { dotClass: "bg-info", label: "Working" },
+  waiting: { dotClass: "bg-info", label: "Working" },
   idle: { dotClass: "bg-info/50", label: "Idle · resumable" },
   completed: { dotClass: "bg-success", label: "Completed" },
   failed: { dotClass: "bg-destructive", label: "Failed" },
@@ -106,10 +112,8 @@ function AgentElapsed({ agent }: { agent: RuntimeSubagent }) {
  * failed rows because they explain a red row at a glance.
  */
 function agentActivityText(agent: RuntimeSubagent): string | null {
-  const live = agent.status === "running" || agent.status === "pending";
-  if (agent.status === "waiting") {
-    return "Waiting on approval or input";
-  }
+  const live =
+    agent.status === "running" || agent.status === "pending" || agent.status === "waiting";
   if (live) {
     return (
       agent.progress ??
@@ -156,11 +160,7 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
             <span
               className={cn(
                 "mt-0.5 block truncate text-xs",
-                agent.status === "failed"
-                  ? "text-destructive-foreground"
-                  : agent.status === "waiting"
-                    ? "text-warning-foreground"
-                    : "text-muted-foreground",
+                agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
               )}
             >
               {activity}
@@ -376,11 +376,10 @@ export function AgentsPanel({ model }: { model: AgentPanelModel }) {
       </ScrollArea>
       <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
         <span className="flex items-center gap-2">
-          {model.runningCount > 0 ? (
-            <span className="text-info-foreground">● {model.runningCount} running</span>
-          ) : null}
-          {model.waitingCount > 0 ? (
-            <span className="text-warning-foreground">{model.waitingCount} waiting</span>
+          {model.runningCount + model.waitingCount > 0 ? (
+            <span className="text-info-foreground">
+              ● {model.runningCount + model.waitingCount} working
+            </span>
           ) : null}
           {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
           {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
