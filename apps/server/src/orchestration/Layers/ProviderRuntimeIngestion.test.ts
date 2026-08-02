@@ -44,7 +44,7 @@ import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityRes
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
-import { ThreadBackgroundLivenessLive } from "../ThreadBackgroundLiveness.ts";
+import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -240,7 +240,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(projectionSnapshotLayer),
       // Single shared liveness instance across ingestion (writer), the
       // engine, and the snapshot query (reader).
-      Layer.provideMerge(ThreadBackgroundLivenessLive),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),

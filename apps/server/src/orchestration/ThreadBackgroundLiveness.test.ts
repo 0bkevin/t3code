@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { makeThreadBackgroundLiveness } from "./ThreadBackgroundLiveness.ts";
+import * as ThreadBackgroundLiveness from "./ThreadBackgroundLiveness.ts";
 
 describe("ThreadBackgroundLiveness", () => {
   it("agents present as working; monitors as monitoring; agents win", () => {
-    const liveness = makeThreadBackgroundLiveness();
+    const liveness = ThreadBackgroundLiveness.make();
     const threadId = "t-live-1";
     liveness.recordTaskLiveness({
       threadId,
@@ -40,7 +40,7 @@ describe("ThreadBackgroundLiveness", () => {
   });
 
   it("terminal rows without a taskType still clear monitor entries", () => {
-    const liveness = makeThreadBackgroundLiveness();
+    const liveness = ThreadBackgroundLiveness.make();
     const threadId = "t-live-2";
     liveness.recordTaskLiveness({
       threadId,
@@ -61,7 +61,7 @@ describe("ThreadBackgroundLiveness", () => {
   });
 
   it("nested agents (agentId + agent taskType) still count toward liveness", () => {
-    const liveness = makeThreadBackgroundLiveness();
+    const liveness = ThreadBackgroundLiveness.make();
     const threadId = "t-live-nested";
     liveness.recordTaskLiveness({
       threadId,
@@ -84,7 +84,7 @@ describe("ThreadBackgroundLiveness", () => {
   });
 
   it("untyped rows count as agents; idle is not live; agent-owned tasks are ignored", () => {
-    const liveness = makeThreadBackgroundLiveness();
+    const liveness = ThreadBackgroundLiveness.make();
     const threadId = "t-live-3";
     liveness.recordTaskLiveness({
       threadId,
@@ -113,9 +113,43 @@ describe("ThreadBackgroundLiveness", () => {
     expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
   });
 
+  it("reclassification moves a task between buckets instead of duplicating it", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const threadId = "t-live-reclass";
+    // First seen without a taskType: counts as an agent.
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: "x1",
+      taskType: undefined,
+      status: "running",
+      kind: "started",
+    });
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+    // Later transition reveals it's a shell: downgrade to monitoring, not
+    // a stale duplicate pinning "working".
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: "x1",
+      taskType: "local_bash",
+      status: "running",
+      kind: "progress",
+    });
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("monitoring");
+    // Turning out to be inert or agent-owned drops the prior entry too.
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: "x1",
+      taskType: "local_bash",
+      status: "running",
+      kind: "progress",
+      agentId: "owner",
+    });
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
+  });
+
   it("plan tasks are inert; clear removes everything; instances are isolated", () => {
-    const a = makeThreadBackgroundLiveness();
-    const b = makeThreadBackgroundLiveness();
+    const a = ThreadBackgroundLiveness.make();
+    const b = ThreadBackgroundLiveness.make();
     a.recordTaskLiveness({
       threadId: "t",
       taskId: "p1",

@@ -80,7 +80,7 @@ export class ThreadBackgroundLivenessService extends Context.Service<
   }
 >()("t3/orchestration/ThreadBackgroundLiveness/ThreadBackgroundLivenessService") {}
 
-export function makeThreadBackgroundLiveness(): typeof ThreadBackgroundLivenessService.Service {
+export function make(): ThreadBackgroundLivenessService["Service"] {
   const stateByThreadId = new Map<string, ThreadLivenessState>();
 
   const stateFor = (threadId: string): ThreadLivenessState => {
@@ -93,10 +93,27 @@ export function makeThreadBackgroundLiveness(): typeof ThreadBackgroundLivenessS
     return created;
   };
 
+  // Classification is per-transition, not sticky: a task first seen without
+  // a taskType may later reveal itself as a shell, become inert, or turn out
+  // to be agent-owned. Every path drops any prior entry for the taskId so a
+  // stale bucket assignment can't pin the thread's status (review finding).
+  const drop = (threadId: string, taskId: string) => {
+    const state = stateByThreadId.get(threadId);
+    if (!state) {
+      return;
+    }
+    state.agents.delete(taskId);
+    state.monitors.delete(taskId);
+    if (state.agents.size === 0 && state.monitors.size === 0) {
+      stateByThreadId.delete(threadId);
+    }
+  };
+
   return {
     recordTaskLiveness: (input) => {
       const taskType = input.taskType;
       if (taskType !== undefined && INERT_TASK_TYPES.has(taskType)) {
+        drop(input.threadId, input.taskId);
         return;
       }
       // A subagent's internal non-agent work (its own shells/monitors) is
@@ -106,9 +123,9 @@ export function makeThreadBackgroundLiveness(): typeof ThreadBackgroundLivenessS
         input.agentId !== undefined &&
         (taskType === undefined || MONITOR_TASK_TYPES.has(taskType))
       ) {
+        drop(input.threadId, input.taskId);
         return;
       }
-      const state = stateFor(input.threadId);
 
       // Idle counts as not-live: a resting (resumable) Codex child isn't
       // doing anything, and an all-idle fleet must not pin Working.
@@ -117,20 +134,15 @@ export function makeThreadBackgroundLiveness(): typeof ThreadBackgroundLivenessS
         input.status === "idle" ||
         (input.status !== undefined && TERMINAL_STATUSES.has(input.status));
       if (terminal) {
-        // Terminal rows may omit taskType (review finding): classification
-        // is unreliable at removal time, so clear from both buckets.
-        state.agents.delete(input.taskId);
-        state.monitors.delete(input.taskId);
-      } else {
-        const bucket =
-          taskType !== undefined && MONITOR_TASK_TYPES.has(taskType)
-            ? state.monitors
-            : state.agents;
-        bucket.add(input.taskId);
+        drop(input.threadId, input.taskId);
+        return;
       }
-      if (state.agents.size === 0 && state.monitors.size === 0) {
-        stateByThreadId.delete(input.threadId);
-      }
+
+      drop(input.threadId, input.taskId);
+      const state = stateFor(input.threadId);
+      const bucket =
+        taskType !== undefined && MONITOR_TASK_TYPES.has(taskType) ? state.monitors : state.agents;
+      bucket.add(input.taskId);
     },
 
     clearThreadLiveness: (threadId) => {
@@ -153,7 +165,4 @@ export function makeThreadBackgroundLiveness(): typeof ThreadBackgroundLivenessS
   };
 }
 
-export const ThreadBackgroundLivenessLive = Layer.effect(
-  ThreadBackgroundLivenessService,
-  Effect.sync(makeThreadBackgroundLiveness),
-);
+export const layer = Layer.effect(ThreadBackgroundLivenessService, Effect.sync(make));

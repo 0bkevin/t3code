@@ -31,11 +31,12 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
 }) {
   const requested = input.scriptPath;
 
-  const fail = (message: string) =>
-    Effect.fail(new OrchestrationGetWorkflowScriptError({ message }));
-
   if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== ".js") {
-    return yield* fail("Workflow scripts must be absolute .js paths.");
+    return yield* Effect.fail(
+      new OrchestrationGetWorkflowScriptError({
+        message: "Workflow scripts must be absolute .js paths.",
+      }),
+    );
   }
 
   const root = yield* Effect.tryPromise({
@@ -53,10 +54,16 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
   });
 
   if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {
-    return yield* fail("Script path is outside the workflow scripts root.");
+    return yield* Effect.fail(
+      new OrchestrationGetWorkflowScriptError({
+        message: "Script path is outside the workflow scripts root.",
+      }),
+    );
   }
   if (NodePath.extname(resolved) !== ".js") {
-    return yield* fail("Resolved script is not a .js file.");
+    return yield* Effect.fail(
+      new OrchestrationGetWorkflowScriptError({ message: "Resolved script is not a .js file." }),
+    );
   }
 
   // TOCTOU-safe read (review finding): open FIRST, then verify what was
