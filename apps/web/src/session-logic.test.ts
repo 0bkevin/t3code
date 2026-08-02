@@ -1729,10 +1729,46 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     }
 
     const entries = deriveWorkLogEntries(activities);
-    const taskRows = entries.filter((entry) => entry.taskId !== undefined);
-    expect(taskRows).toHaveLength(5);
+    // A1 CTA design: all direct spawns in one turn collapse into ONE
+    // call-to-action row carrying the batch's agent ids.
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows).toHaveLength(1);
+    expect(spawnRows[0]!.agentSpawn!.agentTaskIds).toHaveLength(5);
+    expect(spawnRows[0]!.agentSpawn!.workflowId).toBeNull();
     // No agent-attributed tool rows leak into the main log.
     expect(entries.some((entry) => entry.sourceActivityKind?.startsWith("tool."))).toBe(false);
+  });
+
+  it("a workflow run and its members collapse into one CTA row keyed to the coordinator", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.progress",
+        summary: "coordinator",
+        tone: "info",
+        payload: { taskId: "wf-1", taskType: "local_workflow", workflowName: "math-check" },
+        sequence: 1,
+      }),
+      makeActivity({
+        kind: "task.progress",
+        summary: "member",
+        tone: "info",
+        payload: { taskId: "wf-1:wf:0", status: "running", parentAgentId: "wf-1" },
+        sequence: 2,
+      }),
+      makeActivity({
+        kind: "task.completed",
+        summary: "member done",
+        tone: "info",
+        payload: { taskId: "wf-1:wf:1", status: "completed", parentAgentId: "wf-1" },
+        sequence: 3,
+      }),
+    ]);
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows).toHaveLength(1);
+    expect(spawnRows[0]!.agentSpawn!.workflowId).toBe("wf-1");
+    expect(spawnRows[0]!.agentSpawn!.agentTaskIds).toEqual(
+      expect.arrayContaining(["wf-1", "wf-1:wf:0", "wf-1:wf:1"]),
+    );
   });
 
   it("keeps unattributed tool rows (over-hiding loses the only signal)", () => {

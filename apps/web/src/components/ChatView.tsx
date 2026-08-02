@@ -140,8 +140,6 @@ import {
 } from "../previewMiniPlayerStore";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
-import { AgentsLiveStrip } from "./chat/AgentsLiveStrip";
-import { WorkflowRunCard } from "./chat/WorkflowRunCard";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -5818,6 +5816,8 @@ function ChatViewContent(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                agentPanelModel={agentPanelModel}
+                onOpenAgents={addAgentsSurface}
                 key={activeThread.id}
                 isWorking={isWorking}
                 activeTurnInProgress={isWorking || !latestTurnSettled}
@@ -5912,37 +5912,6 @@ function ChatViewContent(props: ChatViewProps) {
                   )}
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
-                  ) : null}
-                  {agentPanelModel.workflows.some(
-                    (group) =>
-                      group.workflow.status === "running" ||
-                      group.workflow.status === "pending" ||
-                      group.workflow.status === "waiting",
-                  ) ? (
-                    // Interim mount: workflow run cards live above the composer
-                    // until the virtualized timeline gains a card row kind
-                    // (converges with orchestration-v2's V2LifecycleRow).
-                    <div className="mx-auto w-full max-w-3xl px-1">
-                      {agentPanelModel.workflows
-                        .filter(
-                          (group) =>
-                            group.workflow.status === "running" ||
-                            group.workflow.status === "pending" ||
-                            group.workflow.status === "waiting",
-                        )
-                        .map((group) => (
-                          <WorkflowRunCard
-                            key={group.workflow.id}
-                            group={group}
-                            onOpenAgents={addAgentsSurface}
-                          />
-                        ))}
-                    </div>
-                  ) : null}
-                  {agentPanelModel.liveCount > 0 ? (
-                    <div className="mx-auto w-full max-w-3xl px-1 pb-1">
-                      <AgentsLiveStrip model={agentPanelModel} onOpen={addAgentsSurface} />
-                    </div>
                   ) : null}
                   <div
                     className="relative"

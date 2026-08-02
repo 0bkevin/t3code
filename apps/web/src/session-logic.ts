@@ -82,12 +82,24 @@ export interface WorkLogEntry {
   taskId?: string;
   /** Agent role (subagent_type) for labeled timeline rows. */
   agentRole?: string;
+  /**
+   * Present on agent-spawn CTA rows: one per workflow run or per-turn batch
+   * of direct spawns. The row renders as a call-to-action ("Kicked off N
+   * subagents") whose live status is derived from the agent panel model at
+   * render time; clicking opens the Agents panel.
+   */
+  agentSpawn?: {
+    /** Workflow coordinator taskId, or null for a direct-spawn batch. */
+    workflowId: string | null;
+    agentTaskIds: ReadonlyArray<string>;
+  };
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
   toolCallId?: string;
+  isWorkflowCoordinator?: boolean;
 }
 
 export interface PendingApproval {
@@ -793,6 +805,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (isTaskActivity && typeof payload?.role === "string" && payload.role.length > 0) {
     entry.agentRole = payload.role;
   }
+  if (
+    isTaskActivity &&
+    (payload?.taskType === "local_workflow" ||
+      (typeof payload?.workflowName === "string" && payload.workflowName.length > 0))
+  ) {
+    entry.isWorkflowCoordinator = true;
+  }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
@@ -800,26 +819,63 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   return entry;
 }
 
+/**
+ * Spawn-group key for a subagent lifecycle row. Workflow members and their
+ * coordinator share the coordinator's group; direct spawns batch per turn.
+ * One CTA row per group (A1 design): "Kicked off N subagents".
+ */
+function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
+  const taskId = entry.taskId ?? "";
+  const workflowSlot = taskId.indexOf(":wf:");
+  if (workflowSlot !== -1) {
+    return `wf:${taskId.slice(0, workflowSlot)}`;
+  }
+  if (entry.agentSpawn?.workflowId) {
+    return `wf:${entry.agentSpawn.workflowId}`;
+  }
+  if (entry.isWorkflowCoordinator) {
+    return `wf:${taskId}`;
+  }
+  return `direct:${entry.turnId ?? "no-turn"}`;
+}
+
 function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
-  // Subagent rows collapse by identity, not adjacency: with concurrent
-  // agents, one agent's progress rows interleave with another's, and each
-  // agent still gets exactly one row (quiet-timeline guarantee).
-  const taskRowIndex = new Map<string, number>();
+  // Subagent rows collapse by spawn group, not adjacency: a workflow run (or
+  // a turn's batch of direct spawns) is ONE narrative event in the chat — a
+  // CTA row that opens the Agents panel — no matter how many agents it
+  // contains or how their progress rows interleave (quiet-timeline
+  // guarantee).
+  const spawnRowIndex = new Map<string, number>();
   for (const entry of entries) {
     const isTaskRow =
       entry.taskId !== undefined &&
       (entry.activityKind === "task.progress" || entry.activityKind === "task.completed");
-    if (isTaskRow) {
-      const existingIndex = taskRowIndex.get(entry.taskId!);
+    if (isTaskRow && entry.taskId !== undefined) {
+      const groupKey = agentSpawnGroupKey(entry);
+      const workflowId = groupKey.startsWith("wf:") ? groupKey.slice(3) : null;
+      const existingIndex = spawnRowIndex.get(groupKey);
       if (existingIndex !== undefined) {
-        collapsed[existingIndex] = mergeDerivedWorkLogEntries(collapsed[existingIndex]!, entry);
+        const existing = collapsed[existingIndex]!;
+        const agentTaskIds = existing.agentSpawn?.agentTaskIds.includes(entry.taskId)
+          ? existing.agentSpawn.agentTaskIds
+          : [...(existing.agentSpawn?.agentTaskIds ?? []), entry.taskId];
+        collapsed[existingIndex] = {
+          ...mergeDerivedWorkLogEntries(existing, entry),
+          // The CTA row keeps the group identity, not the last agent's.
+          ...(existing.taskId !== undefined ? { taskId: existing.taskId } : {}),
+          label: existing.label,
+          agentSpawn: { workflowId, agentTaskIds },
+        };
         continue;
       }
-      taskRowIndex.set(entry.taskId!, collapsed.length);
-      collapsed.push(entry);
+      spawnRowIndex.set(groupKey, collapsed.length);
+      collapsed.push({
+        ...entry,
+        agentSpawn: { workflowId, agentTaskIds: [entry.taskId] },
+      });
       continue;
     }
     const previous = collapsed.at(-1);
