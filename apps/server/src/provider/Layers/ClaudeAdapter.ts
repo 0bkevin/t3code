@@ -2318,6 +2318,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const { event } = message;
 
+    // Subagent-owned stream traffic (parent_tool_use_id set) must not write
+    // into the parent transcript: with forwardSubagentText off the SDK still
+    // forwards subagent tool_use/tool_result blocks and their wrapping
+    // text/thinking deltas, and emitting them interleaved N subagents'
+    // narration into the chat (live-test finding). Their results reach the
+    // UI via the task.* lifecycle; their tool blocks are attributed and
+    // re-homed by the quiet-timeline filter.
+    const streamParentToolUseId = (message as { parent_tool_use_id?: string | null })
+      .parent_tool_use_id;
+    if (
+      streamParentToolUseId !== null &&
+      streamParentToolUseId !== undefined &&
+      (event.type === "content_block_start" || event.type === "content_block_delta") &&
+      !(
+        event.type === "content_block_start" &&
+        (event.content_block.type === "tool_use" ||
+          event.content_block.type === "server_tool_use" ||
+          event.content_block.type === "mcp_tool_use")
+      )
+    ) {
+      return;
+    }
+
     if (event.type === "message_delta") {
       if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
         return;
@@ -2754,6 +2777,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     message: SDKMessage,
   ) {
     if (message.type !== "assistant") {
+      return;
+    }
+
+    // Subagent-owned assistant snapshots (parent_tool_use_id set) are the
+    // subagent's own conversation, not the parent's. Emitting them created
+    // interleaved "Agent N done"-adjacent leak messages and spawned synthetic
+    // turns per subagent completion (which also reset the Working timer).
+    const assistantParentToolUseId = (message as { parent_tool_use_id?: string | null })
+      .parent_tool_use_id;
+    if (assistantParentToolUseId !== null && assistantParentToolUseId !== undefined) {
+      context.lastAssistantUuid = message.uuid;
+      yield* updateResumeCursor(context);
       return;
     }
 
