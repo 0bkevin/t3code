@@ -60,6 +60,29 @@ describe("ThreadBackgroundLiveness", () => {
     expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
   });
 
+  it("nested agents (agentId + agent taskType) still count toward liveness", () => {
+    const liveness = makeThreadBackgroundLiveness();
+    const threadId = "t-live-nested";
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: "n1",
+      taskType: "local_agent",
+      status: undefined,
+      kind: "started",
+      agentId: "owner",
+    });
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: "n1",
+      taskType: "local_agent",
+      status: "completed",
+      kind: "completed",
+      agentId: "owner",
+    });
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
+  });
+
   it("untyped rows count as agents; idle is not live; agent-owned tasks are ignored", () => {
     const liveness = makeThreadBackgroundLiveness();
     const threadId = "t-live-3";

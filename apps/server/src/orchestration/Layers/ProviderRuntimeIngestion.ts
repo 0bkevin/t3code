@@ -32,8 +32,7 @@ import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionT
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { ThreadBackgroundLivenessService } from "../Services/ThreadBackgroundLiveness.ts";
-import { ThreadBackgroundLivenessLive } from "./ThreadBackgroundLiveness.ts";
+import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -1981,9 +1980,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(
-  Layer.provide(ProjectionTurnRepositoryLive),
-  // Same module-level layer const as the snapshot query provides: Effect's
-  // layer memo-map dedupes by reference, so both see ONE registry instance.
-  Layer.provide(ThreadBackgroundLivenessLive),
-);
+).pipe(Layer.provide(ProjectionTurnRepositoryLive));

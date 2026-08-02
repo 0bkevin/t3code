@@ -1,15 +1,25 @@
 /**
- * ThreadBackgroundLivenessLive - synchronous in-memory implementation of the
- * background-liveness registry. State is allocated per layer instance, so
- * tests can construct isolated registries.
+ * ThreadBackgroundLivenessService - in-memory per-thread background liveness
+ * for the sidebar status pill.
+ *
+ * The turn can settle while native background work runs on (subagent fleets,
+ * workflow runs, Monitor watch loops); the shell previously showed nothing.
+ * Ingestion records task lifecycle transitions and the shell query reads the
+ * derived state at mapping time — no persistence, no migration. After a
+ * server restart the registry is empty until new task events arrive, which
+ * matches reality: orphaned background work is not live.
+ *
+ * "monitoring" is reserved for watch loops (monitor tasks and background
+ * shells) when they are the ONLY live work; any agent work presents as
+ * "working".
+ *
+ * @module ThreadBackgroundLivenessService
  */
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import {
-  ThreadBackgroundLivenessService,
-  type ThreadBackgroundLivenessShape,
-} from "../Services/ThreadBackgroundLiveness.ts";
+export type ThreadBackgroundLiveness = "working" | "monitoring" | null;
 
 interface ThreadLivenessState {
   readonly agents: Set<string>;
@@ -29,7 +39,7 @@ const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
   "shell",
 ]);
 /** Task types that are neither agents nor monitors (never affect liveness). */
-const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan"]);
+const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan", "dream"]);
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   "completed",
@@ -39,7 +49,38 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   "interrupted",
 ]);
 
-export function makeThreadBackgroundLiveness(): ThreadBackgroundLivenessShape {
+export class ThreadBackgroundLivenessService extends Context.Service<
+  ThreadBackgroundLivenessService,
+  {
+    /**
+     * Feed one task lifecycle transition. taskType may be absent on
+     * synthesized rows (workflow members, Codex children) — those count as
+     * agents. agentId marks a task launched from inside a subagent: its
+     * internal shells are covered by the owning agent's liveness, but a
+     * NESTED AGENT (agentId + agent-flavored taskType) still counts — it
+     * can outlive its parent and must keep the thread Working.
+     */
+    readonly recordTaskLiveness: (input: {
+      readonly threadId: string;
+      readonly taskId: string;
+      readonly taskType: string | undefined;
+      readonly status: string | undefined;
+      readonly kind: "started" | "progress" | "updated" | "completed";
+      readonly agentId?: string | undefined;
+    }) => void;
+
+    /** Session death orphans all of a thread's background work. */
+    readonly clearThreadLiveness: (threadId: string) => void;
+
+    /**
+     * Two-state vocabulary by design: any live agent work is "working";
+     * "monitoring" only when watch loops are the ONLY live work.
+     */
+    readonly getThreadBackgroundLiveness: (threadId: string) => ThreadBackgroundLiveness;
+  }
+>()("t3/orchestration/ThreadBackgroundLiveness/ThreadBackgroundLivenessService") {}
+
+export function makeThreadBackgroundLiveness(): typeof ThreadBackgroundLivenessService.Service {
   const stateByThreadId = new Map<string, ThreadLivenessState>();
 
   const stateFor = (threadId: string): ThreadLivenessState => {
@@ -58,10 +99,13 @@ export function makeThreadBackgroundLiveness(): ThreadBackgroundLivenessShape {
       if (taskType !== undefined && INERT_TASK_TYPES.has(taskType)) {
         return;
       }
-      // A subagent's internal task (its own shells) is covered by the
-      // agent's liveness; counting it separately would keep threads
-      // Monitoring/Working after the agent itself settled.
-      if (input.agentId !== undefined) {
+      // A subagent's internal non-agent work (its own shells/monitors) is
+      // covered by the owning agent's liveness. Nested agents fall through:
+      // they can outlive their parent (review finding).
+      if (
+        input.agentId !== undefined &&
+        (taskType === undefined || MONITOR_TASK_TYPES.has(taskType))
+      ) {
         return;
       }
       const state = stateFor(input.threadId);
