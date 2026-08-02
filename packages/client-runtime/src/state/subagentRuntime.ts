@@ -106,23 +106,23 @@ const SUMMARY_CHAR_LIMIT = 180;
 const ROSTER_LIMIT = 100;
 
 /**
- * SDK task types that are agents. Everything else (shell, monitor, plan,
- * unknown-but-typed) is background work and stays out of the roster. Rows
- * with no taskType at all are kept: workflow members and Codex children are
- * synthesized without one, and excluding them would empty the panel.
+ * Task types that are NOT agents: background shells, watch loops, and
+ * plan-mode bookkeeping. Deliberately a denylist — the SDK's agent-flavored
+ * type names drift (subagent, local_agent, remote_agent, local_workflow, …)
+ * and an allowlist silently dropped real subagents when "local_agent"
+ * appeared (live-test finding). Unknown or absent types count as agents.
  */
-const AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
-  "subagent",
-  "agent",
-  "local_workflow",
-  "remote_agent",
-  "workflow",
+const NON_AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
+  "shell",
+  "local_bash",
+  "monitor",
+  "plan",
 ]);
 
 /** True when this activity's payload describes a non-agent background task. */
 export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
   const taskType = typeof payload.taskType === "string" ? payload.taskType : undefined;
-  return taskType !== undefined && !AGENT_TASK_TYPES.has(taskType);
+  return taskType !== undefined && NON_AGENT_TASK_TYPES.has(taskType);
 }
 
 function bounded(value: string): string {
@@ -463,8 +463,7 @@ export function foldSubagentActivities(
         // Only real agents join the roster. Shells, monitors, and plan-mode
         // tasks are background work — they render in the ordinary work log,
         // not the Agents surface (a "Run 12s stall" shell is not a subagent).
-        const taskType = asString(payload.taskType);
-        if (taskType !== undefined && !AGENT_TASK_TYPES.has(taskType)) break;
+        if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         // Order-robustness: a start row arriving after a terminal state is a

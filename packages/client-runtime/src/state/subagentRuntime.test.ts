@@ -494,3 +494,18 @@ describe("coordinator settle cascade", () => {
     expect(member?.status).toBe("interrupted");
   });
 });
+
+describe("task type classification is a denylist", () => {
+  it("unknown agent-flavored types (local_agent, future names) join the roster", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "a1",
+        taskType: "local_agent",
+        title: "Math test 1",
+        role: "claude",
+      }),
+      activity("task.started", { taskId: "a2", taskType: "some_future_agent_kind", title: "X" }),
+    ]);
+    expect(agents.map((agent) => agent.id).toSorted()).toEqual(["a1", "a2"]);
+  });
+});
