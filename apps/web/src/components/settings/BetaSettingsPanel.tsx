@@ -1,8 +1,4 @@
-import {
-  DEFAULT_VOICE_TRANSCRIPTION_BASE_URL,
-  DEFAULT_VOICE_TRANSCRIPTION_MODEL,
-  type VoiceTranscriptionProvider,
-} from "@t3tools/contracts";
+import type { VoiceTranscriptionProvider } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
 import {
@@ -10,10 +6,6 @@ import {
   useSidebarV2Enabled,
   useUpdateClientSettings,
 } from "../../hooks/useSettings";
-import {
-  GROQ_TRANSCRIPTION_BASE_URL,
-  GROQ_TRANSCRIPTION_MODEL,
-} from "../../lib/voiceTranscription";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -76,34 +68,10 @@ export function BetaSettingsPanel() {
   const voiceTranscriptionProvider = useClientSettings(
     (settings) => settings.voiceTranscriptionProvider,
   );
-  const voiceTranscriptionBaseUrl = useClientSettings(
-    (settings) => settings.voiceTranscriptionBaseUrl,
-  );
-  const voiceTranscriptionModel = useClientSettings((settings) => settings.voiceTranscriptionModel);
   const voiceTranscriptionApiKey = useClientSettings(
     (settings) => settings.voiceTranscriptionApiKey,
   );
   const updateSettings = useUpdateClientSettings();
-
-  const selectVoiceProvider = (provider: VoiceTranscriptionProvider) => {
-    if (provider === "local") {
-      updateSettings({
-        voiceTranscriptionProvider: provider,
-        voiceTranscriptionBaseUrl: DEFAULT_VOICE_TRANSCRIPTION_BASE_URL,
-        voiceTranscriptionModel: DEFAULT_VOICE_TRANSCRIPTION_MODEL,
-      });
-      return;
-    }
-    if (provider === "groq") {
-      updateSettings({
-        voiceTranscriptionProvider: provider,
-        voiceTranscriptionBaseUrl: GROQ_TRANSCRIPTION_BASE_URL,
-        voiceTranscriptionModel: GROQ_TRANSCRIPTION_MODEL,
-      });
-      return;
-    }
-    updateSettings({ voiceTranscriptionProvider: provider });
-  };
 
   return (
     <SettingsPageContainer>
@@ -174,72 +142,36 @@ export function BetaSettingsPanel() {
           <>
             <SettingsRow
               title="Transcription provider"
-              description="Local is the default and works with an OpenAI-compatible whisper.cpp or faster-whisper server."
+              description="Use your own OpenAI or Groq key. OpenAI is the default."
               control={
                 <Select
                   value={voiceTranscriptionProvider}
                   onValueChange={(value) =>
-                    selectVoiceProvider(value as VoiceTranscriptionProvider)
+                    updateSettings({
+                      voiceTranscriptionProvider: value as VoiceTranscriptionProvider,
+                      voiceTranscriptionApiKey: "",
+                    })
                   }
                 >
                   <SelectTrigger className="w-full sm:w-44" aria-label="Transcription provider">
                     <SelectValue>
-                      {voiceTranscriptionProvider === "local"
-                        ? "Local"
-                        : voiceTranscriptionProvider === "groq"
-                          ? "Groq"
-                          : "Custom"}
+                      {voiceTranscriptionProvider === "openai" ? "OpenAI" : "Groq"}
                     </SelectValue>
                   </SelectTrigger>
                   <SelectPopup align="end" alignItemWithTrigger={false}>
-                    <SelectItem hideIndicator value="local">
-                      Local
+                    <SelectItem hideIndicator value="openai">
+                      OpenAI
                     </SelectItem>
                     <SelectItem hideIndicator value="groq">
                       Groq
-                    </SelectItem>
-                    <SelectItem hideIndicator value="custom">
-                      Custom
                     </SelectItem>
                   </SelectPopup>
                 </Select>
               }
             />
             <SettingsRow
-              title="Endpoint"
-              description="Base URL for any OpenAI Whisper-compatible API."
-              control={
-                <Input
-                  className="w-full sm:w-80"
-                  value={voiceTranscriptionBaseUrl}
-                  onChange={(event) =>
-                    updateSettings({ voiceTranscriptionBaseUrl: event.target.value })
-                  }
-                  placeholder="http://127.0.0.1:8080/v1"
-                  aria-label="Transcription endpoint"
-                  spellCheck={false}
-                />
-              }
-            />
-            <SettingsRow
-              title="Model"
-              description="The model name sent to the provider."
-              control={
-                <Input
-                  className="w-full sm:w-64"
-                  value={voiceTranscriptionModel}
-                  onChange={(event) =>
-                    updateSettings({ voiceTranscriptionModel: event.target.value })
-                  }
-                  placeholder="whisper-1"
-                  aria-label="Transcription model"
-                  spellCheck={false}
-                />
-              }
-            />
-            <SettingsRow
-              title="API key"
-              description="Optional for local servers and required by most hosted providers. The key stays in this client's local settings."
+              title={`${voiceTranscriptionProvider === "openai" ? "OpenAI" : "Groq"} API key`}
+              description="Stored only in this client's local settings and sent directly to the selected provider through your local t3code server."
               control={
                 <Input
                   type="password"
@@ -249,7 +181,7 @@ export function BetaSettingsPanel() {
                   onChange={(event) =>
                     updateSettings({ voiceTranscriptionApiKey: event.target.value })
                   }
-                  placeholder={voiceTranscriptionProvider === "local" ? "Optional" : "Required"}
+                  placeholder="Required"
                   aria-label="Transcription API key"
                 />
               }

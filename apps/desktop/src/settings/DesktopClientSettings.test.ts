@@ -34,9 +34,7 @@ const clientSettings: ClientSettings = {
   sidebarV2ConfiguredByUser: false,
   timestampFormat: "24-hour",
   voiceTranscriptionEnabled: true,
-  voiceTranscriptionProvider: "local",
-  voiceTranscriptionBaseUrl: "http://127.0.0.1:8080/v1",
-  voiceTranscriptionModel: "whisper-1",
+  voiceTranscriptionProvider: "openai",
   voiceTranscriptionApiKey: "",
   wordWrap: true,
 };

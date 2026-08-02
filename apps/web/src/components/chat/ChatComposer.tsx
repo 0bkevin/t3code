@@ -1289,8 +1289,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const voiceTranscription = useVoiceTranscription({
     config: {
       provider: settings.voiceTranscriptionProvider,
-      baseUrl: settings.voiceTranscriptionBaseUrl,
-      model: settings.voiceTranscriptionModel,
       apiKey: settings.voiceTranscriptionApiKey,
     },
     onTranscript: appendVoiceTranscript,
@@ -3129,7 +3127,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             </div>
           </div>
 
-          {settings.voiceTranscriptionEnabled && voiceTranscription.status !== "idle" ? (
+          {voiceTranscription.status !== "idle" ? (
             <VoiceTranscriptionPanel
               status={voiceTranscription.status}
               elapsedMs={voiceTranscription.elapsedMs}
