@@ -5720,7 +5720,11 @@ function ChatViewContent(props: ChatViewProps) {
         mode="embedded"
       />
     ) : activeRightPanelSurface?.kind === "agents" ? (
-      <AgentsPanel model={agentPanelModel} />
+      <AgentsPanel
+        model={agentPanelModel}
+        environmentId={activeThreadRef?.environmentId ?? null}
+        threadId={activeThreadRef?.threadId ?? null}
+      />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (

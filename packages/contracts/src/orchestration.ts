@@ -25,6 +25,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  getWorkflowScript: "orchestration.getWorkflowScript",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -1427,10 +1428,36 @@ export const OrchestrationSearchThreadsResult = Schema.Struct({
 });
 export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
 
+export const OrchestrationGetWorkflowScriptInput = Schema.Struct({
+  threadId: ThreadId,
+  /** Absolute path from the workflow's runHandles.scriptPath. The server
+   * re-derives containment; the client value is a hint, never trusted. */
+  scriptPath: TrimmedNonEmptyString,
+});
+export type OrchestrationGetWorkflowScriptInput = typeof OrchestrationGetWorkflowScriptInput.Type;
+
+export const OrchestrationGetWorkflowScriptResult = Schema.Struct({
+  scriptPath: TrimmedNonEmptyString,
+  contents: Schema.String,
+  truncated: Schema.Boolean,
+});
+export type OrchestrationGetWorkflowScriptResult = typeof OrchestrationGetWorkflowScriptResult.Type;
+
+export class OrchestrationGetWorkflowScriptError extends Schema.TaggedErrorClass<OrchestrationGetWorkflowScriptError>()(
+  "OrchestrationGetWorkflowScriptError",
+  {
+    message: Schema.String,
+  },
+) {}
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
     output: DispatchResult,
+  },
+  getWorkflowScript: {
+    input: OrchestrationGetWorkflowScriptInput,
+    output: OrchestrationGetWorkflowScriptResult,
   },
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,

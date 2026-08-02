@@ -13,16 +13,19 @@
  *   not agent granularity).
  * - Static status dots, DOM-write elapsed timers, plain token counters.
  */
+import { useAtomValue } from "@effect/atom-react";
 import type {
   AgentPanelModel,
   AgentPanelWorkflowGroup,
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/subagentRuntime";
-import { Bot, Check, ChevronDown, ChevronRight } from "lucide-react";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
 /**
@@ -200,6 +203,110 @@ function workflowMembers(group: AgentPanelWorkflowGroup): ReadonlyArray<RuntimeS
   return [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers];
 }
 
+/**
+ * Phase rail: the run's shape at a glance. One segment per phase in order,
+ * separated by chevrons; each segment shows title + one dot per member.
+ * The whole arc (done → live → pending) is visible without scrolling the
+ * member list.
+ */
+function PhaseRail({ group }: { group: AgentPanelWorkflowGroup }) {
+  if (group.phases.length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1.5 pb-1 pt-1.5">
+      {group.phases.map((phase, index) => (
+        <div key={phase.index} className="flex items-center gap-1">
+          {index > 0 ? (
+            <ChevronRight aria-hidden className="size-3 text-muted-foreground/40" />
+          ) : null}
+          <div
+            className={cn(
+              "flex items-center gap-1 rounded-sm border px-1.5 py-0.5",
+              phase.state === "running"
+                ? "border-info/40"
+                : phase.state === "done"
+                  ? "border-success/30"
+                  : "border-border/50",
+            )}
+          >
+            <span
+              className={cn(
+                "font-mono text-[.65rem]",
+                phase.state === "running"
+                  ? "text-info-foreground"
+                  : phase.state === "done"
+                    ? "text-success-foreground"
+                    : "text-muted-foreground/70",
+              )}
+            >
+              {phase.state === "done" ? "✓ " : ""}
+              {phase.title}
+            </span>
+            <span className="flex items-center gap-0.5">
+              {phase.members.length === 0 ? (
+                <span className="font-mono text-[.6rem] text-muted-foreground/50">–</span>
+              ) : (
+                phase.members.map((member) => <StatusDot key={member.id} status={member.status} />)
+              )}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Read-only workflow script viewer, fetched through the contained
+ * getWorkflowScript RPC (never a raw filesystem read from the client).
+ */
+function WorkflowScriptView({
+  environmentId,
+  threadId,
+  scriptPath,
+  onClose,
+}: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  scriptPath: string;
+  onClose: () => void;
+}) {
+  const result = useAtomValue(
+    orchestrationEnvironment.workflowScript({ environmentId, input: { threadId, scriptPath } }),
+  );
+  return (
+    <div className="mx-1.5 mb-1 rounded-md border border-border/60 bg-background/60">
+      <div className="flex items-center gap-2 border-b border-border/50 px-2 py-1">
+        <Braces aria-hidden className="size-3 text-muted-foreground" />
+        <span className="truncate font-mono text-[.65rem] text-muted-foreground">
+          {scriptPath.split("/").at(-1)}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close script"
+          className="ml-auto text-muted-foreground hover:text-foreground"
+        >
+          <X aria-hidden className="size-3" />
+        </button>
+      </div>
+      <div className="max-h-72 overflow-auto p-2">
+        {result._tag === "Success" ? (
+          <pre className="whitespace-pre-wrap break-words font-mono text-[.7rem] leading-relaxed text-foreground/90">
+            {result.value.contents}
+            {result.value.truncated ? "\n… (truncated)" : ""}
+          </pre>
+        ) : result._tag === "Failure" ? (
+          <p className="text-xs text-destructive-foreground">Could not load the script.</p>
+        ) : (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PhaseHeader({ phase }: { phase: AgentPanelWorkflowGroup["phases"][number] }) {
   return (
     <div
@@ -225,8 +332,17 @@ function PhaseHeader({ phase }: { phase: AgentPanelWorkflowGroup["phases"][numbe
   );
 }
 
-/** Live workflow: full phase tree. */
-function LiveWorkflowSection({ group }: { group: AgentPanelWorkflowGroup }) {
+/** Live workflow: phase rail + full phase tree. */
+function LiveWorkflowSection({
+  group,
+  environmentId,
+  threadId,
+}: {
+  group: AgentPanelWorkflowGroup;
+  environmentId: EnvironmentId | null;
+  threadId: ThreadId | null;
+}) {
+  const [scriptOpen, setScriptOpen] = useState(false);
   const members = workflowMembers(group);
   const settled = members.filter(
     (member) =>
@@ -235,15 +351,39 @@ function LiveWorkflowSection({ group }: { group: AgentPanelWorkflowGroup }) {
       member.status === "cancelled" ||
       member.status === "interrupted",
   ).length;
+  const scriptPath = group.workflow.runHandles?.scriptPath;
+  const canShowScript = scriptPath !== undefined && environmentId !== null && threadId !== null;
   return (
     <section className="rounded-lg border border-border/50 bg-card/30 p-1.5">
       <div className="flex items-center gap-2 px-1.5 pt-0.5 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
         <span aria-hidden className="size-1.5 rounded-full bg-info" />
         <span>{group.workflow.workflowName ?? group.workflow.title}</span>
+        {canShowScript ? (
+          <button
+            type="button"
+            onClick={() => setScriptOpen((value) => !value)}
+            className={cn(
+              "rounded-sm border border-border/60 px-1 font-mono normal-case hover:text-foreground",
+              scriptOpen && "text-foreground",
+            )}
+            aria-expanded={scriptOpen}
+          >
+            {"{}"} script
+          </button>
+        ) : null}
         <span className="ml-auto font-mono normal-case text-muted-foreground/80">
           {settled}/{members.length} settled
         </span>
       </div>
+      <PhaseRail group={group} />
+      {scriptOpen && canShowScript ? (
+        <WorkflowScriptView
+          environmentId={environmentId}
+          threadId={threadId}
+          scriptPath={scriptPath}
+          onClose={() => setScriptOpen(false)}
+        />
+      ) : null}
       {group.phases.map((phase) => (
         <div key={phase.index}>
           <PhaseHeader phase={phase} />
@@ -313,7 +453,15 @@ function SettledWorkflowSection({ group }: { group: AgentPanelWorkflowGroup }) {
   );
 }
 
-export function AgentsPanel({ model }: { model: AgentPanelModel }) {
+export function AgentsPanel({
+  model,
+  environmentId = null,
+  threadId = null,
+}: {
+  model: AgentPanelModel;
+  environmentId?: EnvironmentId | null;
+  threadId?: ThreadId | null;
+}) {
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -343,7 +491,12 @@ export function AgentsPanel({ model }: { model: AgentPanelModel }) {
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
           {liveWorkflows.map((group) => (
-            <LiveWorkflowSection key={group.workflow.id} group={group} />
+            <LiveWorkflowSection
+              key={group.workflow.id}
+              group={group}
+              environmentId={environmentId}
+              threadId={threadId}
+            />
           ))}
           {liveDirect.length > 0 ? (
             <section>
