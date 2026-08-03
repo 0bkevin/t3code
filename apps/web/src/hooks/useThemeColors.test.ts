@@ -86,17 +86,8 @@ describe("theme colors", () => {
     applyThemeColors({ accentColor: "#16a34a", neutralColor: "#78716c", contrast: 50 });
 
     expect(setProperty).toHaveBeenCalledWith("--theme-accent-seed", "#16a34a");
-    expect(setProperty).toHaveBeenCalledWith("--theme-accent-foreground", "#000000");
     expect(setProperty).toHaveBeenCalledWith("--theme-neutral-seed", "#78716c");
     expect(setProperty).toHaveBeenCalledWith("--theme-accent-strength", "16%");
     expect(setProperty).toHaveBeenCalledWith("--theme-border-strength", "16%");
-  });
-
-  it("chooses a readable foreground for light and dark accents", async () => {
-    vi.stubGlobal("window", createWindow());
-    const { getThemeAccentForeground } = await import("./useThemeColors");
-
-    expect(getThemeAccentForeground("#facc15")).toBe("#000000");
-    expect(getThemeAccentForeground("#1d4ed8")).toBe("#ffffff");
   });
 });

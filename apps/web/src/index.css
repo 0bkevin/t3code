@@ -854,7 +854,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   color-scheme: light;
   --radius: 0.625rem;
   --theme-accent-seed: #3b5bdb;
-  --theme-accent-foreground: #ffffff;
   --theme-neutral-seed: #737373;
   --theme-background-strength: 10%;
   --theme-surface-strength: 14%;
@@ -873,8 +872,10 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
-  --primary: var(--theme-accent-seed);
-  --primary-foreground: var(--theme-accent-foreground);
+  /* Keep text, rings, and translucent primary controls readable for any seed.
+     Raw seed color still drives the more expressive accent surfaces below. */
+  --primary: color-mix(in oklch, var(--theme-accent-seed) 46%, var(--color-black));
+  --primary-foreground: var(--color-white);
   --secondary: color-mix(
     in srgb,
     var(--theme-neutral-seed) var(--theme-control-strength),
@@ -932,8 +933,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       var(--background)
     );
     --popover-foreground: var(--foreground);
-    --primary: var(--theme-accent-seed);
-    --primary-foreground: var(--theme-accent-foreground);
+    --primary: color-mix(in oklch, var(--theme-accent-seed) 40%, var(--color-white));
+    --primary-foreground: var(--color-black);
     --secondary: color-mix(
       in srgb,
       var(--theme-neutral-seed) var(--theme-surface-strength),
