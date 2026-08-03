@@ -3,6 +3,7 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
+  formatSubagentModelLabel,
   formatSubagentTokenCount,
   isAgentAttributedToolActivity,
   isSubagentActivityKind,
@@ -437,6 +438,32 @@ describe("formatSubagentTokenCount", () => {
     expect(formatSubagentTokenCount(41200)).toBe("41.2k");
     expect(formatSubagentTokenCount(247000)).toBe("247k");
     expect(formatSubagentTokenCount(1_400_000)).toBe("1.4M");
+  });
+});
+
+describe("model and effort attribution", () => {
+  it("carries model/effort from start rows and refines model from later rows", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-m",
+        title: "Verify math",
+        model: "sonnet",
+        effort: "high",
+      }),
+      // Later row refines with the authoritative API model id; effort absent
+      // must not clear the known value.
+      activity("task.progress", { taskId: "task-m", model: "claude-sonnet-5[1m]" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.model).toBe("claude-sonnet-5[1m]");
+    expect(agents[0]!.effort).toBe("high");
+  });
+
+  it("formatSubagentModelLabel compacts ids and appends effort", () => {
+    expect(formatSubagentModelLabel("claude-sonnet-5[1m]", "high")).toBe("sonnet-5[1m] · high");
+    expect(formatSubagentModelLabel("claude-opus-4-20250514", null)).toBe("opus-4");
+    expect(formatSubagentModelLabel("gpt-5.6-sol", "low")).toBe("gpt-5.6-sol · low");
+    expect(formatSubagentModelLabel(null, "high")).toBeNull();
   });
 });
 

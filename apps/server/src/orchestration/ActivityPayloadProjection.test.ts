@@ -50,6 +50,7 @@ describe("projectActivityPayload agent-field survival", () => {
       title: "Audit auth",
       role: "explorer",
       model: "opus",
+      effort: "high",
       workflowName: "audit-flow",
       phases: [{ index: 0, title: "Audit" }],
       typedUsage: { totalTokens: 1200 },

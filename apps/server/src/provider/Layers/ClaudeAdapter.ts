@@ -201,6 +201,10 @@ interface ClaudeTaskAgentState {
   runHandles: TaskRunHandles | undefined;
   /** Set when this task was launched from inside a subagent. */
   owningAgentId: string | undefined;
+  /** Seeded from the launching tool's input; refined by the subagent's own
+   * assistant snapshots (authoritative API model). */
+  model: string | undefined;
+  effort: string | undefined;
 }
 
 interface ClaudeSessionContext {
@@ -211,6 +215,9 @@ interface ClaudeSessionContext {
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
   currentApiModelId: string | undefined;
+  /** Effective effort for the session's turns; subagents without an explicit
+   * effort override inherit this. */
+  currentEffort: string | undefined;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
@@ -960,6 +967,8 @@ function taskLinkageFor(
     ...(agent.owningAgentId ? { agentId: agent.owningAgentId } : {}),
     ...(agent.description ? { title: agent.description } : {}),
     ...(agent.subagentType ? { role: agent.subagentType } : {}),
+    ...(agent.model ? { model: agent.model } : {}),
+    ...(agent.effort ? { effort: agent.effort } : {}),
     ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),
     ...(agent.workflowName ? { workflowName: agent.workflowName } : {}),
     ...(agent.runHandles ? { runHandles: agent.runHandles } : {}),
@@ -2764,6 +2773,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             skipTranscript: existing?.skipTranscript ?? false,
             runHandles,
             owningAgentId: existing?.owningAgentId,
+            model: existing?.model,
+            effort: existing?.effort,
           });
         }
       }
@@ -2798,6 +2809,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const assistantParentToolUseId = (message as { parent_tool_use_id?: string | null })
       .parent_tool_use_id;
     if (assistantParentToolUseId !== null && assistantParentToolUseId !== undefined) {
+      // The snapshot's message.model is the authoritative API model the
+      // subagent actually ran on — refine the seeded launch-time value.
+      const owningTaskId = agentIdForParentToolUse(context.taskAgents, assistantParentToolUseId);
+      const snapshotModel = trimmedString(message.message.model);
+      const owningAgent = owningTaskId ? context.taskAgents.get(owningTaskId) : undefined;
+      if (owningAgent && snapshotModel) {
+        owningAgent.model = snapshotModel;
+      }
       context.lastAssistantUuid = message.uuid;
       yield* updateResumeCursor(context);
       return;
@@ -3099,6 +3118,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             )
           : undefined;
         const owningAgentId = launchingTool?.agentId;
+        // Model/effort: the Agent tool's input carries explicit overrides;
+        // absent ones inherit the session's selection (SDK behavior).
+        // Subagent assistant snapshots later refine model with the
+        // authoritative API id. AgentInput.effort may be a named level or an
+        // integer.
+        const launchInput = launchingTool?.input;
+        const model =
+          trimmedString(launchInput?.model) ?? trimmedString(context.session.model ?? undefined);
+        const rawLaunchEffort = launchInput?.effort;
+        const effort =
+          trimmedString(rawLaunchEffort) ??
+          (typeof rawLaunchEffort === "number" && Number.isFinite(rawLaunchEffort)
+            ? String(rawLaunchEffort)
+            : context.currentEffort);
         // Remember the agent identity so every later task.* payload for this
         // taskId is self-describing (identity must survive activity retention).
         context.taskAgents.set(message.task_id, {
@@ -3111,6 +3144,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           skipTranscript: message.skip_transcript === true,
           runHandles: context.taskAgents.get(message.task_id)?.runHandles,
           owningAgentId,
+          model,
+          effort,
         });
         context.liveTaskIds.add(message.task_id);
         yield* offerRuntimeEvent({
@@ -3123,6 +3158,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(owningAgentId ? { agentId: owningAgentId } : {}),
             ...(message.description ? { title: message.description } : {}),
             ...(message.subagent_type ? { role: message.subagent_type } : {}),
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
             ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
             ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),
           },
@@ -4111,6 +4148,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
+        currentEffort: effectiveEffort ?? undefined,
         resumeSessionId: sessionId,
         pendingApprovals,
         pendingUserInputs,
@@ -4235,6 +4273,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...context.session,
         model: modelSelection.model,
       };
+      const turnCaps = getClaudeModelCapabilities(modelSelection.model);
+      const turnEffort = resolveClaudeEffort(
+        turnCaps,
+        getModelSelectionStringOptionValue(modelSelection, "effort"),
+      );
+      context.currentEffort =
+        getEffectiveClaudeAgentEffort(turnEffort ?? null, modelSelection.model) ?? undefined;
     }
 
     // Apply interaction mode by switching the SDK's permission mode.

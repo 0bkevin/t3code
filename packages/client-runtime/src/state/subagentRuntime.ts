@@ -62,6 +62,7 @@ export interface RuntimeSubagent {
   readonly title: string;
   readonly role: string | null;
   readonly model: string | null;
+  readonly effort: string | null;
   readonly status: RuntimeSubagentStatus;
   readonly activationCount: number;
   readonly usage: SubagentUsage | null;
@@ -250,6 +251,7 @@ interface MutableAgent {
   title: string;
   role: string | null;
   model: string | null;
+  effort: string | null;
   status: RuntimeSubagentStatus;
   activationCount: number;
   usage: SubagentUsage | null;
@@ -302,6 +304,7 @@ function getOrCreate(
     title: asString(payload.title) ?? asString(payload.detail) ?? id,
     role: asString(payload.role) ?? null,
     model: asString(payload.model) ?? null,
+    effort: asString(payload.effort) ?? null,
     status: "pending",
     activationCount: 0,
     usage: null,
@@ -335,6 +338,8 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (role) agent.role = role;
   const model = asString(payload.model);
   if (model) agent.model = model;
+  const effort = asString(payload.effort);
+  if (effort) agent.effort = effort;
   const parentAgentId = asString(payload.parentAgentId);
   if (parentAgentId) {
     agent.parentAgentId = parentAgentId;
@@ -839,6 +844,25 @@ export function isTimelineBypassActivity(activity: OrchestrationThreadActivity):
     return false;
   }
   return (activity.payload as Record<string, unknown>).timelineBypass === true;
+}
+
+/**
+ * Compact model chip text: strips vendor prefixes/date-or-context suffixes
+ * ("claude-sonnet-5[1m]" → "sonnet-5[1m]", "claude-opus-4-20250514" →
+ * "opus-4"). Unknown ids pass through untouched; effort appends as "· high".
+ */
+export function formatSubagentModelLabel(
+  model: string | null,
+  effort: string | null,
+): string | null {
+  if (!model) {
+    return null;
+  }
+  const compact = model
+    .replace(/^claude-/, "")
+    .replace(/-\d{8}$/, "")
+    .replace(/-latest$/, "");
+  return effort ? `${compact} · ${effort}` : compact;
 }
 
 export function formatSubagentTokenCount(totalTokens: number): string {
