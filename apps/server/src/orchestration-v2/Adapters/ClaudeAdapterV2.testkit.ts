@@ -295,6 +295,7 @@ function isClaudeSdkReplayMessage(frame: unknown): frame is SDKMessage {
     type === "user" ||
     type === "result" ||
     type === "system" ||
+    type === "stream_event" ||
     type === "rate_limit_event"
   );
 }
