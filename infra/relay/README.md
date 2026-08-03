@@ -89,10 +89,10 @@ file from the relay directory. Runtime secrets include Clerk and APNs credential
 the configured API and tunnel DNS zones as retained Cloudflare resources. Personal stages reference
 the production-owned zones.
 
-The `prod` Alchemy stage owns the retained PlanetScale database and is the shared hosted relay for
-stable and nightly clients. Every other stage references that database and provisions an isolated
-PlanetScale branch and runtime role for local development, so deploy `prod` before creating
-developer stages:
+The `prod` Alchemy stage owns the retained PlanetScale database (Vitess/MySQL) and is the shared
+hosted relay for stable and nightly clients. Every other stage references that database and
+provisions an isolated PlanetScale branch and runtime password for local development, so deploy
+`prod` before creating developer stages:
 
 ```sh
 vp run --filter t3code-relay deploy -- --stage prod
