@@ -854,27 +854,40 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   color-scheme: light;
   --radius: 0.625rem;
   --theme-accent-seed: #3b5bdb;
+  --theme-accent-foreground: #ffffff;
   --theme-neutral-seed: #737373;
-  --background: color-mix(in srgb, var(--theme-neutral-seed) 3%, var(--color-zinc-25));
+  --theme-background-strength: 10%;
+  --theme-surface-strength: 14%;
+  --theme-control-strength: 7%;
+  --theme-accent-strength: 16%;
+  --theme-border-strength: 16%;
+  --background: color-mix(
+    in srgb,
+    var(--theme-neutral-seed) var(--theme-background-strength),
+    var(--color-zinc-25)
+  );
   --app-chrome-background: var(--background);
   --surface-raised: color-mix(in srgb, var(--card) 20%, transparent);
   --foreground: var(--color-zinc-800);
-  --card: color-mix(in srgb, var(--theme-neutral-seed) 1.5%, var(--color-white));
+  --card: color-mix(in srgb, var(--theme-neutral-seed) 2%, var(--color-white));
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
-  /* Keep button text readable even when the seed itself is very light. */
-  --primary: color-mix(in oklch, var(--theme-accent-seed) 46%, var(--color-black));
-  --primary-foreground: var(--color-white);
-  --secondary: color-mix(in srgb, var(--theme-neutral-seed) 7%, transparent);
+  --primary: var(--theme-accent-seed);
+  --primary-foreground: var(--theme-accent-foreground);
+  --secondary: color-mix(
+    in srgb,
+    var(--theme-neutral-seed) var(--theme-control-strength),
+    transparent
+  );
   --secondary-foreground: var(--foreground);
-  --muted: color-mix(in srgb, var(--theme-neutral-seed) 7%, transparent);
+  --muted: color-mix(in srgb, var(--theme-neutral-seed) var(--theme-control-strength), transparent);
   --muted-foreground: var(--color-zinc-500);
-  --accent: color-mix(in srgb, var(--theme-accent-seed) 8%, transparent);
+  --accent: color-mix(in srgb, var(--theme-accent-seed) var(--theme-accent-strength), transparent);
   --accent-foreground: var(--foreground);
   --destructive: var(--color-red-500);
-  --border: color-mix(in srgb, var(--theme-neutral-seed) 16%, transparent);
-  --input: color-mix(in srgb, var(--theme-neutral-seed) 19%, transparent);
+  --border: color-mix(in srgb, var(--theme-neutral-seed) var(--theme-border-strength), transparent);
+  --input: color-mix(in srgb, var(--theme-neutral-seed) var(--theme-border-strength), transparent);
   --ring: var(--primary);
   --destructive-foreground: var(--color-red-700);
   --info: var(--primary);
@@ -899,26 +912,57 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     color-scheme: dark;
     /* Keep the workspace in the same neutral-black family as sidebar v2.
        Surfaces lift from this base instead of starting from a milky gray. */
-    --background: color-mix(in srgb, var(--theme-neutral-seed) 10%, var(--color-neutral-950));
+    --background: color-mix(
+      in srgb,
+      var(--theme-neutral-seed) var(--theme-background-strength),
+      var(--color-neutral-950)
+    );
     --app-chrome-background: var(--background);
     --surface-raised: var(--secondary);
     --foreground: var(--color-neutral-100);
-    --card: color-mix(in srgb, var(--theme-neutral-seed) 14%, var(--background));
+    --card: color-mix(
+      in srgb,
+      var(--theme-neutral-seed) var(--theme-surface-strength),
+      var(--background)
+    );
     --card-foreground: var(--foreground);
-    --popover: color-mix(in srgb, var(--theme-neutral-seed) 18%, var(--background));
+    --popover: color-mix(
+      in srgb,
+      var(--theme-neutral-seed) var(--theme-border-strength),
+      var(--background)
+    );
     --popover-foreground: var(--foreground);
-    /* Dark mode lifts the seed instead and uses dark text for the same reason. */
-    --primary: color-mix(in oklch, var(--theme-accent-seed) 40%, var(--color-white));
-    --primary-foreground: var(--color-black);
-    --secondary: color-mix(in srgb, var(--theme-neutral-seed) 13%, transparent);
+    --primary: var(--theme-accent-seed);
+    --primary-foreground: var(--theme-accent-foreground);
+    --secondary: color-mix(
+      in srgb,
+      var(--theme-neutral-seed) var(--theme-surface-strength),
+      transparent
+    );
     --secondary-foreground: var(--foreground);
-    --muted: color-mix(in srgb, var(--theme-neutral-seed) 13%, transparent);
+    --muted: color-mix(
+      in srgb,
+      var(--theme-neutral-seed) var(--theme-surface-strength),
+      transparent
+    );
     --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --accent: color-mix(in srgb, var(--theme-accent-seed) 16%, transparent);
+    --accent: color-mix(
+      in srgb,
+      var(--theme-accent-seed) var(--theme-accent-strength),
+      transparent
+    );
     --accent-foreground: var(--foreground);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --border: color-mix(in srgb, var(--theme-neutral-seed) 16%, transparent);
-    --input: color-mix(in srgb, var(--theme-neutral-seed) 20%, transparent);
+    --border: color-mix(
+      in srgb,
+      var(--theme-neutral-seed) var(--theme-border-strength),
+      transparent
+    );
+    --input: color-mix(
+      in srgb,
+      var(--theme-neutral-seed) var(--theme-border-strength),
+      transparent
+    );
     --ring: var(--primary);
     --destructive-foreground: var(--color-red-400);
     --info: var(--primary);
@@ -944,16 +988,20 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
    changing the color system when the beta is toggled. */
 [data-sidebar-version="v1"],
 [data-sidebar-version="v2"] {
-  --background: color-mix(in srgb, var(--theme-neutral-seed) 3%, var(--color-zinc-25));
+  --background: color-mix(
+    in srgb,
+    var(--theme-neutral-seed) var(--theme-background-strength),
+    var(--color-zinc-25)
+  );
   --foreground: var(--color-zinc-800);
-  --card: color-mix(in srgb, var(--theme-neutral-seed) 1.5%, var(--color-white));
+  --card: color-mix(in srgb, var(--theme-neutral-seed) 2%, var(--color-white));
   --card-foreground: var(--foreground);
-  --accent: color-mix(in srgb, var(--theme-accent-seed) 8%, transparent);
+  --accent: color-mix(in srgb, var(--theme-accent-seed) var(--theme-accent-strength), transparent);
   --accent-foreground: var(--foreground);
-  --muted: color-mix(in srgb, var(--theme-neutral-seed) 7%, transparent);
+  --muted: color-mix(in srgb, var(--theme-neutral-seed) var(--theme-control-strength), transparent);
   --muted-foreground: var(--color-zinc-500);
-  --border: color-mix(in srgb, var(--theme-neutral-seed) 16%, transparent);
-  --input: color-mix(in srgb, var(--theme-neutral-seed) 19%, transparent);
+  --border: color-mix(in srgb, var(--theme-neutral-seed) var(--theme-border-strength), transparent);
+  --input: var(--border);
   --sidebar: var(--background);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
@@ -968,23 +1016,31 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
 .dark [data-sidebar-version="v1"],
 .dark [data-sidebar-version="v2"] {
-  --background: color-mix(in srgb, var(--theme-neutral-seed) 10%, var(--color-neutral-950));
+  --background: color-mix(
+    in srgb,
+    var(--theme-neutral-seed) var(--theme-background-strength),
+    var(--color-neutral-950)
+  );
   --foreground: var(--color-neutral-100);
-  --card: color-mix(in srgb, var(--theme-neutral-seed) 14%, var(--background));
+  --card: color-mix(
+    in srgb,
+    var(--theme-neutral-seed) var(--theme-surface-strength),
+    var(--background)
+  );
   --card-foreground: var(--foreground);
-  --accent: color-mix(in srgb, var(--theme-accent-seed) 16%, transparent);
+  --accent: color-mix(in srgb, var(--theme-accent-seed) var(--theme-accent-strength), transparent);
   --accent-foreground: var(--foreground);
-  --muted: color-mix(in srgb, var(--theme-neutral-seed) 13%, transparent);
+  --muted: color-mix(in srgb, var(--theme-neutral-seed) var(--theme-surface-strength), transparent);
   --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-  --border: color-mix(in srgb, var(--theme-neutral-seed) 16%, transparent);
-  --input: color-mix(in srgb, var(--theme-neutral-seed) 20%, transparent);
+  --border: color-mix(in srgb, var(--theme-neutral-seed) var(--theme-border-strength), transparent);
+  --input: var(--border);
   --sidebar: var(--card);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
   --sidebar-control-surface: var(--muted);
-  --sidebar-row-hover: color-mix(in srgb, var(--foreground) 8%, transparent);
-  --sidebar-row-active: color-mix(in srgb, var(--foreground) 11%, transparent);
-  --sidebar-row-selected: color-mix(in srgb, var(--foreground) 7%, transparent);
+  --sidebar-row-hover: var(--accent);
+  --sidebar-row-active: var(--accent);
+  --sidebar-row-selected: var(--muted);
   --sidebar-border: var(--border);
   /* The stage-channel header art must ramp to THIS panel's surface, not the
      global chrome background, or the fade shows a seam (same rule as the

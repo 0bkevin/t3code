@@ -168,6 +168,78 @@ const THEME_COLOR_SWATCHES = [
 
 const THEME_NEUTRAL_SWATCHES = ["#737373", "#78716c", "#64748b", "#71717a"] as const;
 
+type ThemeOption = (typeof THEME_OPTIONS)[number];
+
+function ThemeModePreview({
+  option,
+  selected,
+  accentColor,
+  onSelect,
+}: {
+  option: ThemeOption;
+  selected: boolean;
+  accentColor: string;
+  onSelect: () => void;
+}) {
+  const previewBackground =
+    option.value === "system"
+      ? "bg-[linear-gradient(to_right,#fafafa_0_50%,#18181b_50%)]"
+      : option.value === "light"
+        ? "bg-zinc-50"
+        : "bg-zinc-900";
+  const previewForeground = option.value === "light" ? "bg-zinc-400" : "bg-zinc-500";
+  const cardBackground =
+    option.value === "system"
+      ? "bg-[linear-gradient(to_right,rgba(255,255,255,0.9)_0_32%,rgba(39,39,42,0.95)_32%)]"
+      : option.value === "light"
+        ? "bg-white/90"
+        : "bg-zinc-800/95";
+
+  return (
+    <button
+      type="button"
+      aria-label={`Use ${option.label.toLowerCase()} theme`}
+      aria-pressed={selected}
+      className="group min-w-0 cursor-pointer text-left"
+      onClick={onSelect}
+    >
+      <span
+        className={`relative block h-24 overflow-hidden rounded-xl border transition group-hover:border-primary/60 ${
+          selected ? "border-primary ring-2 ring-primary/20" : "border-border"
+        } ${previewBackground}`}
+      >
+        <span className="absolute inset-y-0 left-0 w-[31%] border-r border-black/10 bg-black/[0.04] dark:border-white/10" />
+        <span
+          className="absolute top-4 left-3 h-1.5 w-8 rounded-full"
+          style={{ backgroundColor: accentColor }}
+        />
+        <span className={`absolute top-8 left-3 h-1 w-10 rounded-full ${previewForeground}`} />
+        <span className="absolute top-4 right-4 h-2 w-16 rounded-full bg-zinc-400/60" />
+        <span
+          className={`absolute right-3 bottom-3 h-14 w-[60%] rounded-lg border border-black/10 shadow-sm ${cardBackground}`}
+        >
+          <span className="absolute top-3 left-3 h-1.5 w-12 rounded-full bg-zinc-400/60" />
+          <span className="absolute top-7 left-3 h-1 w-[70%] rounded-full bg-zinc-400/30" />
+          <span
+            className="absolute bottom-2 left-3 h-1.5 w-8 rounded-full"
+            style={{ backgroundColor: accentColor }}
+          />
+        </span>
+        {option.value === "system" ? (
+          <span className="absolute inset-y-0 left-1/2 border-l border-white/50" />
+        ) : null}
+      </span>
+      <span
+        className={`mt-2 block text-center text-xs font-medium ${
+          selected ? "text-foreground" : "text-muted-foreground"
+        }`}
+      >
+        {option.label}
+      </span>
+    </button>
+  );
+}
+
 function ThemeColorControl({
   label,
   value,
@@ -1028,43 +1100,33 @@ export function AppearanceSettingsPanel() {
       <SettingsSection id="appearance" title="Appearance">
         <SettingsRow
           {...searchableSetting("theme")}
-          description="Choose how T3 Code looks across the app."
+          description="Choose a mode with a quick preview of the workspace."
           resetAction={
             theme !== "system" ? (
               <SettingResetButton label="theme" onClick={() => setTheme("system")} />
             ) : null
           }
-          control={
-            <Select
-              value={theme}
-              onValueChange={(value) => {
-                if (value === "system" || value === "light" || value === "dark") {
-                  setTheme(value);
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
-                <SelectValue>
-                  {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THEME_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
+        >
+          <div className="mt-4 grid grid-cols-3 gap-3 pb-3">
+            {THEME_OPTIONS.map((option) => (
+              <ThemeModePreview
+                key={option.value}
+                option={option}
+                selected={theme === option.value}
+                accentColor={colors.accentColor}
+                onSelect={() => setTheme(option.value)}
+              />
+            ))}
+          </div>
+        </SettingsRow>
 
         <SettingsRow
           {...searchableSetting("theme-colors")}
-          description="Pick an accent and neutral tint. T3 Code generates the light and dark palettes from these two colors."
+          description="Pick two color seeds, then tune how strongly they separate surfaces and controls."
           resetAction={
             colors.accentColor !== DEFAULT_THEME_COLORS.accentColor ||
-            colors.neutralColor !== DEFAULT_THEME_COLORS.neutralColor ? (
+            colors.neutralColor !== DEFAULT_THEME_COLORS.neutralColor ||
+            colors.contrast !== DEFAULT_THEME_COLORS.contrast ? (
               <SettingResetButton
                 label="theme colors"
                 onClick={() => setThemeColors(DEFAULT_THEME_COLORS)}
@@ -1082,13 +1144,40 @@ export function AppearanceSettingsPanel() {
               }
             />
             <ThemeColorControl
-              label="Neutral color"
+              label="Surface tint"
               value={colors.neutralColor}
               swatches={THEME_NEUTRAL_SWATCHES}
               onChange={(neutralColor) =>
                 setThemeColors({ ...colors, neutralColor } satisfies ThemeColors)
               }
             />
+          </div>
+          <div className="flex items-center gap-4 border-t border-border/70 py-4">
+            <label htmlFor="theme-contrast" className="text-xs font-medium text-foreground">
+              Interface contrast
+            </label>
+            <input
+              id="theme-contrast"
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={colors.contrast}
+              style={{ accentColor: colors.accentColor }}
+              onChange={(event) =>
+                setThemeColors({
+                  ...colors,
+                  contrast: Number(event.currentTarget.value),
+                } satisfies ThemeColors)
+              }
+              className="min-w-0 flex-1 cursor-pointer"
+            />
+            <output
+              htmlFor="theme-contrast"
+              className="w-8 text-right font-mono text-xs tabular-nums text-muted-foreground"
+            >
+              {colors.contrast}
+            </output>
           </div>
         </SettingsRow>
 

@@ -3,11 +3,13 @@ import { useCallback, useSyncExternalStore } from "react";
 export type ThemeColors = {
   accentColor: string;
   neutralColor: string;
+  contrast: number;
 };
 
 export const DEFAULT_THEME_COLORS: ThemeColors = {
   accentColor: "#3b5bdb",
   neutralColor: "#737373",
+  contrast: 50,
 };
 
 export const THEME_COLORS_STORAGE_KEY = "t3code:theme-colors";
@@ -27,6 +29,32 @@ export function normalizeThemeColors(value: unknown): ThemeColors {
   return {
     accentColor: normalizeThemeColor(colors.accentColor) ?? DEFAULT_THEME_COLORS.accentColor,
     neutralColor: normalizeThemeColor(colors.neutralColor) ?? DEFAULT_THEME_COLORS.neutralColor,
+    contrast:
+      typeof colors.contrast === "number" && Number.isFinite(colors.contrast)
+        ? Math.round(Math.min(100, Math.max(0, colors.contrast)))
+        : DEFAULT_THEME_COLORS.contrast,
+  };
+}
+
+export function getThemeAccentForeground(accentColor: string): "#000000" | "#ffffff" {
+  const channels = [1, 3, 5].map((offset) =>
+    Number.parseInt(accentColor.slice(offset, offset + 2), 16),
+  );
+  const [red = 0, green = 0, blue = 0] = channels.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  return luminance >= 0.179 ? "#000000" : "#ffffff";
+}
+
+function getThemeContrastProperties(contrast: number): Record<string, string> {
+  return {
+    "--theme-background-strength": `${4 + contrast * 0.12}%`,
+    "--theme-surface-strength": `${6 + contrast * 0.16}%`,
+    "--theme-control-strength": `${3 + contrast * 0.08}%`,
+    "--theme-accent-strength": `${6 + contrast * 0.2}%`,
+    "--theme-border-strength": `${8 + contrast * 0.16}%`,
   };
 }
 
@@ -42,8 +70,13 @@ export function readThemeColors(): ThemeColors {
 
 export function applyThemeColors(colors: ThemeColors): void {
   if (typeof document === "undefined") return;
-  document.documentElement.style.setProperty("--theme-accent-seed", colors.accentColor);
-  document.documentElement.style.setProperty("--theme-neutral-seed", colors.neutralColor);
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty("--theme-accent-seed", colors.accentColor);
+  rootStyle.setProperty("--theme-accent-foreground", getThemeAccentForeground(colors.accentColor));
+  rootStyle.setProperty("--theme-neutral-seed", colors.neutralColor);
+  for (const [property, value] of Object.entries(getThemeContrastProperties(colors.contrast))) {
+    rootStyle.setProperty(property, value);
+  }
 }
 
 function emitChange(): void {

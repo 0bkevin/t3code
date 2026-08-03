@@ -29,12 +29,36 @@ describe("theme colors", () => {
     vi.stubGlobal("window", createWindow());
     const { normalizeThemeColors } = await import("./useThemeColors");
 
-    expect(normalizeThemeColors({ accentColor: " #DB2777 ", neutralColor: "not-a-color" })).toEqual(
-      { accentColor: "#db2777", neutralColor: "#737373" },
-    );
+    expect(
+      normalizeThemeColors({
+        accentColor: " #DB2777 ",
+        neutralColor: "not-a-color",
+        contrast: 120,
+      }),
+    ).toEqual({ accentColor: "#db2777", neutralColor: "#737373", contrast: 100 });
   });
 
   it("reads a valid palette from storage", async () => {
+    vi.stubGlobal(
+      "window",
+      createWindow({
+        "t3code:theme-colors": JSON.stringify({
+          accentColor: "#0891b2",
+          neutralColor: "#57534e",
+          contrast: 30,
+        }),
+      }),
+    );
+    const { readThemeColors } = await import("./useThemeColors");
+
+    expect(readThemeColors()).toEqual({
+      accentColor: "#0891b2",
+      neutralColor: "#57534e",
+      contrast: 30,
+    });
+  });
+
+  it("migrates palettes saved before contrast was configurable", async () => {
     vi.stubGlobal(
       "window",
       createWindow({
@@ -46,18 +70,33 @@ describe("theme colors", () => {
     );
     const { readThemeColors } = await import("./useThemeColors");
 
-    expect(readThemeColors()).toEqual({ accentColor: "#0891b2", neutralColor: "#57534e" });
+    expect(readThemeColors()).toEqual({
+      accentColor: "#0891b2",
+      neutralColor: "#57534e",
+      contrast: 50,
+    });
   });
 
-  it("applies both seeds to the document root", async () => {
+  it("applies the palette and contrast properties to the document root", async () => {
     const setProperty = vi.fn();
     vi.stubGlobal("window", createWindow());
     vi.stubGlobal("document", { documentElement: { style: { setProperty } } });
     const { applyThemeColors } = await import("./useThemeColors");
 
-    applyThemeColors({ accentColor: "#16a34a", neutralColor: "#78716c" });
+    applyThemeColors({ accentColor: "#16a34a", neutralColor: "#78716c", contrast: 50 });
 
     expect(setProperty).toHaveBeenCalledWith("--theme-accent-seed", "#16a34a");
+    expect(setProperty).toHaveBeenCalledWith("--theme-accent-foreground", "#000000");
     expect(setProperty).toHaveBeenCalledWith("--theme-neutral-seed", "#78716c");
+    expect(setProperty).toHaveBeenCalledWith("--theme-accent-strength", "16%");
+    expect(setProperty).toHaveBeenCalledWith("--theme-border-strength", "16%");
+  });
+
+  it("chooses a readable foreground for light and dark accents", async () => {
+    vi.stubGlobal("window", createWindow());
+    const { getThemeAccentForeground } = await import("./useThemeColors");
+
+    expect(getThemeAccentForeground("#facc15")).toBe("#000000");
+    expect(getThemeAccentForeground("#1d4ed8")).toBe("#ffffff");
   });
 });
