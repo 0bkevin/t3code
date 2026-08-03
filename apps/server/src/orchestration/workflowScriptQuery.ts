@@ -33,16 +33,18 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
 
   if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== ".js") {
     return yield* Effect.fail(
-      new OrchestrationGetWorkflowScriptError({
-        message: "Workflow scripts must be absolute .js paths.",
-      }),
+      new OrchestrationGetWorkflowScriptError({ reason: "invalid-path", scriptPath: requested }),
     );
   }
 
   const root = yield* Effect.tryPromise({
     try: () => NodeFSP.realpath(scriptsRoot()),
     catch: (cause) =>
-      new OrchestrationGetWorkflowScriptError({ message: "Script root unavailable.", cause }),
+      new OrchestrationGetWorkflowScriptError({
+        reason: "root-unavailable",
+        scriptPath: requested,
+        cause,
+      }),
   });
 
   // Realpath the FILE itself (not just its directory): a symlink named
@@ -50,19 +52,21 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
   const resolved = yield* Effect.tryPromise({
     try: () => NodeFSP.realpath(requested),
     catch: (cause) =>
-      new OrchestrationGetWorkflowScriptError({ message: "Script not found.", cause }),
+      new OrchestrationGetWorkflowScriptError({
+        reason: "not-found",
+        scriptPath: requested,
+        cause,
+      }),
   });
 
   if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {
     return yield* Effect.fail(
-      new OrchestrationGetWorkflowScriptError({
-        message: "Script path is outside the workflow scripts root.",
-      }),
+      new OrchestrationGetWorkflowScriptError({ reason: "outside-root", scriptPath: resolved }),
     );
   }
   if (NodePath.extname(resolved) !== ".js") {
     return yield* Effect.fail(
-      new OrchestrationGetWorkflowScriptError({ message: "Resolved script is not a .js file." }),
+      new OrchestrationGetWorkflowScriptError({ reason: "not-js", scriptPath: resolved }),
     );
   }
 
@@ -96,7 +100,11 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
       }
     },
     catch: (cause) =>
-      new OrchestrationGetWorkflowScriptError({ message: "Script read failed.", cause }),
+      new OrchestrationGetWorkflowScriptError({
+        reason: "read-failed",
+        scriptPath: resolved,
+        cause,
+      }),
   });
 
   return {
