@@ -1937,6 +1937,11 @@ interface ActiveClaudeSubagent {
   progressItemOrdinal: number | null;
   progressStartedAt: DateTime.Utc | null;
   resultItemOrdinal: number | null;
+  // Deliberately separate from the parent turn's emittedNativeItemIds: that
+  // set gates the parent fallback-text emission, which subagent-attributed
+  // text must not suppress.
+  readonly emittedTextNativeItemIds: Set<string>;
+  hasStreamedText: boolean;
 }
 
 interface ClaudeLiveQueryContext {
@@ -2381,6 +2386,10 @@ export function makeClaudeAdapterV2(
             progressItemOrdinal: existingSubagent?.progressItemOrdinal ?? null,
             progressStartedAt: existingSubagent?.progressStartedAt ?? null,
             resultItemOrdinal: existingSubagent?.resultItemOrdinal ?? null,
+            emittedTextNativeItemIds: existingSubagent?.emittedTextNativeItemIds ?? new Set(),
+            // A resumed run's result suppression starts fresh: text streamed
+            // before the resume no longer represents the new outcome.
+            hasStreamedText: isReopen ? false : (existingSubagent?.hasStreamedText ?? false),
           } satisfies ActiveClaudeSubagent;
           input.context.subagentsByTaskId.set(input.taskId, subagent);
           if (input.toolUseId !== undefined) {
@@ -2597,10 +2606,16 @@ export function makeClaudeAdapterV2(
             });
           }
 
+          // The child-thread result message is a fallback for subagents whose
+          // stream was never forwarded (background tasks settling across
+          // turns): when the live stream already delivered the subagent's
+          // assistant text into the child thread, its last message IS the
+          // final answer and the task_notification summary would duplicate it.
           if (
             input.result !== undefined &&
             input.result.trim().length > 0 &&
-            input.status !== "running"
+            input.status !== "running" &&
+            !subagent.hasStreamedText
           ) {
             const resultNativeItemId = `${nativeItemId}:result`;
             const resultItemOrdinal = subagent.resultItemOrdinal ?? ++subagent.nextChildItemOrdinal;
@@ -3014,6 +3029,54 @@ export function makeClaudeAdapterV2(
           );
         });
 
+        const emitSubagentAssistantTextArtifacts = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly subagent: ActiveClaudeSubagent;
+          readonly nativeItemId: string;
+          readonly text: string;
+        }) {
+          if (input.subagent.emittedTextNativeItemIds.has(input.nativeItemId)) {
+            return;
+          }
+          input.subagent.emittedTextNativeItemIds.add(input.nativeItemId);
+          const now = yield* DateTime.now;
+          const ordinal = ++input.subagent.nextChildItemOrdinal;
+          input.subagent.hasStreamedText = true;
+          const artifacts = makeSubagentConversationArtifacts({
+            messageId: idAllocator.derive.messageFromProviderItem({
+              driver: CLAUDE_PROVIDER,
+              nativeItemId: input.nativeItemId,
+            }),
+            turnItemId: idAllocator.derive.turnItemFromProviderItem({
+              driver: CLAUDE_PROVIDER,
+              nativeItemId: input.nativeItemId,
+            }),
+            threadId: input.subagent.childThreadId,
+            rootNodeId: input.subagent.childRootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: {
+              driver: CLAUDE_PROVIDER,
+              nativeId: input.nativeItemId,
+              strength: "strong",
+            },
+            role: "assistant",
+            text: input.text,
+            ordinal,
+            now,
+          });
+          yield* emitProviderEvent({
+            type: "message.updated",
+            driver: CLAUDE_PROVIDER,
+            message: artifacts.message,
+          });
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver: CLAUDE_PROVIDER,
+            turnItem: artifacts.turnItem,
+          });
+        });
+
         const finalizeActiveTurnAfterQueryExit = Effect.fnUntraced(function* (
           cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
         ) {
@@ -3377,6 +3440,33 @@ export function makeClaudeAdapterV2(
 
           const assistantText = assistantTextFromSdkMessage(message);
           if (assistantText !== null && assistantText.text.length > 0) {
+            // The SDK forwards subagent assistant messages into the parent
+            // query stream tagged with parent_tool_use_id; they belong to the
+            // subagent's child thread, never to the parent transcript. Tool
+            // uses on the same messages already route via
+            // ensureToolCallStarted, so text must follow the same attribution.
+            const textParentToolUseId = parentToolUseIdFromSdkMessage(message);
+            if (textParentToolUseId !== null) {
+              const subagent = context.subagentsByToolUseId.get(textParentToolUseId);
+              if (subagent === undefined) {
+                // Dropped rather than surfaced in the parent thread: the
+                // child thread still receives the final answer via the
+                // task_notification result fallback.
+                yield* Effect.logWarning("orchestration-v2.claude-subagent-text-unrouted", {
+                  providerTurnId: context.providerTurnId,
+                  parentToolUseId: textParentToolUseId,
+                  nativeItemId: assistantText.nativeItemId,
+                });
+              } else {
+                yield* emitSubagentAssistantTextArtifacts({
+                  context,
+                  subagent,
+                  nativeItemId: assistantText.nativeItemId,
+                  text: assistantText.text,
+                });
+              }
+              return;
+            }
             yield* emitAssistantTextArtifacts({
               context,
               nativeItemId: assistantText.nativeItemId,
