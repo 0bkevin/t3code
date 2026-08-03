@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
-import { syncBrowserChromeTheme } from "./useTheme";
+import { syncBrowserChromeTheme } from "./browserChromeTheme";
 
 export type ThemeColors = {
   accentColor: string;

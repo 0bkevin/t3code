@@ -2,6 +2,9 @@ import type { DesktopBridge } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { syncBrowserChromeTheme } from "./browserChromeTheme";
+
+export { syncBrowserChromeTheme } from "./browserChromeTheme";
 
 const ThemePreference = Schema.Literals(["light", "dark", "system"]);
 type Theme = typeof ThemePreference.Type;
@@ -18,8 +21,6 @@ const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = {
   theme: "system",
   systemDark: false,
 };
-const THEME_COLOR_META_NAME = "theme-color";
-const DYNAMIC_THEME_COLOR_SELECTOR = `meta[name="${THEME_COLOR_META_NAME}"][data-dynamic-theme-color="true"]`;
 
 export class ThemeStorageError extends Schema.TaggedErrorClass<ThemeStorageError>()(
   "ThemeStorageError",
@@ -122,55 +123,6 @@ function getStored(): Theme {
     });
     return DEFAULT_THEME_SNAPSHOT.theme;
   }
-}
-
-function ensureThemeColorMetaTag(): HTMLMetaElement {
-  let element = document.querySelector<HTMLMetaElement>(DYNAMIC_THEME_COLOR_SELECTOR);
-  if (element) {
-    return element;
-  }
-
-  element = document.createElement("meta");
-  element.name = THEME_COLOR_META_NAME;
-  element.setAttribute("data-dynamic-theme-color", "true");
-  document.head.append(element);
-  return element;
-}
-
-function normalizeThemeColor(value: string | null | undefined): string | null {
-  const normalizedValue = value?.trim().toLowerCase();
-  if (
-    !normalizedValue ||
-    normalizedValue === "transparent" ||
-    normalizedValue === "rgba(0, 0, 0, 0)" ||
-    normalizedValue === "rgba(0 0 0 / 0)"
-  ) {
-    return null;
-  }
-
-  return value?.trim() ?? null;
-}
-
-function resolveBrowserChromeSurface(): HTMLElement {
-  return (
-    document.querySelector<HTMLElement>("main[data-slot='sidebar-inset']") ??
-    document.querySelector<HTMLElement>("[data-slot='sidebar-inner']") ??
-    document.body
-  );
-}
-
-export function syncBrowserChromeTheme() {
-  if (typeof document === "undefined" || typeof getComputedStyle === "undefined") return;
-  const surfaceColor = normalizeThemeColor(
-    getComputedStyle(resolveBrowserChromeSurface()).backgroundColor,
-  );
-  const fallbackColor = normalizeThemeColor(getComputedStyle(document.body).backgroundColor);
-  const backgroundColor = surfaceColor ?? fallbackColor;
-  if (!backgroundColor) return;
-
-  document.documentElement.style.backgroundColor = backgroundColor;
-  document.body.style.backgroundColor = backgroundColor;
-  ensureThemeColorMetaTag().setAttribute("content", backgroundColor);
 }
 
 function applyTheme(theme: Theme, suppressTransitions = false) {
