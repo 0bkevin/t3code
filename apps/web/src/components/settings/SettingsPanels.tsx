@@ -64,6 +64,7 @@ import {
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import { useTheme } from "../../hooks/useTheme";
+import { DEFAULT_THEME_COLORS, type ThemeColors, useThemeColors } from "../../hooks/useThemeColors";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
@@ -154,6 +155,57 @@ const THEME_OPTIONS = [
     label: "Dark",
   },
 ] as const;
+
+const THEME_COLOR_SWATCHES = [
+  "#3b5bdb",
+  "#7c3aed",
+  "#db2777",
+  "#dc2626",
+  "#ea580c",
+  "#16a34a",
+  "#0891b2",
+] as const;
+
+const THEME_NEUTRAL_SWATCHES = ["#737373", "#78716c", "#64748b", "#71717a"] as const;
+
+function ThemeColorControl({
+  label,
+  value,
+  swatches,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  swatches: readonly string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <fieldset className="grid min-w-0 gap-2">
+      <legend className="mb-2 text-xs font-medium text-foreground">{label}</legend>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <input
+          type="color"
+          value={value}
+          onChange={(event) => onChange(event.currentTarget.value)}
+          aria-label={`Custom ${label.toLowerCase()}`}
+          className="h-8 w-10 cursor-pointer rounded-lg border border-input bg-background p-0.5"
+        />
+        {swatches.map((swatch) => (
+          <button
+            key={swatch}
+            type="button"
+            className="size-6 cursor-pointer rounded-full border border-black/10 ring-offset-2 ring-offset-background transition hover:scale-105 data-[selected=true]:ring-2 data-[selected=true]:ring-ring dark:border-white/20"
+            style={{ backgroundColor: swatch }}
+            data-selected={value === swatch}
+            aria-pressed={value === swatch}
+            onClick={() => onChange(swatch)}
+            aria-label={`Use ${swatch} for ${label.toLowerCase()}`}
+          />
+        ))}
+      </div>
+    </fieldset>
+  );
+}
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: "Artwork",
@@ -558,6 +610,7 @@ function AboutVersionSection() {
 
 export function useSettingsRestore(onRestored?: () => void) {
   const { theme, setTheme } = useTheme();
+  const { colors, setThemeColors } = useThemeColors();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
 
@@ -570,6 +623,10 @@ export function useSettingsRestore(onRestored?: () => void) {
   const changedSettingLabels = useMemo(
     () => [
       ...(theme !== "system" ? ["Theme"] : []),
+      ...(colors.accentColor !== DEFAULT_THEME_COLORS.accentColor ||
+      colors.neutralColor !== DEFAULT_THEME_COLORS.neutralColor
+        ? ["Theme colors"]
+        : []),
       ...(settings.glassOpacity !== DEFAULT_UNIFIED_SETTINGS.glassOpacity ? ["Glass opacity"] : []),
       ...(settings.environmentIdentificationMode !==
       DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode
@@ -637,6 +694,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.timestampFormat,
       settings.wordWrap,
       theme,
+      colors.accentColor,
+      colors.neutralColor,
     ],
   );
 
@@ -651,6 +710,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     if (!confirmed) return;
 
     setTheme("system");
+    setThemeColors(DEFAULT_THEME_COLORS);
     updateSettings({
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
@@ -674,7 +734,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
     });
     onRestored?.();
-  }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
+  }, [changedSettingLabels, onRestored, setTheme, setThemeColors, updateSettings]);
 
   return {
     changedSettingLabels,
@@ -950,6 +1010,7 @@ function BackgroundActivityAdvancedDialog({
 
 export function AppearanceSettingsPanel() {
   const { theme, setTheme } = useTheme();
+  const { colors, setThemeColors } = useThemeColors();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const environmentStageLabel = useEnvironmentStageLabel();
@@ -997,6 +1058,39 @@ export function AppearanceSettingsPanel() {
             </Select>
           }
         />
+
+        <SettingsRow
+          {...searchableSetting("theme-colors")}
+          description="Pick an accent and neutral tint. T3 Code generates the light and dark palettes from these two colors."
+          resetAction={
+            colors.accentColor !== DEFAULT_THEME_COLORS.accentColor ||
+            colors.neutralColor !== DEFAULT_THEME_COLORS.neutralColor ? (
+              <SettingResetButton
+                label="theme colors"
+                onClick={() => setThemeColors(DEFAULT_THEME_COLORS)}
+              />
+            ) : null
+          }
+        >
+          <div className="mt-4 grid gap-4 pb-2 sm:grid-cols-2">
+            <ThemeColorControl
+              label="Accent color"
+              value={colors.accentColor}
+              swatches={THEME_COLOR_SWATCHES}
+              onChange={(accentColor) =>
+                setThemeColors({ ...colors, accentColor } satisfies ThemeColors)
+              }
+            />
+            <ThemeColorControl
+              label="Neutral color"
+              value={colors.neutralColor}
+              swatches={THEME_NEUTRAL_SWATCHES}
+              onChange={(neutralColor) =>
+                setThemeColors({ ...colors, neutralColor } satisfies ThemeColors)
+              }
+            />
+          </div>
+        </SettingsRow>
 
         <SettingsRow
           {...searchableSetting("setting-glass-opacity")}

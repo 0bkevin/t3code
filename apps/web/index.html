@@ -17,6 +17,24 @@
         const DARK_BACKGROUND = "#161616";
         const themeColorMeta = document.querySelector('meta[name="theme-color"]');
         try {
+          const storedColors = window.localStorage.getItem("t3code:theme-colors");
+          const colors = storedColors ? JSON.parse(storedColors) : null;
+          const isHexColor = (value) =>
+            typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value.trim());
+          if (isHexColor(colors?.accentColor)) {
+            document.documentElement.style.setProperty(
+              "--theme-accent-seed",
+              colors.accentColor.trim().toLowerCase(),
+            );
+          }
+          if (isHexColor(colors?.neutralColor)) {
+            document.documentElement.style.setProperty(
+              "--theme-neutral-seed",
+              colors.neutralColor.trim().toLowerCase(),
+            );
+          }
+        } catch {}
+        try {
           const storedTheme = window.localStorage.getItem("t3code:theme");
           const theme =
             storedTheme === "light" || storedTheme === "dark" || storedTheme === "system"
