@@ -2058,9 +2058,14 @@ function ChatViewContent(props: ChatViewProps) {
   // Native subagent fold: memoized by activity-list identity, shared by the
   // Agents surface, live strip, and workflow cards. v2Projection is null
   // until orchestration-v2 lands (source precedence lives in the derive).
+  // sessionLive derives interruption for agents orphaned by session death.
+  const agentSessionLive = phase !== "disconnected";
   const agentPanelModel = useMemo(
-    () => deriveAgentPanelModel({ agents: foldSubagentActivities(threadActivities) }),
-    [threadActivities],
+    () =>
+      deriveAgentPanelModel({
+        agents: foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
+      }),
+    [agentSessionLive, threadActivities],
   );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
@@ -4190,12 +4195,17 @@ function ChatViewContent(props: ChatViewProps) {
     !isWorking && activeThread ? (activeThreadShell?.backgroundLiveness ?? null) : null;
   const [isStoppingBackgroundWork, setIsStoppingBackgroundWork] = useState(false);
   useEffect(() => {
-    // "Stopping..." holds until the liveness clears (or the thread changes);
-    // the interrupt command returning only means the request was accepted.
+    // "Stopping..." holds until the liveness clears; the interrupt command
+    // returning only means the request was accepted.
     if (activeBackgroundLiveness === null) {
       setIsStoppingBackgroundWork(false);
     }
-  }, [activeBackgroundLiveness, activeThreadId]);
+  }, [activeBackgroundLiveness]);
+  useEffect(() => {
+    // Per-thread state: switching threads while A's stop is pending must not
+    // disable B's Stop button (review finding).
+    setIsStoppingBackgroundWork(false);
+  }, [activeThreadId]);
   const handleStopBackgroundWork = useCallback(async () => {
     if (!activeThread) return;
     setIsStoppingBackgroundWork(true);

@@ -1988,9 +1988,11 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
     coordinatorStatus === "cancelled" ||
     coordinatorStatus === "interrupted";
   const live = workflowGroup !== undefined ? !coordinatorSettled : running + waiting > 0;
+  // Same rule as the panel footer: providers may aggregate member usage into
+  // the coordinator, so count the coordinator only when no members exist.
   const totalTokens = agents.reduce(
     (sum, agent) => sum + (agent.usage?.totalTokens ?? 0),
-    spawn.workflowId ? (workflowGroup?.workflow.usage?.totalTokens ?? 0) : 0,
+    spawn.workflowId && agents.length === 0 ? (workflowGroup?.workflow.usage?.totalTokens ?? 0) : 0,
   );
 
   const livePhase = workflowGroup?.phases.find((phase) => phase.state === "running");

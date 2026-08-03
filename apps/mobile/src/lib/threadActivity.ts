@@ -237,11 +237,38 @@ function resolvePendingUserInputAnswer(
   return normalizeDraftAnswer(draft?.selectedOptionLabel);
 }
 
+/** Codex children settle via task.updated (idle/failed/interrupted), never
+ * task.completed — these rows are mobile's only terminal signal for them. */
+const MOBILE_TERMINAL_UPDATE_STATUSES: ReadonlySet<string> = new Set([
+  "idle",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+function isTerminalBypassUpdate(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "task.updated") {
+    return false;
+  }
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  return (
+    payload?.timelineBypass === true &&
+    typeof payload.status === "string" &&
+    MOBILE_TERMINAL_UPDATE_STATUSES.has(payload.status)
+  );
+}
+
 /**
  * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
- * activity lives in the Agents sheet, not the work log. task.completed rows
- * are kept — with no workflow card on mobile they are the terminal signal
- * (a surface that hides rows must keep its own terminal signal).
+ * activity lives in the Agents sheet, not the work log. Terminal rows are
+ * kept — with no Agents surface on mobile they are the terminal signal
+ * (a surface that hides rows must keep its own terminal signal). That means
+ * task.completed (Claude) AND terminal bypassed task.updated (Codex, whose
+ * children never emit task.completed — review finding).
  */
 function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
   const payload =
@@ -251,7 +278,11 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
-  if (payload.timelineBypass === true && activity.kind !== "task.completed") {
+  if (
+    payload.timelineBypass === true &&
+    activity.kind !== "task.completed" &&
+    !isTerminalBypassUpdate(activity)
+  ) {
     return true;
   }
   return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
@@ -265,7 +296,8 @@ function deriveWorkLogEntries(
   for (const activity of ordered) {
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
-    if (activity.kind === "task.updated") continue;
+    // Terminal bypassed updates pass: Codex children's only terminal signal.
+    if (activity.kind === "task.updated" && !isTerminalBypassUpdate(activity)) continue;
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;

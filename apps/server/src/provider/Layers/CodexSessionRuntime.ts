@@ -624,6 +624,13 @@ interface CollabChildAgentState {
   readonly agentPath: string | undefined;
   readonly depth: number | undefined;
   readonly parentThreadId: string | undefined;
+  /**
+   * Parent canonical turn active when the child registered. Stamped on every
+   * synthetic collabAgent/* event so clients can batch a fleet by its spawn
+   * turn — without it, separate fleets in one thread collapsed into a single
+   * "direct:no-turn" CTA (review finding).
+   */
+  readonly spawnTurnId: TurnId | undefined;
 }
 
 function readThreadSpawnSource(thread: { readonly source: unknown }):
@@ -916,6 +923,7 @@ export const makeCodexSessionRuntime = (
           if (!spawn) {
             return false;
           }
+          const spawnTurnId = (yield* Ref.get(sessionRef)).activeTurnId ?? undefined;
           const state: CollabChildAgentState = {
             agentThreadId: thread.id,
             nickname: spawn.nickname ?? thread.agentNickname ?? undefined,
@@ -923,6 +931,7 @@ export const makeCodexSessionRuntime = (
             agentPath: spawn.agentPath,
             depth: spawn.depth,
             parentThreadId: spawn.parentThreadId ?? thread.parentThreadId ?? undefined,
+            spawnTurnId,
           };
           yield* Ref.update(collabChildAgentsRef, (current) => {
             const next = new Map(current);
@@ -933,6 +942,7 @@ export const makeCodexSessionRuntime = (
             kind: "notification",
             threadId: options.threadId,
             method: "collabAgent/started",
+            ...(state.spawnTurnId ? { turnId: state.spawnTurnId } : {}),
             payload: {
               agentThreadId: state.agentThreadId,
               ...(state.nickname ? { nickname: state.nickname } : {}),
@@ -966,6 +976,7 @@ export const makeCodexSessionRuntime = (
           ) {
             return false;
           }
+          const activitySpawnTurnId = (yield* Ref.get(sessionRef)).activeTurnId ?? undefined;
           yield* Ref.update(collabChildAgentsRef, (current) => {
             if (current.has(item.agentThreadId)) {
               return current;
@@ -978,13 +989,16 @@ export const makeCodexSessionRuntime = (
               agentPath: item.agentPath,
               depth: undefined,
               parentThreadId: undefined,
+              spawnTurnId: activitySpawnTurnId,
             });
             return next;
           });
+          const registeredChild = (yield* Ref.get(collabChildAgentsRef)).get(item.agentThreadId);
           yield* emitEvent({
             kind: "notification",
             threadId: options.threadId,
             method: "collabAgent/activity",
+            ...(registeredChild?.spawnTurnId ? { turnId: registeredChild.spawnTurnId } : {}),
             payload: {
               agentThreadId: item.agentThreadId,
               agentPath: item.agentPath,
@@ -1033,6 +1047,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/turnStarted",
               payload: childIdentity,
             });
@@ -1047,6 +1062,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/turnCompleted",
               payload: {
                 ...childIdentity,
@@ -1058,6 +1074,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/statusChanged",
               payload: {
                 ...childIdentity,
@@ -1081,6 +1098,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/item",
               payload: {
                 ...childIdentity,
@@ -1092,6 +1110,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/closed",
               payload: childIdentity,
             });

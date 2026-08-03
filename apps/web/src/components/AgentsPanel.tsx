@@ -436,9 +436,11 @@ function SettledWorkflowSection({ group }: { group: AgentPanelWorkflowGroup }) {
   const [open, setOpen] = useState(false);
   const members = workflowMembers(group);
   const failed = members.filter((member) => member.status === "failed").length;
+  // Coordinator usage may already aggregate members (panel-footer rule):
+  // count it only when there are no member rows to sum.
   const totalTokens = members.reduce(
     (sum, member) => sum + (member.usage?.totalTokens ?? 0),
-    group.workflow.usage?.totalTokens ?? 0,
+    members.length === 0 ? (group.workflow.usage?.totalTokens ?? 0) : 0,
   );
   const elapsed =
     group.workflow.startedAt && group.workflow.completedAt

@@ -126,6 +126,29 @@ function isNonAgentTaskType(taskType: string | undefined): boolean {
   return taskType !== undefined && NON_AGENT_TASK_TYPES.has(taskType);
 }
 
+/**
+ * Positive evidence that a taskType-less row came from the new agent
+ * pipeline. Pre-upgrade activity rows carry none of these fields, so
+ * legacy shells/monitors whose rows predate taskType stay out of the
+ * roster (review finding: old "tailing logs" tasks appeared as running
+ * subagents after upgrading). Every new emitter marks its rows: Claude
+ * repeats linkage (role/model/toolUseId) on all task.* rows, workflow
+ * members carry parentAgentId/agentIndex, Codex children carry
+ * timelineBypass/agentPath.
+ */
+function hasAgentPipelineMarker(payload: Record<string, unknown>): boolean {
+  return (
+    payload.timelineBypass === true ||
+    typeof payload.role === "string" ||
+    typeof payload.model === "string" ||
+    typeof payload.parentAgentId === "string" ||
+    typeof payload.agentPath === "string" ||
+    typeof payload.workflowName === "string" ||
+    typeof payload.toolUseId === "string" ||
+    typeof payload.agentIndex === "number"
+  );
+}
+
 /** True when this activity's payload describes a non-agent background task. */
 export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
   const taskType = typeof payload.taskType === "string" ? payload.taskType : undefined;
@@ -136,6 +159,12 @@ export function isBackgroundTaskActivity(payload: Record<string, unknown>): bool
   // nested agents entirely).
   if (ownedByAgent) {
     return taskType === undefined || isNonAgentTaskType(taskType);
+  }
+  if (taskType === undefined) {
+    // No taskType: agent only with positive new-pipeline evidence; legacy
+    // rows (which predate both taskType and the marker fields) keep their
+    // pre-upgrade work-log behavior.
+    return !hasAgentPipelineMarker(payload);
   }
   return isNonAgentTaskType(taskType);
 }
@@ -356,10 +385,12 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (phaseTitle) agent.phaseTitle = phaseTitle;
   const attempt = asCount(payload.attempt);
   if (attempt !== undefined) {
-    // A new attempt on a workflow slot is a reactivation of the same identity:
-    // bump the run count and clear the previous attempt's terminal detail.
+    // A new attempt on a workflow slot is a reactivation of the same
+    // identity: clear the previous attempt's terminal detail so the status
+    // transition (terminal → running, in applyStatus) reads as a fresh run.
+    // The activation bump lives ONLY in applyStatus — bumping here too
+    // counted every retry twice (review finding: two attempts read "run 3").
     if (agent.attempt !== null && attempt > agent.attempt) {
-      agent.activationCount += 1;
       agent.result = null;
       agent.error = null;
       agent.completedAt = null;
@@ -462,9 +493,16 @@ function asRuntimeStatus(value: unknown): RuntimeSubagentStatus | undefined {
  * Folds a thread's persisted activities into subagent state. Tolerant by
  * construction: malformed rows are skipped individually; unknown kinds are
  * ignored. Pure — memoize by activity-list identity at the atom layer.
+ *
+ * sessionLive=false derives interruption: background tasks die with their
+ * provider session, so agents whose terminal rows were lost (server
+ * restart, crash) must not read as running forever (review finding: a dead
+ * session left a panel full of "Working" agents while the sidebar showed
+ * nothing). Idle is preserved — a resumable Codex child stays resumable.
  */
 export function foldSubagentActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  options?: { readonly sessionLive?: boolean },
 ): ReadonlyArray<RuntimeSubagent> {
   const agents = new Map<string, MutableAgent>();
 
@@ -488,8 +526,11 @@ export function foldSubagentActivities(
         // Order-robustness: a start row arriving after a terminal state is a
         // late/out-of-order delivery and only fills metadata — it must not
         // reopen the run. Reactivation comes exclusively from explicit
-        // status transitions (task.updated / progress status).
-        if (agent.activationCount === 0) {
+        // status transitions (task.updated / progress status). Guard on the
+        // status itself, not activationCount: a task first seen via a
+        // terminal task.updated has zero activations but is still settled
+        // (review finding: a late start reopened a failed child).
+        if (agent.activationCount === 0 && !isTerminalSubagentStatus(agent.status)) {
           agent.activationCount = 1;
           agent.startedAt = agent.startedAt ?? at;
           agent.status = "running";
@@ -504,7 +545,10 @@ export function foldSubagentActivities(
       case "task.progress": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
-        if (isBackgroundTaskActivity(payload)) break;
+        // Membership is sticky per taskId: rows after the first (terminal
+        // rows often carry only taskId+status, no marker fields) inherit the
+        // first row's classification instead of being re-judged.
+        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
@@ -535,15 +579,22 @@ export function foldSubagentActivities(
       case "task.updated": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
-        if (isBackgroundTaskActivity(payload)) break;
+        // Membership is sticky per taskId: rows after the first (terminal
+        // rows often carry only taskId+status, no marker fields) inherit the
+        // first row's classification instead of being re-judged.
+        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
+        const wasTerminal = isTerminalSubagentStatus(agent.status);
         const status = asRuntimeStatus(payload.status);
         if (status) applyStatus(agent, status, at);
         const error = asString(payload.error);
         if (error) agent.error = bounded(error);
+        // Provider end time beats ingestion time for the transition that
+        // actually settled the run (applyStatus fills completedAt with the
+        // activity timestamp first, so check the transition, not null).
         const endedAt = asString(payload.endedAt);
-        if (endedAt && isTerminalSubagentStatus(agent.status) && agent.completedAt === null) {
+        if (endedAt && !wasTerminal && isTerminalSubagentStatus(agent.status)) {
           agent.completedAt = endedAt;
         }
         agent.updatedAt = at;
@@ -552,10 +603,17 @@ export function foldSubagentActivities(
       case "task.completed": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
-        if (isBackgroundTaskActivity(payload)) break;
+        // Membership is sticky per taskId: rows after the first (terminal
+        // rows often carry only taskId+status, no marker fields) inherit the
+        // first row's classification instead of being re-judged.
+        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
+        // Duplicate terminal rows are fully idempotent: first write wins for
+        // result/error/updatedAt too, not just status/timestamps (review
+        // finding: a duplicate completion replaced the first result).
+        if (isTerminalSubagentStatus(agent.status)) break;
         const status = TASK_COMPLETED_STATUS[asString(payload.status) ?? ""] ?? "completed";
         applyStatus(agent, status, at);
         const summary = asString(payload.summary) ?? asString(payload.detail);
@@ -608,6 +666,18 @@ export function foldSubagentActivities(
       member.status = agent.status === "completed" ? "completed" : "interrupted";
       member.completedAt = member.completedAt ?? agent.completedAt ?? agent.updatedAt;
       member.updatedAt = agent.updatedAt;
+    }
+  }
+
+  // Session death orphans every live agent: no process remains to finish
+  // them. Mirrors the server-side liveness registry clearing on
+  // session.exited, so panel and sidebar can never disagree.
+  if (options?.sessionLive === false) {
+    for (const agent of agents.values()) {
+      if (isActiveSubagentStatus(agent.status)) {
+        agent.status = "interrupted";
+        agent.completedAt = agent.completedAt ?? agent.updatedAt;
+      }
     }
   }
 
@@ -724,14 +794,15 @@ export function deriveAgentPanelModel({
               .toSorted((a, b) => a.index - b.index);
           })();
 
+    const knownPhaseIndices = new Set(knownPhases.map((phase) => phase.index));
     const phases = knownPhases.map((phase) => {
       const phaseMembers = workflowMembers
         .filter((member) => member.phaseIndex === phase.index)
         .toSorted((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
-      const activeCount = phaseMembers.filter((member) =>
+      const activeCount = phaseMembers.filter(
         // Idle members count as active for phase-liveness: a resumable Codex
         // member has not finished the phase.
-        isActiveSubagentStatus(member.status),
+        (member) => isActiveSubagentStatus(member.status) || member.status === "idle",
       ).length;
       const settledCount = phaseMembers.filter((member) =>
         isTerminalSubagentStatus(member.status),
@@ -754,8 +825,10 @@ export function deriveAgentPanelModel({
       };
     });
 
+    // Unknown phase indices land here too — a member must never vanish just
+    // because its phase row was lost (review finding).
     const unphasedMembers = workflowMembers
-      .filter((member) => member.phaseIndex === null)
+      .filter((member) => member.phaseIndex === null || !knownPhaseIndices.has(member.phaseIndex))
       .toSorted((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
 
     return { workflow, phases, unphasedMembers };

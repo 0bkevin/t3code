@@ -80,7 +80,12 @@ describe("foldSubagentActivities", () => {
 
   it("completion before start stays terminal; a late start only fills metadata", () => {
     const agents = fold([
-      activity("task.completed", { taskId: "task-2", status: "failed", summary: "boom" }),
+      activity("task.completed", {
+        taskId: "task-2",
+        status: "failed",
+        summary: "boom",
+        role: "fixer",
+      }),
       activity("task.started", { taskId: "task-2", title: "Late metadata", role: "fixer" }),
     ]);
     expect(agents).toHaveLength(1);
@@ -94,7 +99,7 @@ describe("foldSubagentActivities", () => {
 
   it("duplicate terminal events are idempotent (timestamps do not slide)", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-3" }),
+      activity("task.started", { taskId: "task-3", taskType: "local_agent" }),
       activity(
         "task.completed",
         { taskId: "task-3", status: "completed" },
@@ -111,7 +116,7 @@ describe("foldSubagentActivities", () => {
 
   it("reactivation increments the run count and clears result/error", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-4" }),
+      activity("task.started", { taskId: "task-4", taskType: "local_agent" }),
       activity("task.completed", { taskId: "task-4", status: "completed", summary: "run 1 done" }),
       activity("task.updated", { taskId: "task-4", status: "running" }),
     ]);
@@ -135,7 +140,7 @@ describe("foldSubagentActivities", () => {
 
   it("cumulative usage max-merges: duplicate and late frames never shrink or double-count", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-5" }),
+      activity("task.started", { taskId: "task-5", taskType: "local_agent" }),
       activity("task.progress", {
         taskId: "task-5",
         typedUsage: { totalTokens: 900, inputTokens: 700 },
@@ -151,7 +156,7 @@ describe("foldSubagentActivities", () => {
 
   it("partial terminal usage preserves known breakdown fields", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-6" }),
+      activity("task.started", { taskId: "task-6", taskType: "local_agent" }),
       activity("task.progress", {
         taskId: "task-6",
         typedUsage: { totalTokens: 800, inputTokens: 600, outputTokens: 150 },
@@ -167,7 +172,7 @@ describe("foldSubagentActivities", () => {
 
   it("skips malformed rows individually without failing the fold", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-7", title: "Good" }),
+      activity("task.started", { taskId: "task-7", title: "Good", taskType: "local_agent" }),
       activity("task.progress", { bogus: true }),
       activity("task.progress", { taskId: 42 }),
     ]);
@@ -177,7 +182,7 @@ describe("foldSubagentActivities", () => {
 
   it("bounds repeated strings at 180 chars and the activity ring at 6 deduped entries", () => {
     const long = "x".repeat(500);
-    const rows = [activity("task.started", { taskId: "task-8" })];
+    const rows = [activity("task.started", { taskId: "task-8", taskType: "local_agent" })];
     for (let i = 0; i < 10; i += 1) {
       rows.push(activity("task.progress", { taskId: "task-8", summary: `${long}-${i}` }));
     }
@@ -483,6 +488,135 @@ describe("background task exclusion", () => {
       activity("task.progress", { taskId: "wf-1:wf:0", status: "running", parentAgentId: "wf-1" }),
     ]);
     expect(agents).toHaveLength(1);
+  });
+
+  it("legacy rows (no taskType, no pipeline markers) keep pre-upgrade behavior", () => {
+    // Pre-upgrade activity rows carried only taskId + detail; a historical
+    // "tailing logs" shell must not become a running subagent.
+    const agents = fold([
+      activity("task.started", { taskId: "old-task", detail: "tailing logs" }),
+      activity("task.progress", { taskId: "old-task", summary: "still tailing" }),
+    ]);
+    expect(agents).toHaveLength(0);
+  });
+
+  it("membership is sticky: marker-less later rows still reach a known agent", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "a1", taskType: "local_agent", title: "Agent" }),
+      // Terminal row carries only taskId + status (no linkage) — common shape.
+      activity("task.completed", { taskId: "a1", status: "completed", summary: "done" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.status).toBe("completed");
+    expect(agents[0]!.result).toBe("done");
+  });
+});
+
+describe("session-derived interruption", () => {
+  it("dead session interrupts live agents but preserves idle and settled", () => {
+    const rows = [
+      activity("task.started", { taskId: "live-1", taskType: "local_agent" }),
+      activity("task.started", { taskId: "idle-1", taskType: "local_agent" }),
+      activity("task.updated", { taskId: "idle-1", status: "idle" }),
+      activity("task.started", { taskId: "done-1", taskType: "local_agent" }),
+      activity("task.completed", { taskId: "done-1", status: "completed" }),
+    ];
+    const dead = foldSubagentActivities(rows, { sessionLive: false });
+    expect(dead.find((agent) => agent.id === "live-1")?.status).toBe("interrupted");
+    expect(dead.find((agent) => agent.id === "idle-1")?.status).toBe("idle");
+    expect(dead.find((agent) => agent.id === "done-1")?.status).toBe("completed");
+    const alive = foldSubagentActivities(rows, { sessionLive: true });
+    expect(alive.find((agent) => agent.id === "live-1")?.status).toBe("running");
+  });
+});
+
+describe("terminal robustness", () => {
+  it("a late start after a terminal task.updated does not reopen the run", () => {
+    const agents = fold([
+      activity("task.updated", { taskId: "t1", status: "failed", role: "worker" }),
+      activity("task.started", { taskId: "t1", taskType: "local_agent", title: "Late" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.status).toBe("failed");
+    expect(agents[0]!.title).toBe("Late");
+  });
+
+  it("duplicate completions keep the FIRST result, not the last", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "t2", taskType: "local_agent" }),
+      activity("task.completed", { taskId: "t2", status: "completed", summary: "first result" }),
+      activity("task.completed", { taskId: "t2", status: "completed", summary: "second result" }),
+    ]);
+    expect(agents[0]!.result).toBe("first result");
+  });
+
+  it("provider endedAt wins over ingestion time on the settling transition", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "t3", taskType: "local_agent" }),
+      activity(
+        "task.updated",
+        { taskId: "t3", status: "failed", endedAt: "2026-08-01T09:59:59.000Z" },
+        "2026-08-01T10:00:30.000Z",
+      ),
+    ]);
+    expect(agents[0]!.completedAt).toBe("2026-08-01T09:59:59.000Z");
+  });
+
+  it("workflow retries count each attempt once", () => {
+    const agents = fold([
+      activity("task.progress", {
+        taskId: "wf-r:wf:0",
+        parentAgentId: "wf-r",
+        status: "running",
+        attempt: 1,
+      }),
+      activity("task.progress", {
+        taskId: "wf-r:wf:0",
+        parentAgentId: "wf-r",
+        status: "failed",
+        attempt: 1,
+      }),
+      activity("task.progress", {
+        taskId: "wf-r:wf:0",
+        parentAgentId: "wf-r",
+        status: "running",
+        attempt: 2,
+      }),
+    ]);
+    expect(agents[0]!.activationCount).toBe(2);
+  });
+});
+
+describe("phase membership", () => {
+  it("members with unknown phase indices land in unphasedMembers, never vanish", () => {
+    const model = deriveAgentPanelModel({
+      agents: fold([
+        activity("task.started", {
+          taskId: "wf-p",
+          taskType: "local_workflow",
+          phases: [{ index: 0, title: "Only phase" }],
+        }),
+        activity("task.progress", {
+          taskId: "wf-p:wf:0",
+          parentAgentId: "wf-p",
+          status: "running",
+          phaseIndex: 0,
+        }),
+        activity("task.progress", {
+          taskId: "wf-p:wf:9",
+          parentAgentId: "wf-p",
+          status: "running",
+          phaseIndex: 9,
+        }),
+      ]),
+    });
+    const group = model.workflows[0]!;
+    const visible = [
+      ...group.phases.flatMap((phase) => phase.members),
+      ...group.unphasedMembers,
+    ].map((member) => member.id);
+    expect(visible).toContain("wf-p:wf:0");
+    expect(visible).toContain("wf-p:wf:9");
   });
 });
 

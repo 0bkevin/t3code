@@ -696,9 +696,12 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
     // every such row into its batch's single row, so letting them through
     // preserves the quiet-timeline invariant while giving Codex children —
     // whose rows are ALL bypassed — a CTA anchor (wire-probe finding: no
-    // CTA ever formed for a Codex fleet).
+    // CTA ever formed for a Codex fleet). task.started included so the CTA
+    // anchors at the spawn point, not the first progress tick.
     const isAgentTaskRow =
-      (activity.kind === "task.progress" || activity.kind === "task.completed") &&
+      (activity.kind === "task.started" ||
+        activity.kind === "task.progress" ||
+        activity.kind === "task.completed") &&
       typeof payload.taskId === "string" &&
       !isBackgroundTaskActivity(payload);
     return !isAgentTaskRow;
