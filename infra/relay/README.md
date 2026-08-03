@@ -40,7 +40,9 @@ credential, or authorization behavior.
   APNs delivery, and queue processing.
 - [`src/auth`](./src/auth) contains relay token and DPoP proof handling.
 - [`src/persistence/schema.ts`](./src/persistence/schema.ts) defines persisted relay state. Keep
-  schema and migration changes together.
+  schema and migration changes together: after editing the schema, run
+  `pnpm exec drizzle-kit generate` (see [`drizzle.config.ts`](./drizzle.config.ts)) and commit the
+  new `migrations/mysql/` directory — MySQL migrations are generated manually, not by the deploy.
 
 Shared request and response schemas live in
 [`packages/contracts/src/relay.ts`](../../packages/contracts/src/relay.ts). Shared client-side relay

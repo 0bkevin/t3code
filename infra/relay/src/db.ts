@@ -1,6 +1,5 @@
 import type { MysqlClient } from "@effect/sql-mysql2/MysqlClient";
 import * as Cloudflare from "alchemy/Cloudflare";
-import * as Drizzle from "alchemy/Drizzle";
 import * as Planetscale from "alchemy/Planetscale";
 import * as Alchemy from "alchemy";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
@@ -35,14 +34,14 @@ export class RelayTransactions extends Context.Service<
   );
 }
 
+// Unlike Postgres, alchemy has no automatic Drizzle.Schema generation for
+// MySQL (drizzle-kit exposes no programmatic mysql API): migrations are
+// generated manually with `pnpm exec drizzle-kit generate` (drizzle.config.ts)
+// and checked in; deploys apply whatever is committed here.
+const mysqlMigrationsDir = "migrations/mysql";
+
 export const PlanetscaleDatabase = Effect.gen(function* () {
   const { stage } = yield* Alchemy.Stack;
-  const schema = yield* Drizzle.Schema("RelaySchema", {
-    schema: "./src/persistence/schema.ts",
-    out: "./migrations/mysql",
-    dialect: "mysql",
-  });
-
   const mode = relayDatabaseMode(stage);
 
   // The retired Postgres database stays in the stack (prod only) until the
@@ -71,15 +70,14 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
 
   const database =
     mode === "shared-database"
-      ? // Same resource id as the provisioning PR that created this database
-        // (with its baseline already applied) ahead of the cutover, so this
-        // deploy is a plain update; only migrationsDir moves from the static
-        // baseline dir to the schema resource for future schema evolution.
+      ? // Same resource + props as the provisioning PR that created this
+        // database (with its baseline already applied) ahead of the cutover,
+        // so this deploy no-ops on the database itself.
         yield* Planetscale.MySQLDatabase("RelayMysqlDatabase", {
           name: "t3coderelay-vitess",
           region: { slug: "us-west" },
           clusterSize: "PS_20",
-          migrationsDir: schema.out,
+          migrationsDir: mysqlMigrationsDir,
           migrationsTable: "relay_migrations",
           replicas: 2,
         }).pipe(RemovalPolicy.retain())
@@ -91,7 +89,7 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
       ? yield* Planetscale.MySQLBranch("RelayMysqlBranch", {
           database,
           isProduction: false,
-          migrationsDir: schema.out,
+          migrationsDir: mysqlMigrationsDir,
           migrationsTable: "relay_migrations",
         })
       : undefined;
