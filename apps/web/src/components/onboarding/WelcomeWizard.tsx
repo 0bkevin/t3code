@@ -673,6 +673,11 @@ function AgentInstallTerminal({
       if (opened._tag !== "Success") return;
       preparedRef.current = true;
       if (command.length === 0) return;
+      // Closing and reopening the drawer reattaches to the still-live PTY
+      // (Done never kills the session). A session with history already got
+      // its command — pre-typing again would duplicate it, or feed stdin to
+      // whatever is running.
+      if (opened.value.history.length > 0) return;
       // Pre-type without the trailing carriage return; the user submits.
       await writeTerminal({
         environmentId,

@@ -86,14 +86,13 @@ const decoder = new TextDecoder();
  * transcripts look exactly like user sessions, but re-importing the app's own
  * sandboxes as projects is never right. Matches this server's configured
  * worktrees directory plus the conventional `.t3/worktrees` layout, which
- * also catches sandboxes from other T3 homes on the same machine.
+ * also catches sandboxes from other T3 homes on the same machine. Separators
+ * are normalized so the prefix match holds on Windows too.
  */
 function isT3ManagedWorktree(resolvedPath: string, worktreesDir: string): boolean {
-  const withSeparator = `${resolvedPath}/`;
-  return (
-    withSeparator.startsWith(`${worktreesDir}/`) ||
-    /[/\\]\.t3[/\\]worktrees[/\\]/.test(withSeparator)
-  );
+  const normalized = `${resolvedPath.replaceAll("\\", "/")}/`;
+  const worktreesPrefix = `${worktreesDir.replaceAll("\\", "/")}/`;
+  return normalized.startsWith(worktreesPrefix) || normalized.includes("/.t3/worktrees/");
 }
 
 /** Extract `cwd` from a session-meta record, tolerating the shapes each CLI writes. */
