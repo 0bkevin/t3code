@@ -14,7 +14,6 @@ import { ThreadId } from "@t3tools/contracts";
 import { CheckIcon, ChevronLeftIcon, CopyIcon, TerminalIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { APP_DISPLAY_NAME } from "../../branding";
 import { hasCloudPublicConfig } from "../../cloud/publicConfig";
 import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
 import { useCompleteOnboarding } from "../../onboarding/firstRun";
@@ -96,9 +95,6 @@ export function WelcomeWizard({
       </div>
 
       <section className="relative w-full max-w-2xl rounded-2xl border border-border/80 bg-card/90 p-6 shadow-2xl shadow-black/20 backdrop-blur-md sm:p-8">
-        <p className="text-[11px] font-semibold tracking-[0.18em] text-muted-foreground uppercase">
-          {APP_DISPLAY_NAME}
-        </p>
         {step === "connection" ? (
           <ConnectionStep
             localAvailable={localAvailable}
@@ -155,7 +151,7 @@ function ConnectionStep({
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         Choose where your agents run. You can add more connections later in Settings.
       </p>
-      <div className="mt-6 grid gap-3 sm:grid-cols-3">
+      <div className="mt-6 grid gap-3 sm:grid-flow-col sm:auto-cols-fr">
         {localAvailable ? (
           <ConnectionCard
             title="Local Only"
@@ -374,9 +370,8 @@ function PairDirectStep({
     <StepShell title="Pair with your server" onBack={onBack}>
       <div className="mt-5 space-y-4">
         <div>
-          <p className="text-sm">
-            <span className="font-semibold">1.</span>{" "}
-            <span className="text-muted-foreground">On the server:</span>
+          <p className="text-sm text-muted-foreground">
+            <span className="font-semibold">1.</span> On the server:
           </p>
           <CommandBlock command="npx t3 pair" className="mt-2" />
           <p className="mt-1 text-xs text-muted-foreground">
@@ -386,9 +381,8 @@ function PairDirectStep({
           </p>
         </div>
         <div>
-          <p className="text-sm">
-            <span className="font-semibold">2.</span>{" "}
-            <span className="text-muted-foreground">Paste the URL it prints:</span>
+          <p className="text-sm text-muted-foreground">
+            <span className="font-semibold">2.</span> Paste the URL it prints:
           </p>
           <Input
             className="mt-2"
@@ -868,11 +862,11 @@ function ImportStep({ onDone }: { readonly onDone: () => void }) {
         onBack={() => setChoosing(false)}
         description={`${candidates.length} projects found on ${machineLabel}.`}
       >
-        <div className="mt-4 max-h-72 space-y-1.5 overflow-y-auto pr-1">
+        <div className="mt-4 max-h-72 space-y-0.5 overflow-y-auto rounded-xl bg-black/5 p-1 dark:bg-black/20">
           {candidates.map((candidate) => (
             <label
               key={candidate.path}
-              className="flex cursor-pointer items-baseline gap-2.5 rounded-lg border border-border/60 px-3 py-2"
+              className="flex cursor-pointer items-baseline gap-2.5 rounded-lg px-3 py-2 transition-colors hover:bg-background/60"
             >
               <Checkbox
                 checked={!deselected.has(candidate.path)}
