@@ -46,7 +46,6 @@ import {
   type ServerSelfUpdateProgressEvent,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
-  AgentSessionScanError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   RpcClientId,
@@ -1703,19 +1702,9 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.agentSessionsScan]: () =>
-          observeRpcEffect(
-            WS_METHODS.agentSessionsScan,
-            agentSessionScanner.scan.pipe(
-              Effect.mapError(
-                (cause) =>
-                  new AgentSessionScanError({
-                    operation: cause.operation,
-                    cause,
-                  }),
-              ),
-            ),
-            { "rpc.aggregate": "workspace" },
-          ),
+          observeRpcEffect(WS_METHODS.agentSessionsScan, agentSessionScanner.scan, {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.assetsCreateUrl]: (input) =>
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,

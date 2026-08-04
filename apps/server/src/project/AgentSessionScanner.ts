@@ -15,7 +15,11 @@
  */
 import * as NodeOS from "node:os";
 
-import type { AgentSessionProjectCandidate, AgentSessionScanResult } from "@t3tools/contracts";
+import {
+  AgentSessionScanError,
+  type AgentSessionProjectCandidate,
+  type AgentSessionScanResult,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -23,9 +27,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
 
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -46,18 +49,6 @@ const TRANSCRIPT_PREFIX_BYTES = 32 * 1024;
  */
 const MAX_TRANSCRIPTS_PER_SOURCE = 5000;
 
-export class AgentSessionScanFailedError extends Schema.TaggedErrorClass<AgentSessionScanFailedError>()(
-  "AgentSessionScanFailedError",
-  {
-    operation: Schema.Literals(["read-settings", "read-projects"]),
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `Failed to scan agent sessions during ${this.operation}.`;
-  }
-}
-
 /** Service tag for agent session discovery. */
 export class AgentSessionScanner extends Context.Service<
   AgentSessionScanner,
@@ -65,9 +56,10 @@ export class AgentSessionScanner extends Context.Service<
     /**
      * Discover every directory the configured Claude and Codex homes have run
      * a session in. Candidates are returned newest-first; the client decides
-     * which ones to import and how far back to look.
+     * which ones to import and how far back to look. Fails with the contract
+     * error directly — there is no server-local context worth wrapping.
      */
-    readonly scan: Effect.Effect<AgentSessionScanResult, AgentSessionScanFailedError>;
+    readonly scan: Effect.Effect<AgentSessionScanResult, AgentSessionScanError>;
   }
 >()("t3/project/AgentSessionScanner") {}
 
@@ -145,6 +137,7 @@ export const make = Effect.gen(function* () {
   // Windows filesystems are case-insensitive, so path prefix checks there
   // must case fold.
   const foldWorktreeCase = (yield* HostProcessPlatform) === "win32";
+  const hostEnvironment = yield* HostProcessEnvironment;
 
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
@@ -209,7 +202,7 @@ export const make = Effect.gen(function* () {
     if (configured.length > 0) {
       return path.resolve(expandHomePath(configured));
     }
-    const fromEnvironment = process.env.CLAUDE_CONFIG_DIR?.trim() ?? "";
+    const fromEnvironment = hostEnvironment.CLAUDE_CONFIG_DIR?.trim() ?? "";
     if (fromEnvironment.length > 0) {
       return path.resolve(expandHomePath(fromEnvironment));
     }
@@ -328,9 +321,7 @@ export const make = Effect.gen(function* () {
 
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
     const settings = yield* serverSettings.getSettings.pipe(
-      Effect.mapError(
-        (cause) => new AgentSessionScanFailedError({ operation: "read-settings", cause }),
-      ),
+      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
     );
 
     const raw = [
@@ -403,7 +394,7 @@ export const make = Effect.gen(function* () {
           .getActiveProjectByWorkspaceRoot(lookupPath)
           .pipe(
             Effect.mapError(
-              (cause) => new AgentSessionScanFailedError({ operation: "read-projects", cause }),
+              (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
             ),
           );
         if (Option.isSome(existingProject)) {
