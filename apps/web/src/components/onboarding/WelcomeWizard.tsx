@@ -669,6 +669,7 @@ function AgentInstallTerminal({
   const command = installed
     ? (AGENT_LOGIN_COMMANDS[driver] ?? "")
     : (AGENT_INSTALL_COMMANDS[driver] ?? "");
+  const [preTypeFailed, setPreTypeFailed] = useState(false);
 
   useEffect(() => {
     if (preparedRef.current || cwd === null) return;
@@ -685,10 +686,13 @@ function AgentInstallTerminal({
       // Pre-type without the trailing carriage return; the user submits.
       // The terminal id is unique to this mount, so this session has never
       // been written to before.
-      await writeTerminal({
+      const wrote = await writeTerminal({
         environmentId,
         input: { threadId: AGENT_ONBOARDING_THREAD_ID, terminalId, data: command },
       });
+      // A silent failure would leave a blank prompt under copy that says
+      // "review the command" — fall back to telling the user what to type.
+      if (wrote._tag !== "Success") setPreTypeFailed(true);
     })();
   }, [command, cwd, environmentId, openTerminal, terminalId, writeTerminal]);
 
@@ -713,7 +717,14 @@ function AgentInstallTerminal({
     <div className="mt-4 overflow-hidden rounded-lg border border-border/70">
       <div className="flex items-center justify-between border-b border-border/60 bg-background/60 px-3 py-1.5">
         <span className="text-[11px] font-medium text-muted-foreground">
-          Review the command, then press Enter to run it.
+          {preTypeFailed ? (
+            <>
+              Run <code className="rounded bg-muted px-1 font-mono">{command}</code> in this
+              terminal.
+            </>
+          ) : (
+            "Review the command, then press Enter to run it."
+          )}
         </span>
         <Button size="xs" variant="ghost" onClick={onClose}>
           Done
