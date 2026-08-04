@@ -127,16 +127,16 @@ export interface ThreadStatusPill {
   pulse: boolean;
 }
 
+// Rollup order mirrors the per-thread resolver exactly: attention states,
+// then active work, then the actionable plan prompt, then passive
+// monitoring. A Monitoring sibling must never hide a Plan Ready thread.
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Pending Approval": 6,
   "Awaiting Input": 5,
   Working: 4,
   Connecting: 4,
-  // Below active work: a project rolling up a Monitoring thread and a
-  // Working thread must surface Working (strict-> comparison keeps the
-  // first at equal priority).
-  Monitoring: 3,
-  "Plan Ready": 2,
+  "Plan Ready": 3,
+  Monitoring: 2,
   Completed: 1,
 };
 
