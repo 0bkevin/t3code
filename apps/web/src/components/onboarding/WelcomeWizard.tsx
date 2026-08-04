@@ -692,14 +692,18 @@ function AgentInstallTerminal({
     })();
   }, [command, cwd, environmentId, openTerminal, terminalId, writeTerminal]);
 
-  // Done kills the PTY rather than orphaning it behind the drawer.
-  const closeAndDismiss = () => {
-    void closeTerminal({
-      environmentId,
-      input: { threadId: AGENT_ONBOARDING_THREAD_ID, terminalId },
-    });
-    onClose();
-  };
+  // Every exit path unmounts the drawer (Done, Continue/Skip, card switch,
+  // session exit), so unmount cleanup is the single place the PTY dies —
+  // nothing is left running behind the wizard. An interrupted install is
+  // re-runnable from the card.
+  useEffect(() => {
+    return () => {
+      void closeTerminal({
+        environmentId,
+        input: { threadId: AGENT_ONBOARDING_THREAD_ID, terminalId },
+      });
+    };
+  }, [closeTerminal, environmentId, terminalId]);
 
   if (cwd === null) {
     return null;
@@ -711,7 +715,7 @@ function AgentInstallTerminal({
         <span className="text-[11px] font-medium text-muted-foreground">
           Review the command, then press Enter to run it.
         </span>
-        <Button size="xs" variant="ghost" onClick={closeAndDismiss}>
+        <Button size="xs" variant="ghost" onClick={onClose}>
           Done
         </Button>
       </div>
