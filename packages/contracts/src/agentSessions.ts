@@ -37,7 +37,7 @@ export class AgentSessionScanError extends Schema.TaggedErrorClass<AgentSessionS
   "AgentSessionScanError",
   {
     operation: Schema.Literals(["read-settings", "read-projects"]),
-    cause: Schema.optional(Schema.Defect()),
+    cause: Schema.Defect(),
   },
 ) {
   override get message(): string {

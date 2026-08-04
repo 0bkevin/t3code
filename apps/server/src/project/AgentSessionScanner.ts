@@ -44,10 +44,19 @@ import * as ServerSettings from "../serverSettings.ts";
 const TRANSCRIPT_PREFIX_BYTES = 32 * 1024;
 
 /**
- * Upper bound on transcripts inspected per source. Newest-first ordering means
- * the cap drops only stale sessions when a home directory is unusually large.
+ * Upper bound on transcripts inspected (first line read) per source.
+ * Newest-first ordering means the cap drops only stale sessions when a home
+ * directory is unusually large.
  */
 const MAX_TRANSCRIPTS_PER_SOURCE = 5000;
+
+/**
+ * Upper bound on `stat` calls per source. Newest-first ordering needs mtimes
+ * before the read cap can be applied, so stats get their own larger budget;
+ * once it runs out the scan stops rather than walking a pathological home
+ * indefinitely.
+ */
+const MAX_STATS_PER_SOURCE = MAX_TRANSCRIPTS_PER_SOURCE * 4;
 
 /** Service tag for agent session discovery. */
 export class AgentSessionScanner extends Context.Service<
@@ -219,42 +228,54 @@ export const make = Effect.gen(function* () {
     const projectsDir = path.join(resolveClaudeConfigDir(homePath), "projects");
     const projectDirectories = yield* listDirectory(projectsDir);
     const candidates: Array<RawCandidate> = [];
-    let budget = MAX_TRANSCRIPTS_PER_SOURCE;
+    let readBudget = MAX_TRANSCRIPTS_PER_SOURCE;
+    let statBudget = MAX_STATS_PER_SOURCE;
 
     for (const projectDirectory of projectDirectories) {
-      if (budget <= 0) break;
+      if (readBudget <= 0 || statBudget <= 0) break;
       const directory = path.join(projectsDir, projectDirectory);
       const transcripts = (yield* listDirectory(directory))
         .filter((entry) => entry.endsWith(".jsonl"))
         .map((entry) => path.join(directory, entry));
       if (transcripts.length === 0) continue;
 
-      // Stat everything, then spend the budget newest-first, so the cap only
-      // ever drops the oldest transcripts.
+      // Stat (bounded), then spend the read budget newest-first, so the cap
+      // only ever drops the oldest transcripts.
+      const statted = transcripts.slice(0, statBudget);
+      statBudget -= statted.length;
       const withMtimes: Array<{ filePath: string; mtimeMs: number }> = [];
-      for (const filePath of transcripts) {
+      for (const filePath of statted) {
         const stats = yield* statOption(filePath);
         if (Option.isNone(stats) || Option.isNone(stats.value.mtime)) continue;
         withMtimes.push({ filePath, mtimeMs: stats.value.mtime.value.getTime() });
       }
       withMtimes.sort((left, right) => right.mtimeMs - left.mtimeMs);
-      withMtimes.splice(budget);
-      budget -= withMtimes.length;
+      withMtimes.splice(readBudget);
+      readBudget -= withMtimes.length;
 
-      // The newest transcript is the most likely to still name a live path.
-      let cwd: string | null = null;
+      // The slug is lossy (`/a/b.c` and `/a/b/c` share a directory), so a
+      // directory can hold sessions from several distinct paths — group by
+      // the recorded cwd like the Codex scan does.
+      const byCwd = new Map<string, { threadCount: number; lastActiveAtMs: number }>();
       for (const entry of withMtimes) {
-        cwd = yield* readCwd(entry.filePath);
-        if (cwd !== null) break;
+        const cwd = yield* readCwd(entry.filePath);
+        if (cwd === null) continue;
+        const existing = byCwd.get(cwd);
+        if (existing) {
+          existing.threadCount += 1;
+          existing.lastActiveAtMs = Math.max(existing.lastActiveAtMs, entry.mtimeMs);
+        } else {
+          byCwd.set(cwd, { threadCount: 1, lastActiveAtMs: entry.mtimeMs });
+        }
       }
-      if (cwd === null) continue;
-
-      candidates.push({
-        cwd,
-        source: "claudeAgent",
-        threadCount: transcripts.length,
-        lastActiveAtMs: withMtimes[0]?.mtimeMs ?? null,
-      });
+      for (const [cwd, group] of byCwd) {
+        candidates.push({
+          cwd,
+          source: "claudeAgent",
+          threadCount: group.threadCount,
+          lastActiveAtMs: group.lastActiveAtMs,
+        });
+      }
     }
 
     return candidates;
