@@ -2075,8 +2075,6 @@ function ChatViewContent(props: ChatViewProps) {
     dismissVersionMismatch(versionMismatchDismissKey);
     setDismissedVersionMismatchKey(versionMismatchDismissKey);
   }, [setDismissedVersionMismatchKey, versionMismatchDismissKey]);
-  const versionMismatchEnvironmentId =
-    versionMismatch && activeThread ? activeThread.environmentId : null;
   const serverUpdateEnvironmentId = activeThread?.environmentId ?? null;
   const versionMismatchSelfUpdate = resolveServerSelfUpdateCapability(serverConfig);
   const serverUpdateState = useAtomValue(
