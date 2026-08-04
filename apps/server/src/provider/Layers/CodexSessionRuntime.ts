@@ -1086,6 +1086,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/tokenUsage",
               payload: {
                 ...childIdentity,
@@ -1113,6 +1114,21 @@ export const makeCodexSessionRuntime = (
               ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/closed",
               payload: childIdentity,
+            });
+            return true;
+          case "error":
+            // A child error must surface as a failed agent, not vanish into
+            // the default swallow (review finding: the child stayed
+            // "running" forever). Reuses the statusChanged systemError path.
+            yield* emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
+              method: "collabAgent/statusChanged",
+              payload: {
+                ...childIdentity,
+                status: { type: "systemError" },
+              },
             });
             return true;
           default:

@@ -415,11 +415,14 @@ function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: str
   agent.status = status;
 }
 
-const TASK_COMPLETED_STATUS: Record<string, RuntimeSubagentStatus> = {
-  completed: "completed",
-  failed: "failed",
-  stopped: "interrupted",
-};
+// Map, not object literal: payloads aren't schema-validated on the read
+// path, so a status like "toString" must miss instead of resolving an
+// inherited Function through the prototype chain.
+const TASK_COMPLETED_STATUS: ReadonlyMap<string, RuntimeSubagentStatus> = new Map([
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["stopped", "interrupted"],
+]);
 
 const KNOWN_STATUSES: ReadonlySet<string> = new Set([
   "pending",
@@ -578,7 +581,7 @@ export function foldSubagentActivities(
           agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
           break;
         }
-        const status = TASK_COMPLETED_STATUS[asString(payload.status) ?? ""] ?? "completed";
+        const status = TASK_COMPLETED_STATUS.get(asString(payload.status) ?? "") ?? "completed";
         applyStatus(agent, status, at);
         if (summary) {
           if (status === "failed") {

@@ -677,12 +677,14 @@ function mapCollabAgentEvent(
         typeof tokenUsage?.total === "object" && tokenUsage.total !== null
           ? (tokenUsage.total as Record<string, unknown>)
           : undefined;
-      const totalTokens = typeof total?.totalTokens === "number" ? total.totalTokens : undefined;
+      const count = (value: unknown): number | undefined =>
+        typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+      // Same validation as every other field: RuntimeTaskUsage.totalTokens
+      // is NonNegativeInt, so NaN/Infinity/negative wire values must miss.
+      const totalTokens = count(total?.totalTokens);
       if (totalTokens === undefined) {
         return [];
       }
-      const count = (value: unknown): number | undefined =>
-        typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
       const typedUsage: RuntimeTaskUsage = {
         totalTokens,
         ...(count(total?.inputTokens) !== undefined

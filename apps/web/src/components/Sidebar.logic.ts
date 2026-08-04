@@ -128,10 +128,13 @@ export interface ThreadStatusPill {
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 5,
-  "Awaiting Input": 4,
-  Working: 3,
-  Connecting: 3,
+  "Pending Approval": 6,
+  "Awaiting Input": 5,
+  Working: 4,
+  Connecting: 4,
+  // Below active work: a project rolling up a Monitoring thread and a
+  // Working thread must surface Working (strict-> comparison keeps the
+  // first at equal priority).
   Monitoring: 3,
   "Plan Ready": 2,
   Completed: 1,
@@ -440,6 +443,11 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";
   }
+  // A failed session outranks lingering background liveness: the user must
+  // see the failure, not a stale Working (review finding).
+  if (thread.session?.status === "error") {
+    return "failed";
+  }
   // Background work outlives the turn: fleets read as working; monitoring
   // only when watch loops are the sole live work.
   if (thread.backgroundLiveness === "working") {
@@ -447,9 +455,6 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   }
   if (thread.backgroundLiveness === "monitoring") {
     return "monitoring";
-  }
-  if (thread.session?.status === "error") {
-    return "failed";
   }
   return "ready";
 }
@@ -623,6 +628,22 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // An actionable plan prompt outranks lingering background work: it needs
+  // the user's decision, while liveness merely reports (review finding).
+  const hasPlanReadyPrompt =
+    !thread.hasPendingUserInput &&
+    thread.interactionMode === "plan" &&
+    isLatestTurnSettled(thread.latestTurn, thread.session) &&
+    thread.hasActionableProposedPlan;
+  if (hasPlanReadyPrompt) {
+    return {
+      label: "Plan Ready",
+      colorClass: "text-violet-600 dark:text-violet-300/90",
+      dotClass: "bg-violet-500 dark:bg-violet-300/90",
+      pulse: false,
+    };
+  }
+
   // The turn can settle while native background work runs on. Subagent and
   // workflow fleets read as plain Working; Monitoring is reserved for watch
   // loops (a parent agent babysitting a PR, tailing checks) with no other
@@ -641,20 +662,6 @@ export function resolveThreadStatusPill(input: {
       label: "Monitoring",
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: false,
-    };
-  }
-
-  const hasPlanReadyPrompt =
-    !thread.hasPendingUserInput &&
-    thread.interactionMode === "plan" &&
-    isLatestTurnSettled(thread.latestTurn, thread.session) &&
-    thread.hasActionableProposedPlan;
-  if (hasPlanReadyPrompt) {
-    return {
-      label: "Plan Ready",
-      colorClass: "text-violet-600 dark:text-violet-300/90",
-      dotClass: "bg-violet-500 dark:bg-violet-300/90",
       pulse: false,
     };
   }

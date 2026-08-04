@@ -16,8 +16,16 @@ NodeFS.writeFileSync(outside, "evil\n");
 const link = NodePath.join(root, "sneaky.js");
 try {
   NodeFS.symlinkSync(outside, link);
-} catch {
-  // pre-existing from a prior run
+} catch (error) {
+  // Tolerate only "already exists" from a prior run — any other failure
+  // (EPERM etc.) must fail setup, or the escape test below would pass
+  // vacuously on "not-found" without testing containment.
+  if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+    throw error;
+  }
+}
+if (!NodeFS.lstatSync(link).isSymbolicLink()) {
+  throw new Error("test setup: sneaky.js must be a symlink");
 }
 
 afterAll(() => {
@@ -49,10 +57,19 @@ describe("readWorkflowScript containment", () => {
     Effect.gen(function* () {
       const escaped = yield* Effect.exit(readWorkflowScript({ scriptPath: outside }));
       assert.equal(escaped._tag, "Failure");
-      // A symlink INSIDE the root pointing outside must also fail (realpath
-      // re-containment of the leaf).
-      const sneaky = yield* Effect.exit(readWorkflowScript({ scriptPath: link }));
-      assert.equal(sneaky._tag, "Failure");
+      // A symlink INSIDE the root pointing outside must fail specifically on
+      // realpath re-containment — a "not-found" would mean the link was
+      // never exercised and the assertion proves nothing.
+      const sneaky = yield* Effect.exit(
+        readWorkflowScript({ scriptPath: link }).pipe(
+          Effect.flip,
+          Effect.map((error) => error.reason),
+        ),
+      );
+      assert.equal(sneaky._tag, "Success");
+      if (sneaky._tag === "Success") {
+        assert.equal(sneaky.value, "outside-root");
+      }
     }),
   );
 });

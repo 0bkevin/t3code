@@ -497,19 +497,20 @@ export function deriveMessagesTimelineRows(input: {
           const groupId = `work-group:${timelineEntry.id}`;
           const expanded = input.expandedWorkGroupIds?.has(groupId) ?? false;
           // Agent-spawn CTA rows are always visible: a running fleet must
-          // never hide behind a "+N tool calls" toggle.
+          // never hide behind a "+N tool calls" toggle. Selection is by
+          // membership (spawn OR recent-tail), preserving the group's
+          // chronological order in both collapsed and expanded states
+          // (review finding: concatenating two filtered lists moved a
+          // mid-group spawn row above earlier tool rows).
           const overflowCandidates = visibleGroupedEntries.filter(
             (entry) => entry.agentSpawn === undefined,
           );
-          const pinnedSpawnEntries = visibleGroupedEntries.filter(
-            (entry) => entry.agentSpawn !== undefined,
-          );
           const hiddenEntries = overflowCandidates.slice(0, -MAX_VISIBLE_WORK_LOG_ENTRIES);
-          const visibleEntries = [
-            ...pinnedSpawnEntries,
-            ...overflowCandidates.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES),
-          ];
-          const renderedEntries = expanded ? [...hiddenEntries, ...visibleEntries] : visibleEntries;
+          const hiddenIds = new Set(hiddenEntries.map((entry) => entry.id));
+          const visibleEntries = visibleGroupedEntries.filter(
+            (entry) => entry.agentSpawn !== undefined || !hiddenIds.has(entry.id),
+          );
+          const renderedEntries = expanded ? visibleGroupedEntries : visibleEntries;
 
           for (const workEntry of renderedEntries) {
             nextRows.push({

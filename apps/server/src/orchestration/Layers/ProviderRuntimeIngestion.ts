@@ -570,8 +570,11 @@ export function runtimeEventToActivities(
           // replace-by-id apply in projector and client reducer). Keeps one
           // progress row per task instead of thousands, so a large fleet's
           // ticks can no longer evict its own start/terminal rows out of
-          // the 500-row retention window.
-          id: EventId.make(`task-progress:${event.payload.taskId}`),
+          // the 500-row retention window. Thread-scoped: activity_id is a
+          // GLOBAL primary key and Claude task ids are session-local, so a
+          // bare taskId could collide across threads and steal another
+          // thread's row (review finding).
+          id: EventId.make(`task-progress:${event.threadId}:${event.payload.taskId}`),
           createdAt: event.createdAt,
           tone: "info",
           kind: "task.progress",
@@ -636,8 +639,9 @@ export function runtimeEventToActivities(
       return [
         {
           // Same stable-id treatment as task.progress: a heartbeat is
-          // "what is this agent doing right now", so one row per task.
-          id: EventId.make(`tool-progress:${event.payload.taskId}`),
+          // "what is this agent doing right now", so one row per task
+          // (thread-scoped for the same global-PK collision reason).
+          id: EventId.make(`tool-progress:${event.threadId}:${event.payload.taskId}`),
           createdAt: event.createdAt,
           tone: "info",
           kind: "tool.progress",
