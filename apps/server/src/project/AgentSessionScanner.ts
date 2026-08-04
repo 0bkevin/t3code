@@ -25,6 +25,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+
 import * as ServerConfig from "../config.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
@@ -87,12 +89,25 @@ const decoder = new TextDecoder();
  * sandboxes as projects is never right. Matches this server's configured
  * worktrees directory plus the conventional `.t3/worktrees` layout, which
  * also catches sandboxes from other T3 homes on the same machine. Separators
- * are normalized so the prefix match holds on Windows too.
+ * are normalized (and, on Windows, case folded) so the prefix match holds
+ * there too. Callers check both the recorded spelling and its realpath so a
+ * symlink into the worktrees directory cannot bypass the filter.
  */
-function isT3ManagedWorktree(resolvedPath: string, worktreesDir: string): boolean {
-  const normalized = `${resolvedPath.replaceAll("\\", "/")}/`;
-  const worktreesPrefix = `${worktreesDir.replaceAll("\\", "/")}/`;
-  return normalized.startsWith(worktreesPrefix) || normalized.includes("/.t3/worktrees/");
+function normalizeForWorktreeMatch(value: string, caseFold: boolean): string {
+  const normalized = `${value.replaceAll("\\", "/")}/`;
+  return caseFold ? normalized.toLowerCase() : normalized;
+}
+
+function isT3ManagedWorktree(
+  candidatePath: string,
+  worktreesDir: string,
+  caseFold: boolean,
+): boolean {
+  const normalized = normalizeForWorktreeMatch(candidatePath, caseFold);
+  return (
+    normalized.startsWith(normalizeForWorktreeMatch(worktreesDir, caseFold)) ||
+    normalized.includes("/.t3/worktrees/")
+  );
 }
 
 /** Extract `cwd` from a session-meta record, tolerating the shapes each CLI writes. */
@@ -127,6 +142,9 @@ export const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const worktreesDir = path.resolve(serverConfig.worktreesDir);
+  // Windows filesystems are case-insensitive, so path prefix checks there
+  // must case fold.
+  const foldWorktreeCase = (yield* HostProcessPlatform) === "win32";
 
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
@@ -335,7 +353,7 @@ export const make = Effect.gen(function* () {
 
     for (const candidate of raw) {
       const resolved = path.resolve(expandHomePath(candidate.cwd.trim()));
-      if (isT3ManagedWorktree(resolved, worktreesDir)) continue;
+      if (isT3ManagedWorktree(resolved, worktreesDir, foldWorktreeCase)) continue;
       let key = realPathKeys.get(resolved);
       if (key === undefined) {
         const stats = yield* statOption(resolved);
@@ -345,6 +363,11 @@ export const make = Effect.gen(function* () {
           continue;
         }
         key = yield* fileSystem.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved));
+        // A symlink can point into the worktrees directory even when its own
+        // spelling doesn't; check again with links resolved.
+        if (isT3ManagedWorktree(key, worktreesDir, foldWorktreeCase)) {
+          key = "";
+        }
         realPathKeys.set(resolved, key);
       }
       if (key === "") continue;
