@@ -8,11 +8,11 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-layer("044_OrchestrationV2SubagentObservability", (it) => {
+layer("045_OrchestrationV2SubagentObservability", (it) => {
   it.effect("installs activation persistence and leaves existing subagents alone", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 43 });
+      yield* runMigrations({ toMigrationInclusive: 44 });
 
       const legacyPayload = '{"id":"node:legacy-subagent","status":"completed"}';
       yield* sql`
@@ -47,7 +47,7 @@ layer("044_OrchestrationV2SubagentObservability", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 44 });
+      yield* runMigrations({ toMigrationInclusive: 45 });
 
       const activationTable = yield* sql<{ readonly name: string }>`
         SELECT name

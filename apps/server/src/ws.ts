@@ -941,20 +941,17 @@ const makeWsRpcLayer = (
               Effect.forEach(
                 coalesceStoredThreadEvents(Array.from(events)),
                 (stored) =>
-                  threadManagement
-                    .getThreadShell(stored.event.threadId)
-                    .pipe(
-                      Effect.map((shell) =>
-                        archivedShellStreamItemFromThreadShell({
-                          stored,
-                          shell:
-                            shell !== null &&
-                            ThreadManagementService.isInternalSubagentThread(shell)
-                              ? null
-                              : shell,
-                        }),
-                      ),
+                  threadManagement.getThreadShell(stored.event.threadId).pipe(
+                    Effect.map((shell) =>
+                      archivedShellStreamItemFromThreadShell({
+                        stored,
+                        shell:
+                          shell !== null && ThreadManagementService.isInternalSubagentThread(shell)
+                            ? null
+                            : shell,
+                      }),
                     ),
+                  ),
                 { concurrency: 8 },
               ),
             ),

@@ -182,7 +182,7 @@ it.effect("upgrades a database already at released main migration 034", () =>
     assert.ok(snoozeColumns.some((column) => column.name === "snoozed_until"));
     assert.ok(snoozeColumns.some((column) => column.name === "snoozed_at"));
 
-    yield* runMigrations({ toMigrationInclusive: 44 });
+    yield* runMigrations({ toMigrationInclusive: 45 });
 
     const migrations = yield* sql<{
       readonly migration_id: number;
