@@ -1,7 +1,7 @@
 # Welcome Wizard
 
 On a fresh install, T3 Code opens a short setup flow before the main app.
-Existing installs never see it.
+Installs with existing projects or completed onboarding skip it.
 
 ## Choose how to connect
 
@@ -18,9 +18,10 @@ Existing installs never see it.
 
 The wizard checks the connected machine for Claude Code and Codex and shows
 their install and sign-in status. If one is missing, an inline terminal opens
-with the install command pre-typed — press Enter to run it, then complete the
-CLI's own sign-in in the same terminal. Other supported agents are configured
-in Settings → Providers.
+with the install command pre-typed — press Enter to run it. It's a real shell,
+so you can run the CLI's sign-in there too, or use the card's **Sign in**
+action after the install finishes. Other supported agents are configured in
+Settings → Providers.
 
 ## Import your projects
 

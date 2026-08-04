@@ -144,7 +144,7 @@ function RootRouteView() {
       <AnchoredToastProvider>
         <DocumentTitleSync />
         <GlassAppearanceSync />
-        <FirstRunGate>
+        <FirstRunGate enabled={primaryEnvironmentAuthenticated}>
           {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
           <RelayClientInstallDialog />
           <ConnectOnboardingDialog />

@@ -33,14 +33,14 @@ export const AgentSessionScanResult = Schema.Struct({
 });
 export type AgentSessionScanResult = typeof AgentSessionScanResult.Type;
 
-export const AgentSessionScanFailure = Schema.Literals(["scan_failed"]);
-export type AgentSessionScanFailure = typeof AgentSessionScanFailure.Type;
-
 export class AgentSessionScanError extends Schema.TaggedErrorClass<AgentSessionScanError>()(
   "AgentSessionScanError",
   {
-    failure: AgentSessionScanFailure,
-    message: TrimmedNonEmptyString,
+    operation: Schema.Literals(["read-settings", "read-projects"]),
     cause: Schema.optional(Schema.Defect()),
   },
-) {}
+) {
+  override get message(): string {
+    return `Failed to scan agent sessions during ${this.operation}.`;
+  }
+}

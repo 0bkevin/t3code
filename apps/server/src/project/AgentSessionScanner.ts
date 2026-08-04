@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import * as ServerConfig from "../config.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { expandHomePath } from "../pathExpansion.ts";
@@ -81,12 +82,18 @@ interface RawCandidate {
 const decoder = new TextDecoder();
 
 /**
- * T3 Code runs its own agent sessions inside disposable worktrees under
- * `<t3-home>/worktrees/`. Their transcripts look exactly like user sessions,
- * but re-importing the app's own sandboxes as projects is never right.
+ * T3 Code runs its own agent sessions inside disposable worktrees. Their
+ * transcripts look exactly like user sessions, but re-importing the app's own
+ * sandboxes as projects is never right. Matches this server's configured
+ * worktrees directory plus the conventional `.t3/worktrees` layout, which
+ * also catches sandboxes from other T3 homes on the same machine.
  */
-function isT3ManagedWorktree(resolvedPath: string): boolean {
-  return /[/\\]\.t3[/\\]worktrees[/\\]/.test(`${resolvedPath}/`);
+function isT3ManagedWorktree(resolvedPath: string, worktreesDir: string): boolean {
+  const withSeparator = `${resolvedPath}/`;
+  return (
+    withSeparator.startsWith(`${worktreesDir}/`) ||
+    /[/\\]\.t3[/\\]worktrees[/\\]/.test(withSeparator)
+  );
 }
 
 /** Extract `cwd` from a session-meta record, tolerating the shapes each CLI writes. */
@@ -114,11 +121,13 @@ function extractCwd(line: string): string | null {
   return null;
 }
 
-const make = Effect.gen(function* () {
+export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const serverConfig = yield* ServerConfig.ServerConfig;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const worktreesDir = path.resolve(serverConfig.worktreesDir);
 
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
@@ -185,7 +194,7 @@ const make = Effect.gen(function* () {
     }
     const fromEnvironment = process.env.CLAUDE_CONFIG_DIR?.trim() ?? "";
     if (fromEnvironment.length > 0) {
-      return path.resolve(fromEnvironment);
+      return path.resolve(expandHomePath(fromEnvironment));
     }
     return path.join(NodeOS.homedir(), ".claude");
   };
@@ -210,16 +219,17 @@ const make = Effect.gen(function* () {
         .map((entry) => path.join(directory, entry));
       if (transcripts.length === 0) continue;
 
-      const inspected = transcripts.slice(0, budget);
-      budget -= inspected.length;
-
+      // Stat everything, then spend the budget newest-first, so the cap only
+      // ever drops the oldest transcripts.
       const withMtimes: Array<{ filePath: string; mtimeMs: number }> = [];
-      for (const filePath of inspected) {
+      for (const filePath of transcripts) {
         const stats = yield* statOption(filePath);
         if (Option.isNone(stats) || Option.isNone(stats.value.mtime)) continue;
         withMtimes.push({ filePath, mtimeMs: stats.value.mtime.value.getTime() });
       }
       withMtimes.sort((left, right) => right.mtimeMs - left.mtimeMs);
+      withMtimes.splice(budget);
+      budget -= withMtimes.length;
 
       // The newest transcript is the most likely to still name a live path.
       let cwd: string | null = null;
@@ -326,7 +336,7 @@ const make = Effect.gen(function* () {
 
     for (const candidate of raw) {
       const resolved = path.resolve(expandHomePath(candidate.cwd.trim()));
-      if (isT3ManagedWorktree(resolved)) continue;
+      if (isT3ManagedWorktree(resolved, worktreesDir)) continue;
       let key = realPathKeys.get(resolved);
       if (key === undefined) {
         const stats = yield* statOption(resolved);
@@ -361,14 +371,24 @@ const make = Effect.gen(function* () {
     }
 
     const candidates: Array<AgentSessionProjectCandidate> = [];
-    for (const entry of merged.values()) {
-      const existingProject = yield* projectionSnapshotQuery
-        .getActiveProjectByWorkspaceRoot(entry.path)
-        .pipe(
-          Effect.mapError(
-            (cause) => new AgentSessionScanFailedError({ operation: "read-projects", cause }),
-          ),
-        );
+    for (const [key, entry] of merged.entries()) {
+      // Projects may have been created under either the recorded spelling or
+      // the resolved realpath (e.g. a symlinked home) — check both.
+      const lookupPaths = key === entry.path ? [entry.path] : [entry.path, key];
+      let alreadyImported = false;
+      for (const lookupPath of lookupPaths) {
+        const existingProject = yield* projectionSnapshotQuery
+          .getActiveProjectByWorkspaceRoot(lookupPath)
+          .pipe(
+            Effect.mapError(
+              (cause) => new AgentSessionScanFailedError({ operation: "read-projects", cause }),
+            ),
+          );
+        if (Option.isSome(existingProject)) {
+          alreadyImported = true;
+          break;
+        }
+      }
       candidates.push({
         path: entry.path,
         title: path.basename(entry.path) || entry.path,
@@ -378,7 +398,7 @@ const make = Effect.gen(function* () {
           entry.lastActiveAtMs === null
             ? null
             : DateTime.formatIso(DateTime.makeUnsafe(entry.lastActiveAtMs)),
-        alreadyImported: Option.isSome(existingProject),
+        alreadyImported,
       });
     }
 

@@ -252,7 +252,12 @@ function ConnectMachinesStep({
   const savedEnvironments = environments.filter(
     (environment) => environment.entry.target._tag !== "PrimaryConnectionTarget",
   );
-  const hasRemoteMachines = savedEnvironments.length > 0;
+  // Only a live connection counts: a saved-but-offline machine must not show
+  // the "connected" confirmation (the agents step would find nothing to
+  // probe). Its row still renders in the list either way.
+  const hasRemoteMachines = savedEnvironments.some(
+    (environment) => environment.connection.phase === "connected",
+  );
 
   if (!isLoaded) {
     return <StepShell title="Sign in to T3 Connect" onBack={onBack} />;
@@ -317,9 +322,14 @@ function ConnectMachinesStep({
               }
             />
           </div>
-          <div className="mt-6 flex items-center justify-end gap-3">
-            <span className="text-xs text-muted-foreground">Waiting for a machine…</span>
-            <Button disabled>Continue</Button>
+          <div className="mt-6 flex items-center justify-between">
+            <Button variant="ghost" onClick={onContinue}>
+              Skip for now
+            </Button>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">Waiting for a machine…</span>
+              <Button disabled>Continue</Button>
+            </div>
           </div>
         </>
       )}
@@ -501,7 +511,8 @@ function ConnectedAgentsStep({
     provider: byDriver.get(driver),
   }));
   const readyCount = primaryAgents.filter(
-    ({ provider }) => provider?.installed && provider.auth.status === "authenticated",
+    ({ provider }) =>
+      provider?.enabled === true && provider.installed && provider.auth.status === "authenticated",
   ).length;
   const otherAgents = [...byDriver.keys()].filter(
     (driver) => !PRIMARY_AGENT_DRIVERS.includes(driver as (typeof PRIMARY_AGENT_DRIVERS)[number]),
@@ -574,8 +585,12 @@ function AgentCard({
   const Icon = meta?.icon;
   const displayName = driver === "claudeAgent" ? "Claude Code" : (meta?.label ?? driver);
   const summary = getProviderSummary(provider);
-  const ready = provider?.installed === true && provider.auth.status === "authenticated";
-  const needsLogin = provider?.installed === true && provider.auth.status !== "authenticated";
+  // A provider disabled in settings is neither ready nor installable from
+  // here; the summary already reads "Disabled" and the card offers no action.
+  const disabled = provider !== undefined && !provider.enabled;
+  const usable = provider?.enabled === true && provider.installed;
+  const ready = usable && provider.auth.status === "authenticated";
+  const needsLogin = usable && provider.auth.status !== "authenticated";
 
   return (
     <div
@@ -598,6 +613,8 @@ function AgentCard({
             <CheckIcon className="size-3.5" />
             Ready
           </span>
+        ) : disabled ? (
+          <span className="text-xs text-muted-foreground">Enable in Settings</span>
         ) : (
           <Button size="xs" variant="outline" onClick={onOpenTerminal} disabled={terminalOpen}>
             <TerminalIcon className="size-3.5" />
@@ -646,13 +663,16 @@ function AgentInstallTerminal({
 
   useEffect(() => {
     if (preparedRef.current || cwd === null) return;
-    preparedRef.current = true;
     void (async () => {
       const opened = await openTerminal({
         environmentId,
         input: { threadId: AGENT_ONBOARDING_THREAD_ID, terminalId, cwd },
       });
-      if (opened._tag !== "Success" || command.length === 0) return;
+      // Only a successful open ends the attempts, so a transient RPC failure
+      // retries on the next render instead of leaving a dead terminal.
+      if (opened._tag !== "Success") return;
+      preparedRef.current = true;
+      if (command.length === 0) return;
       // Pre-type without the trailing carriage return; the user submits.
       await writeTerminal({
         environmentId,
@@ -759,8 +779,12 @@ function ImportStep({ onDone }: { readonly onDone: () => void }) {
       }
     }
     setIsImporting(false);
-    if (failures > 0 && failures === selection.length) {
-      setImportError("Import failed. You can add projects manually from the command palette.");
+    if (failures > 0) {
+      setImportError(
+        failures === selection.length
+          ? "Import failed. You can add projects manually from the command palette."
+          : `Imported ${selection.length - failures} of ${selection.length} projects. The rest can be added from the command palette.`,
+      );
       return;
     }
     onDone();

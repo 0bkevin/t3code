@@ -1709,8 +1709,7 @@ const makeWsRpcLayer = (
               Effect.mapError(
                 (cause) =>
                   new AgentSessionScanError({
-                    failure: "scan_failed",
-                    message: cause.message,
+                    operation: cause.operation,
                     cause,
                   }),
               ),

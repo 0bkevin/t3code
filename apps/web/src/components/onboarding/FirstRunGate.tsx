@@ -28,7 +28,18 @@ const FIRST_RUN_DECISION_TIMEOUT_MS = 4_000;
 
 type FirstRunDecision = "pending" | "app" | "wizard";
 
-export function FirstRunGate({ children }: { readonly children: React.ReactNode }) {
+export function FirstRunGate({
+  enabled,
+  children,
+}: {
+  /**
+   * Only an authenticated primary-server session gates. Hosted-static has no
+   * primary server config to inspect and its empty state handles onboarding
+   * itself; gating it would just add a decision timeout to every load.
+   */
+  readonly enabled: boolean;
+  readonly children: React.ReactNode;
+}) {
   const navigate = useNavigate();
   const hydrated = useClientSettingsHydrated();
   const onboardingCompletedAt = useClientSettings((settings) => settings.onboardingCompletedAt);
@@ -39,7 +50,7 @@ export function FirstRunGate({ children }: { readonly children: React.ReactNode 
   // Within a session settings stay hydrated, so remounts (e.g. returning from
   // the wizard) resolve synchronously instead of blanking a frame.
   const [decision, setDecision] = useState<FirstRunDecision>(() =>
-    hydrated && onboardingCompletedAt !== null ? "app" : "pending",
+    !enabled || (hydrated && onboardingCompletedAt !== null) ? "app" : "pending",
   );
 
   // A workspace still counts as fresh when its only content is the server's
@@ -49,18 +60,32 @@ export function FirstRunGate({ children }: { readonly children: React.ReactNode 
   // other project, or more than one thread, is real user state.
   const serverCwd = serverConfig?.cwd ?? null;
   const workspaceFresh =
-    projects.every((project) => serverCwd !== null && project.workspaceRoot === serverCwd) &&
-    threads.length <= 1;
+    projects.every((project) => project.workspaceRoot === serverCwd) && threads.length <= 1;
 
   useEffect(() => {
     if (decision !== "pending" || !hydrated) return;
-    if (onboardingCompletedAt !== null) {
+    if (!enabled || onboardingCompletedAt !== null) {
       setDecision("app");
       return;
     }
-    if (!bootstrapped) return;
+    // Both shells AND the server config must be in before the workspace can
+    // be judged: shells bootstrap and config load independently, and a
+    // disconnected environment reports bootstrapped with empty projections.
+    // Without the config a fresh cwd-bootstrapped install would read as
+    // non-fresh (projects but no cwd yet), and an offline existing install
+    // would read as fresh (nothing at all). Config never arriving means the
+    // timeout below falls back to the app.
+    if (!bootstrapped || serverConfig === null) return;
     setDecision(workspaceFresh ? "wizard" : "app");
-  }, [bootstrapped, decision, hydrated, onboardingCompletedAt, workspaceFresh]);
+  }, [
+    bootstrapped,
+    decision,
+    enabled,
+    hydrated,
+    onboardingCompletedAt,
+    serverConfig,
+    workspaceFresh,
+  ]);
 
   useEffect(() => {
     if (decision !== "pending") return;
