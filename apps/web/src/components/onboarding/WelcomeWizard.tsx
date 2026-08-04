@@ -632,6 +632,11 @@ function AgentCard({
  * the server validates only the cwd) and pre-types the install or login
  * command without submitting, so the user reviews and presses Enter.
  */
+// Each drawer mount gets its own PTY: install and sign-in for the same
+// driver must not share a session, or the second open would reattach and
+// either duplicate the pre-typed command or feed it to a running process.
+let onboardingTerminalSequence = 0;
+
 function AgentInstallTerminal({
   environmentId,
   driver,
@@ -647,8 +652,12 @@ function AgentInstallTerminal({
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openTerminal = useAtomCommand(terminalEnvironment.open, { reportFailure: false });
   const writeTerminal = useAtomCommand(terminalEnvironment.write, { reportFailure: false });
+  const closeTerminal = useAtomCommand(terminalEnvironment.close, { reportFailure: false });
   const preparedRef = useRef(false);
-  const terminalId = `onboarding-${driver}`;
+  const [terminalId] = useState(() => {
+    onboardingTerminalSequence += 1;
+    return `onboarding-${driver}-${onboardingTerminalSequence}`;
+  });
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, AGENT_ONBOARDING_THREAD_ID),
     [environmentId],
@@ -673,18 +682,24 @@ function AgentInstallTerminal({
       if (opened._tag !== "Success") return;
       preparedRef.current = true;
       if (command.length === 0) return;
-      // Closing and reopening the drawer reattaches to the still-live PTY
-      // (Done never kills the session). A session with history already got
-      // its command — pre-typing again would duplicate it, or feed stdin to
-      // whatever is running.
-      if (opened.value.history.length > 0) return;
       // Pre-type without the trailing carriage return; the user submits.
+      // The terminal id is unique to this mount, so this session has never
+      // been written to before.
       await writeTerminal({
         environmentId,
         input: { threadId: AGENT_ONBOARDING_THREAD_ID, terminalId, data: command },
       });
     })();
   }, [command, cwd, environmentId, openTerminal, terminalId, writeTerminal]);
+
+  // Done kills the PTY rather than orphaning it behind the drawer.
+  const closeAndDismiss = () => {
+    void closeTerminal({
+      environmentId,
+      input: { threadId: AGENT_ONBOARDING_THREAD_ID, terminalId },
+    });
+    onClose();
+  };
 
   if (cwd === null) {
     return null;
@@ -696,7 +711,7 @@ function AgentInstallTerminal({
         <span className="text-[11px] font-medium text-muted-foreground">
           Review the command, then press Enter to run it.
         </span>
-        <Button size="xs" variant="ghost" onClick={onClose}>
+        <Button size="xs" variant="ghost" onClick={closeAndDismiss}>
           Done
         </Button>
       </div>
