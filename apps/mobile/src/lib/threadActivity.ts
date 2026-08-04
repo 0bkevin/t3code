@@ -328,7 +328,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);
-  const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
+  // task.updated included: terminal bypassed updates (Codex children's only
+  // terminal signal) must carry task identity so they collapse per child
+  // instead of stacking anonymous "Task idle" rows.
+  const isTaskActivity =
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed" ||
+    activity.kind === "task.updated";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
       ? payload.summary
@@ -420,7 +426,9 @@ function collapseDerivedWorkLogEntries(
   for (const entry of entries) {
     const isTaskRow =
       entry.taskId !== undefined &&
-      (entry.activityKind === "task.progress" || entry.activityKind === "task.completed");
+      (entry.activityKind === "task.progress" ||
+        entry.activityKind === "task.completed" ||
+        entry.activityKind === "task.updated");
     if (isTaskRow && entry.taskId !== undefined) {
       const existingIndex = taskRowIndex.get(entry.taskId);
       if (existingIndex !== undefined) {

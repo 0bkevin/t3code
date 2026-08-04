@@ -610,13 +610,27 @@ export function foldSubagentActivities(
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
-        // Duplicate terminal rows are fully idempotent: first write wins for
-        // result/error/updatedAt too, not just status/timestamps (review
-        // finding: a duplicate completion replaced the first result).
-        if (isTerminalSubagentStatus(agent.status)) break;
+        // Already-terminal: status and timestamps are frozen (first write
+        // wins, duplicates must not slide them) but the completion still
+        // ENRICHES — Claude commonly emits terminal task.updated before
+        // task.completed, and the completion carries the result summary and
+        // final usage the update lacked (review finding: the early return
+        // dropped both). Fill-if-missing keeps duplicate completions from
+        // replacing the first result.
+        const summary = asString(payload.summary) ?? asString(payload.detail);
+        if (isTerminalSubagentStatus(agent.status)) {
+          if (summary) {
+            if (agent.status === "failed") {
+              agent.error = agent.error ?? bounded(summary);
+            } else {
+              agent.result = agent.result ?? bounded(summary);
+            }
+          }
+          agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
+          break;
+        }
         const status = TASK_COMPLETED_STATUS[asString(payload.status) ?? ""] ?? "completed";
         applyStatus(agent, status, at);
-        const summary = asString(payload.summary) ?? asString(payload.detail);
         if (summary) {
           if (status === "failed") {
             agent.error = agent.error ?? bounded(summary);

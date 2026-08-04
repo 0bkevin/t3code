@@ -541,6 +541,35 @@ describe("terminal robustness", () => {
     expect(agents[0]!.title).toBe("Late");
   });
 
+  it("a completion after a terminal task.updated still enriches result and usage", () => {
+    // Claude commonly emits terminal task.updated before task.completed;
+    // the completion carries the summary and final usage the update lacked.
+    const agents = fold([
+      activity("task.started", { taskId: "te-1", taskType: "local_agent" }),
+      activity(
+        "task.updated",
+        { taskId: "te-1", status: "completed", endedAt: "2026-08-01T10:59:00.000Z" },
+        "2026-08-01T11:00:00.000Z",
+      ),
+      activity(
+        "task.completed",
+        {
+          taskId: "te-1",
+          status: "completed",
+          summary: "final answer",
+          typedUsage: { totalTokens: 4200, toolUses: 7 },
+        },
+        "2026-08-01T11:00:01.000Z",
+      ),
+    ]);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("completed");
+    expect(agent.result).toBe("final answer");
+    expect(agent.usage?.totalTokens).toBe(4200);
+    // Timestamps stay pinned to the transition that settled the run.
+    expect(agent.completedAt).toBe("2026-08-01T10:59:00.000Z");
+  });
+
   it("duplicate completions keep the FIRST result, not the last", () => {
     const agents = fold([
       activity("task.started", { taskId: "t2", taskType: "local_agent" }),
