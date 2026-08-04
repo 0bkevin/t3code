@@ -117,11 +117,14 @@ describe("sortThreadsForListV2", () => {
 });
 
 describe("threadListV2Priority", () => {
-  it("ranks a wake above the manual keep-active pin", () => {
+  it("lets a manual un-settle consume older wake priority", () => {
     expect(
       threadListV2Priority({ settledOverride: "active" }, { wokeAt: "2026-06-01T10:00:00.000Z" }),
-    ).toBe("woke");
+    ).toBe("unsettled");
     expect(threadListV2Priority({ settledOverride: "active" }, { wokeAt: null })).toBe("unsettled");
+    expect(
+      threadListV2Priority({ settledOverride: null }, { wokeAt: "2026-06-01T10:00:00.000Z" }),
+    ).toBe("woke");
     expect(threadListV2Priority({ settledOverride: null }, { wokeAt: null })).toBe("default");
   });
 });

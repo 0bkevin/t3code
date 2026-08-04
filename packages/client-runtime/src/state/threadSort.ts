@@ -23,13 +23,14 @@ const THREAD_LIST_V2_PRIORITY_RANK: Record<ThreadListV2Priority, number> = {
 
 /** Priority from server-backed state only: every client (and every device)
     must derive the same order, so per-client data like lastVisitedAt cannot
-    feed it. A wake outranks the manual keep-active pin. */
+    feed it. A manual un-settle is the newest explicit appearance and consumes
+    any older wake priority still retained in the snooze lifecycle fields. */
 export function threadListV2Priority(
   thread: { readonly settledOverride: "settled" | "active" | null },
   options: { readonly wokeAt: string | null },
 ): ThreadListV2Priority {
-  if (options.wokeAt !== null) return "woke";
   if (thread.settledOverride === "active") return "unsettled";
+  if (options.wokeAt !== null) return "woke";
   return "default";
 }
 
