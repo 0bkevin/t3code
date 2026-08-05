@@ -154,8 +154,6 @@ async function restoreDatabaseBackup(
     }
   }
   await syncDirectory(NodePath.dirname(pending.dbPath));
-  await NodeFSP.rm(backupDir, { recursive: true, force: true });
-  await syncDirectory(NodePath.dirname(backupDir));
 }
 
 async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
@@ -573,6 +571,7 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
+    await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     await this.#startChild(next.activeVersion, "active", outcome);
   }
 }

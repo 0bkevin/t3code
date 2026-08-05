@@ -170,6 +170,16 @@ export function parseServiceState(value: string): ServiceState | undefined {
   }
 }
 
+/** Detects an in-flight update across launcher protocol versions before replacing its state. */
+export function serviceStateHasPendingUpdate(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) && isRecord(parsed.update) && parsed.update.status === "pending";
+  } catch {
+    return false;
+  }
+}
+
 export function decodeServiceLauncherContext(value: string): ServiceLauncherContext | undefined {
   let parsed: unknown;
   try {

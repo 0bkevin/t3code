@@ -58,7 +58,7 @@ applies.
 The launcher snapshots `state.sqlite`, `state.sqlite-wal`, and `state.sqlite-shm` after the old
 server stops and before the trial starts. This makes trial migrations and writes reversible without
 requiring down migrations. The snapshot is retained across launcher restarts and is removed only
-after commit or a completed restore.
+after commit or after both restore and the terminal rollback state are durable.
 
 The protocol version is part of the safety boundary. A target that requires database snapshots is
 blocked when the installed launcher is too old. Upgrade the launcher once with:
