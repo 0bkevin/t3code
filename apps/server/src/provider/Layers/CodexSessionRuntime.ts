@@ -1131,6 +1131,13 @@ export const makeCodexSessionRuntime = (
               },
             });
             return true;
+          case "serverRequest/resolved":
+            // NOT agent chatter: approval resolution clears the parent's
+            // correlation cache and settles pending-approval activity.
+            // Swallowing it here left approvals stuck after they resolved
+            // (review finding) — fall through to the parent path, which
+            // already routes child requests via handleServerRequest.
+            return false;
           default:
             // Remaining child chatter (name updates, deltas, plan updates)
             // stays out of the parent timeline and has no agent mapping yet.

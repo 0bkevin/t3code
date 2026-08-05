@@ -278,14 +278,20 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
-  if (
-    payload.timelineBypass === true &&
-    activity.kind !== "task.completed" &&
-    !isTerminalBypassUpdate(activity)
-  ) {
+  const isTerminalTaskRow = activity.kind === "task.completed" || isTerminalBypassUpdate(activity);
+  if (payload.timelineBypass === true && !isTerminalTaskRow) {
     return true;
   }
-  return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+  // agentId marks ownership, not "hide me": a NESTED AGENT's terminal row is
+  // the only signal mobile gets (no Agents sheet), so it stays. Only an
+  // agent's own background work (stamped "background") is internal — same
+  // rule as web (review finding: hiding on agentId alone dropped nested
+  // completions with no replacement UI).
+  const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+  if (!ownedByAgent) {
+    return false;
+  }
+  return !(isTerminalTaskRow && payload.agentKind === "agent");
 }
 
 function deriveWorkLogEntries(
