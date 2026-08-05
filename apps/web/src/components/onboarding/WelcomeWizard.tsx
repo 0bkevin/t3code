@@ -156,7 +156,7 @@ function ConnectionStep({
           <ConnectionCard
             title="Local Only"
             description="Use T3 Code with agents on this machine."
-            tag="no account"
+            tag="No account"
             selected={choice === "local"}
             onSelect={() => setChoice("local")}
           />
@@ -165,7 +165,7 @@ function ConnectionStep({
           <ConnectionCard
             title="T3 Connect"
             description="Sign in and connect to any of your computers."
-            tag="account"
+            tag="Account"
             selected={choice === "connect"}
             onSelect={() => setChoice("connect")}
           />
@@ -173,7 +173,7 @@ function ConnectionStep({
         <ConnectionCard
           title="Direct"
           description="Connect to a server by URL. Works over LAN and Tailscale."
-          tag="advanced"
+          tag="Advanced"
           selected={choice === "direct"}
           onSelect={() => setChoice("direct")}
         />
@@ -866,7 +866,7 @@ function ImportStep({ onDone }: { readonly onDone: () => void }) {
           {candidates.map((candidate) => (
             <label
               key={candidate.path}
-              className="flex cursor-pointer items-baseline gap-2.5 rounded-lg px-3 py-2 transition-colors hover:bg-background/60"
+              className="flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 transition-colors hover:bg-background/60"
             >
               <Checkbox
                 checked={!deselected.has(candidate.path)}
@@ -952,7 +952,7 @@ function StepShell({
         <button
           type="button"
           onClick={onBack}
-          className="mt-3 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          className="-ml-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
         >
           <ChevronLeftIcon className="size-3.5" />
           Back
