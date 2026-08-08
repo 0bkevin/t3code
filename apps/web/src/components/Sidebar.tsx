@@ -824,7 +824,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   ) : (
     <span
       className={cn(
-        "min-w-0 flex-1 text-sm transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
+        "min-w-0 flex-1 text-sm transition-[opacity,transform] duration-180 ease-out motion-reduce:transition-none",
         shouldRecede ? "font-normal" : "font-medium",
         variant === "card"
           ? cn(
@@ -845,7 +845,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   ? "text-muted-foreground"
                   : "text-secondary-label/70",
             ),
-        isRegeneratingTitle && "translate-y-px opacity-[0.55] motion-reduce:translate-y-0",
+        isRegeneratingTitle && "translate-y-0.5 opacity-[0.55] motion-reduce:translate-y-0",
       )}
     >
       {thread.title}
