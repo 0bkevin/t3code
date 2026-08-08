@@ -44,6 +44,7 @@ import {
   FolderPlusIcon,
   GitBranchIcon,
   EllipsisIcon,
+  LoaderCircleIcon,
   MessageSquareIcon,
   PinIcon,
   PlusIcon,
@@ -851,6 +852,18 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       {thread.title}
     </span>
   );
+  const titleRegenerationIndicator = (
+    // Keep the slot mounted while idle so pending state doesn't move the
+    // title, terminal indicator, or row actions.
+    <span
+      aria-hidden
+      className="ml-1 inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground"
+    >
+      {isRegeneratingTitle ? (
+        <LoaderCircleIcon aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />
+      ) : null}
+    </span>
+  );
 
   const prBadge =
     prStatus && pr ? (
@@ -922,6 +935,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               />
             </span>
             {title}
+            {titleRegenerationIndicator}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
@@ -1183,8 +1197,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 ) : null}
               </span>
             </div>
-            <div className="mt-1 flex min-w-0">
+            <div className="mt-1 flex min-w-0 items-center">
               {title}
+              {titleRegenerationIndicator}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title
