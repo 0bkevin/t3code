@@ -44,7 +44,6 @@ import {
   FolderPlusIcon,
   GitBranchIcon,
   EllipsisIcon,
-  LoaderCircleIcon,
   MessageSquareIcon,
   PinIcon,
   PlusIcon,
@@ -859,9 +858,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       aria-hidden
       className="ml-1 inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground"
     >
-      {isRegeneratingTitle ? (
-        <LoaderCircleIcon aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />
-      ) : null}
+      {isRegeneratingTitle ? <CircleDashedIcon aria-hidden className="size-3" /> : null}
     </span>
   );
 
