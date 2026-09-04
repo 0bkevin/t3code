@@ -3890,13 +3890,22 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           () => BrowserWindow.getFocusedWindow(),
         ).pipe(Effect.orElseSucceed(() => null));
         const automationOwnsFocus = focusedWindow !== null && focusedWebContents?.id === wc.id;
+        const previousRendererOwnsFocus =
+          focusedWindow !== null && focusedWebContents?.id === previouslyFocused?.id;
         if (
           restoreFocus &&
-          automationOwnsFocus &&
           previouslyFocused &&
           previouslyFocused.id !== wc.id &&
-          !previouslyFocused.isDestroyed()
+          !previouslyFocused.isDestroyed() &&
+          (automationOwnsFocus || previousRendererOwnsFocus)
         ) {
+          if (previousRendererOwnsFocus) {
+            // Native focus is already where it needs to be. Report the same
+            // disposition as an explicit restore so the host can restore its
+            // DOM focus without needlessly refocusing the renderer.
+            focusDisposition = "restored";
+            return;
+          }
           const restored = yield* attempt(
             {
               operation: "automationPress.restoreFocusedWebContents",

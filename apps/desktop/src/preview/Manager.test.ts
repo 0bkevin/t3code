@@ -3642,6 +3642,16 @@ describe("PreviewManager", () => {
 
         sendCommand.mockClear();
         getFocusedWebContents.mockReset();
+        getFocusedWebContents.mockReturnValueOnce(previousFocused).mockReturnValue(previousFocused);
+        const restoreCallsBeforeAlreadyFocusedPress = restoreFocus.mock.calls.length;
+        // The host may have moved DOM focus while the app renderer stayed
+        // focused. Mark the native disposition as restored without calling
+        // focus again so the host can restore its DOM focus.
+        expect(yield* manager.automationPress("tab_input", { key: "=" })).toBe("restored");
+        expect(restoreFocus).toHaveBeenCalledTimes(restoreCallsBeforeAlreadyFocusedPress);
+
+        sendCommand.mockClear();
+        getFocusedWebContents.mockReset();
         getFocusedWebContents.mockReturnValueOnce(previousFocused).mockReturnValue(focusedGuest);
         failKeyDown = true;
         const failedPress = yield* Effect.exit(manager.automationPress("tab_input", { key: "y" }));
