@@ -8,6 +8,7 @@ import {
   type EnvironmentId,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
+  type DesktopPreviewAutomationPressResult,
   type PreviewAutomationResizeInput,
   type PreviewAutomationResizeResult,
   type PreviewAutomationSetColorSchemeInput,
@@ -54,6 +55,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { previewBridge } from "./previewBridge";
 import {
   PreviewAutomationOperationError,
+  PreviewAutomationControlInterruptedHostError,
   PreviewAutomationOverlayTimeoutError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
@@ -653,13 +655,29 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             );
           }
           case "press": {
-            return await withPreviewAutomationFocus(async () => {
-              const ready = await requireReadyTab();
-              return await ready.bridge.automation.press(
-                ready.runtimeTabId,
-                request.input as Parameters<typeof ready.bridge.automation.press>[1],
-              );
-            });
+            const pressResult = await withPreviewAutomationFocus(
+              async (): Promise<DesktopPreviewAutomationPressResult> => {
+                const ready = await requireReadyTab();
+                return await ready.bridge.automation.press(
+                  ready.runtimeTabId,
+                  request.input as Parameters<typeof ready.bridge.automation.press>[1],
+                );
+              },
+              {
+                shouldRestoreFocus: (result) =>
+                  result.status === "completed" && result.focusDisposition === "restored",
+              },
+            );
+            if (pressResult.status === "interrupted") {
+              throw new PreviewAutomationControlInterruptedHostError({
+                requestId: request.requestId,
+                operation: request.operation,
+                environmentId,
+                threadId: request.threadId,
+                tabId,
+              });
+            }
+            return undefined;
           }
           case "scroll": {
             const ready = await requireReadyTab();

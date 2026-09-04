@@ -10,6 +10,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  PreviewAutomationControlInterruptedHostError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
@@ -265,6 +266,29 @@ describe("previewAutomationRequestConsumer", () => {
     ).toMatchObject({
       _tag: "PreviewAutomationExecutionError",
       detail: { tabId: null },
+    });
+  });
+
+  it("serializes interrupted desktop presses as the typed interruption response", () => {
+    const error = new PreviewAutomationControlInterruptedHostError({
+      requestId: "request-press",
+      operation: "press",
+      environmentId,
+      threadId,
+      tabId,
+    });
+
+    expect(
+      serializePreviewAutomationError(error, {
+        requestId: "request-press",
+        operation: "press",
+        environmentId,
+        threadId,
+        tabId,
+      }),
+    ).toMatchObject({
+      _tag: "PreviewAutomationControlInterruptedError",
+      detail: { operation: "press", tabId: "tab-1" },
     });
   });
 

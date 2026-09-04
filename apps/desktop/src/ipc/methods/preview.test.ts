@@ -170,3 +170,42 @@ describe("preview IPC methods", () => {
     ).toThrow();
   });
 });
+
+describe("automationPressResult", () => {
+  effectIt.effect("returns an interrupted outcome for human control takeover", () =>
+    Effect.gen(function* () {
+      const error = new PreviewManager.PreviewAutomationControlInterruptedError({
+        operation: "press",
+        tabId: "tab-1",
+        webContentsId: 42,
+      });
+
+      expect(yield* PreviewIpc.automationPressResult(Effect.fail(error))).toEqual({
+        status: "interrupted",
+      });
+    }),
+  );
+
+  effectIt.effect("returns a completed outcome after a successful press", () =>
+    Effect.gen(function* () {
+      expect(yield* PreviewIpc.automationPressResult(Effect.succeed("restored"))).toEqual({
+        status: "completed",
+        focusDisposition: "restored",
+      });
+    }),
+  );
+
+  effectIt.effect("keeps unexpected failures as rejected effects", () =>
+    Effect.gen(function* () {
+      const error = new PreviewManager.PreviewWebContentsNotFoundError({
+        tabId: "tab-1",
+        webContentsId: 42,
+      });
+      const exit = yield* Effect.exit(PreviewIpc.automationPressResult(Effect.fail(error)));
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) return;
+      expect(Cause.squash(exit.cause)).toBe(error);
+    }),
+  );
+});

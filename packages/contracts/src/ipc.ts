@@ -1037,6 +1037,25 @@ export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
   input: PreviewAutomationPressInput,
 });
 
+export const DesktopPreviewAutomationPressFocusDisposition = Schema.Literals([
+  "restored",
+  "preserved",
+]);
+export type DesktopPreviewAutomationPressFocusDisposition =
+  typeof DesktopPreviewAutomationPressFocusDisposition.Type;
+
+export const DesktopPreviewAutomationPressResultSchema = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("completed"),
+    focusDisposition: DesktopPreviewAutomationPressFocusDisposition,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("interrupted"),
+  }),
+]);
+export type DesktopPreviewAutomationPressResult =
+  typeof DesktopPreviewAutomationPressResultSchema.Type;
+
 export const DesktopPreviewAutomationScrollInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationScrollInput,
@@ -1235,7 +1254,10 @@ export interface DesktopPreviewBridge {
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
-    press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
+    press: (
+      tabId: string,
+      input: PreviewAutomationPressInput,
+    ) => Promise<DesktopPreviewAutomationPressResult>;
     scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
     evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;
     waitFor: (tabId: string, input: PreviewAutomationWaitForInput) => Promise<void>;

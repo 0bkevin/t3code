@@ -4,6 +4,7 @@ import {
   DesktopPreviewAutomationClickInputSchema,
   DesktopPreviewAutomationEvaluateInputSchema,
   DesktopPreviewAutomationPressInputSchema,
+  DesktopPreviewAutomationPressResultSchema,
   DesktopPreviewAutomationScrollInputSchema,
   DesktopPreviewAutomationStatusSchema,
   DesktopPreviewAutomationTypeInputSchema,
@@ -23,6 +24,8 @@ import {
   DesktopPreviewCreateTabInputSchema,
   DesktopPreviewTabInputSchema,
   DesktopPreviewWebviewConfigSchema,
+  type DesktopPreviewAutomationPressFocusDisposition,
+  type DesktopPreviewAutomationPressResult,
   PreviewAnnotationSubmissionResultSchema,
   PreviewAutomationSnapshot,
   DEFAULT_BROWSER_PROFILE_ID,
@@ -420,12 +423,27 @@ export const automationType = DesktopIpc.makeIpcMethod({
 export const automationPress = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL,
   payload: DesktopPreviewAutomationPressInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewAutomationPressResultSchema,
   handler: Effect.fn("desktop.ipc.preview.automationPress")(function* ({ tabId, input }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationPress(tabId, input);
+    return yield* automationPressResult(manager.automationPress(tabId, input));
   }),
 });
+
+export const automationPressResult = (
+  effect: Effect.Effect<
+    DesktopPreviewAutomationPressFocusDisposition,
+    PreviewManager.PreviewManagerError
+  >,
+): Effect.Effect<DesktopPreviewAutomationPressResult, PreviewManager.PreviewManagerError> =>
+  effect.pipe(
+    Effect.map((focusDisposition) => ({ status: "completed" as const, focusDisposition })),
+    Effect.catch((error: PreviewManager.PreviewManagerError) =>
+      PreviewManager.isPreviewAutomationControlInterruptedError(error)
+        ? Effect.succeed({ status: "interrupted" as const })
+        : Effect.fail(error),
+    ),
+  );
 
 export const automationScroll = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_SCROLL_CHANNEL,

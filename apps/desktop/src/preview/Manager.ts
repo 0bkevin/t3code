@@ -9,6 +9,7 @@ import { DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER } from "@t3tools/contracts";
 import type {
   DesktopPreviewAnnotationTheme,
   DesktopPreviewAutomationStatus,
+  DesktopPreviewAutomationPressFocusDisposition,
   DesktopPreviewColorScheme,
   DesktopPreviewFavicon,
   DesktopPreviewPointerEvent,
@@ -3866,41 +3867,76 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "automationPress.getFocusedWebContents", tabId, webContentsId: wc.id },
       () => webContents.getFocusedWebContents(),
     );
+    let focusDisposition: DesktopPreviewAutomationPressFocusDisposition = "preserved";
     let keyDownAttempted = false;
-    const releaseInput = Effect.gen(function* () {
-      if (keyDownAttempted) {
-        yield* sendCleanup("Input.dispatchKeyEvent", keySequence.keyUp).pipe(Effect.ignore);
-      }
-      yield* sendCleanup("Emulation.setFocusEmulationEnabled", { enabled: false }).pipe(
-        Effect.ignore,
-      );
-      if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
-        yield* attempt(
+    const releaseInput = (restoreFocus: boolean) =>
+      Effect.gen(function* () {
+        if (keyDownAttempted) {
+          yield* sendCleanup("Input.dispatchKeyEvent", keySequence.keyUp).pipe(Effect.ignore);
+        }
+        yield* sendCleanup("Emulation.setFocusEmulationEnabled", { enabled: false }).pipe(
+          Effect.ignore,
+        );
+        const focusedWebContents = yield* attempt(
           {
-            operation: "automationPress.restoreFocusedWebContents",
+            operation: "automationPress.getCurrentFocusedWebContents",
             tabId,
-            webContentsId: previouslyFocused.id,
+            webContentsId: wc.id,
           },
-          () => previouslyFocused.focus(),
-        ).pipe(Effect.ignore);
-      }
-    });
+          () => webContents.getFocusedWebContents(),
+        ).pipe(Effect.orElseSucceed(() => null));
+        const focusedWindow = yield* attempt(
+          { operation: "automationPress.getFocusedWindow", tabId, webContentsId: wc.id },
+          () => BrowserWindow.getFocusedWindow(),
+        ).pipe(Effect.orElseSucceed(() => null));
+        const automationOwnsFocus = focusedWindow !== null && focusedWebContents?.id === wc.id;
+        if (
+          restoreFocus &&
+          automationOwnsFocus &&
+          previouslyFocused &&
+          previouslyFocused.id !== wc.id &&
+          !previouslyFocused.isDestroyed()
+        ) {
+          const restored = yield* attempt(
+            {
+              operation: "automationPress.restoreFocusedWebContents",
+              tabId,
+              webContentsId: previouslyFocused.id,
+            },
+            () => previouslyFocused.focus(),
+          ).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+          if (restored) focusDisposition = "restored";
+        }
+      });
 
     // Focus the guest WebContents itself, not its containing BrowserWindow. This
     // activates native keyboard behavior for hidden/background previews without
     // changing which thread is mounted in the UI. Restore the previous renderer
     // after dispatch so automation never leaves the app's input focus behind.
-    yield* Effect.gen(function* () {
-      yield* attempt(
-        { operation: "automationPress.focusWebContents", tabId, webContentsId: wc.id },
-        () => wc.focus(),
+    const pressExit = yield* Effect.exit(
+      Effect.gen(function* () {
+        yield* attempt(
+          { operation: "automationPress.focusWebContents", tabId, webContentsId: wc.id },
+          () => wc.focus(),
+        );
+        yield* send("Page.bringToFront");
+        yield* send("Emulation.setFocusEmulationEnabled", { enabled: true });
+        yield* expectAgentInput(tabId, keySequence.signal);
+        keyDownAttempted = true;
+        yield* send("Input.dispatchKeyEvent", keySequence.keyDown);
+      }),
+    );
+    const interrupted =
+      pressExit._tag === "Failure" &&
+      isPreviewAutomationControlInterruptedError(
+        Option.getOrNull(Cause.findErrorOption(pressExit.cause)),
       );
-      yield* send("Page.bringToFront");
-      yield* send("Emulation.setFocusEmulationEnabled", { enabled: true });
-      yield* expectAgentInput(tabId, keySequence.signal);
-      keyDownAttempted = true;
-      yield* send("Input.dispatchKeyEvent", keySequence.keyDown);
-    }).pipe(Effect.ensuring(releaseInput));
+    yield* releaseInput(!interrupted);
+    if (pressExit._tag === "Failure") return yield* Effect.failCause(pressExit.cause);
+    return focusDisposition;
   });
 
   const automationPress = Effect.fn("PreviewManager.automationPress")(function* (
@@ -3908,7 +3944,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     input: PreviewAutomationPressInput,
   ) {
     const wc = yield* requireWebContents(tabId);
-    yield* withControlSession(tabId, wc, "press", (send, sendCleanup) =>
+    return yield* withControlSession(tabId, wc, "press", (send, sendCleanup) =>
       performAutomationPress(tabId, wc, input, send, sendCleanup),
     );
   });
@@ -4558,7 +4594,7 @@ export class PreviewManager extends Context.Service<
     readonly automationPress: (
       tabId: string,
       input: PreviewAutomationPressInput,
-    ) => Effect.Effect<void, PreviewManagerError>;
+    ) => Effect.Effect<DesktopPreviewAutomationPressFocusDisposition, PreviewManagerError>;
     readonly automationScroll: (
       tabId: string,
       input: PreviewAutomationScrollInput,

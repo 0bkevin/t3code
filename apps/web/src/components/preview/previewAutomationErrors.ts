@@ -113,6 +113,25 @@ export class PreviewAutomationRecordingNotActiveError extends Schema.TaggedError
   }
 }
 
+export class PreviewAutomationControlInterruptedHostError extends Schema.TaggedErrorClass<PreviewAutomationControlInterruptedHostError>()(
+  "PreviewAutomationControlInterruptedHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: Schema.NullOr(PreviewTabId),
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationControlInterruptedError" as const;
+  }
+
+  override get message(): string {
+    return `Preview automation ${this.operation} request ${this.requestId} was interrupted by human input on environment ${this.environmentId} thread ${this.threadId}.`;
+  }
+}
+
 export class PreviewAutomationTargetNotEditableHostError extends Schema.TaggedErrorClass<PreviewAutomationTargetNotEditableHostError>()(
   "PreviewAutomationTargetNotEditableHostError",
   {
@@ -211,6 +230,7 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationViewportTimeoutError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,
+  PreviewAutomationControlInterruptedHostError,
   PreviewAutomationTargetNotEditableHostError,
   PreviewAutomationOperationError,
 ]);
