@@ -3510,6 +3510,12 @@ describe("PreviewManager", () => {
       Effect.gen(function* () {
         let failKeyDown = false;
         let interruptPress = false;
+        let blockCleanup = false;
+        const cleanupStarted = Deferred.makeUnsafe<void>();
+        let releaseCleanup!: () => void;
+        const cleanupRelease = new Promise<void>((resolve) => {
+          releaseCleanup = resolve;
+        });
         let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
         const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
           if (
@@ -3533,6 +3539,10 @@ describe("PreviewManager", () => {
                     code: params["code"] ?? "Digit1",
                   },
             );
+          }
+          if (blockCleanup && method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp") {
+            Deferred.doneUnsafe(cleanupStarted, Effect.void);
+            await cleanupRelease;
           }
           return method === "Runtime.evaluate" ? { result: { value: { ok: true } } } : undefined;
         });
@@ -3728,6 +3738,35 @@ describe("PreviewManager", () => {
           webContentsId: 42,
         });
         expect(restoreFocus).toHaveBeenCalledTimes(3);
+
+        sendCommand.mockClear();
+        getFocusedWebContents.mockReset();
+        getFocusedWebContents.mockReturnValueOnce(previousFocused).mockReturnValue(focusedGuest);
+        interruptPress = false;
+        blockCleanup = true;
+        const cleanupPress = yield* manager
+          .automationPress("tab_input", { key: "~" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(cleanupStarted);
+        const interruptCleanup = yield* Effect.forkChild(Fiber.interrupt(cleanupPress));
+        yield* Effect.yieldNow;
+        releaseCleanup();
+        yield* Fiber.join(interruptCleanup);
+
+        const cleanupExit = yield* Fiber.await(cleanupPress);
+        expect(Exit.isFailure(cleanupExit)).toBe(true);
+        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "~",
+          code: "Backquote",
+          modifiers: 0,
+          windowsVirtualKeyCode: 192,
+          location: 0,
+          isKeypad: false,
+        });
+        expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+          enabled: false,
+        });
       }),
     ),
   );

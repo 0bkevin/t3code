@@ -3943,7 +3943,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       isPreviewAutomationControlInterruptedError(
         Option.getOrNull(Cause.findErrorOption(pressExit.cause)),
       );
-    yield* releaseInput(!interrupted);
+    // Input cleanup must finish even when the action fiber is interrupted while
+    // a CDP cleanup command is in flight. Otherwise Chromium can retain a held
+    // key or focus emulation state after the preview loses control.
+    yield* Effect.uninterruptible(releaseInput(!interrupted));
     if (pressExit._tag === "Failure") return yield* Effect.failCause(pressExit.cause);
     return focusDisposition;
   });
