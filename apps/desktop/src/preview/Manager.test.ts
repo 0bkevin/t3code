@@ -3602,6 +3602,7 @@ describe("PreviewManager", () => {
             );
           }
           if (blockCleanup && method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp") {
+            humanInput?.({}, { kind: "pointer", x: 400, y: 300, button: 0 });
             Deferred.doneUnsafe(cleanupStarted, Effect.void);
             await cleanupRelease;
           }
@@ -3822,6 +3823,7 @@ describe("PreviewManager", () => {
         expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
           enabled: false,
         });
+        expect(restoreFocus).toHaveBeenCalledTimes(3);
       }),
     ),
   );

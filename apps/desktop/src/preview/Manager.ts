@@ -3866,6 +3866,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     send: SendCommand,
     sendCleanup: SendCommand,
   ) {
+    const initialControlEpoch = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
     yield* prepareAutomationInput(send, false);
     const keySequence = makePreviewAutomationKeySequence(input, {
       isMac: hostPlatform === "darwin",
@@ -3874,7 +3875,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "automationPress.getFocusedWebContents", tabId, webContentsId: wc.id },
       () => webContents.getFocusedWebContents(),
     );
-    let interruptedByHumanInput = false;
     let keyDownAttempted = false;
     const releaseInput = Effect.gen(function* () {
       if (keyDownAttempted) {
@@ -3895,8 +3895,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         { operation: "automationPress.getFocusedWindow", tabId, webContentsId: wc.id },
         () => BrowserWindow.getFocusedWindow(),
       ).pipe(Effect.orElseSucceed(() => null));
+      const currentControlEpoch = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
       if (
-        !interruptedByHumanInput &&
+        currentControlEpoch === initialControlEpoch &&
         focusedWindow !== null &&
         focusedWebContents?.id === wc.id &&
         previouslyFocused &&
@@ -3928,18 +3929,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       yield* expectAgentInput(tabId, keySequence.signal);
       keyDownAttempted = true;
       yield* send("Input.dispatchKeyEvent", keySequence.keyDown);
-    }).pipe(
-      Effect.onExit((exit) =>
-        Effect.sync(() => {
-          interruptedByHumanInput =
-            Exit.isFailure(exit) &&
-            isPreviewAutomationControlInterruptedError(
-              Option.getOrNull(Cause.findErrorOption(exit.cause)),
-            );
-        }),
-      ),
-      Effect.ensuring(releaseInput),
-    );
+    }).pipe(Effect.ensuring(releaseInput));
   });
 
   const automationPress = Effect.fn("PreviewManager.automationPress")(function* (
