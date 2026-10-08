@@ -108,65 +108,22 @@ describe("preview stream control", () => {
     const { client, socket } = connect({ ...target, automaticControl: true });
     socket.control(agent);
 
-    expect(
-      client.send({
-        type: "mouse",
-        action: "down",
-        x: 10,
-        y: 20,
-        button: "left",
-        buttons: 1,
-        clickCount: 1,
-        modifiers: 0,
-      }),
-    ).toBe(true);
-    expect(
-      client.send({
-        type: "mouse",
-        action: "up",
-        x: 10,
-        y: 20,
-        button: "left",
-        buttons: 0,
-        clickCount: 1,
-        modifiers: 0,
-      }),
-    ).toBe(true);
-    expect(
-      client.send({
-        type: "mouse",
-        action: "move",
-        x: 10,
-        y: 20,
-        button: "none",
-        buttons: 0,
-        clickCount: 0,
-        modifiers: 0,
-      }),
-    ).toBe(false);
+    const mouse = {
+      type: "mouse",
+      x: 10,
+      y: 20,
+      button: "left",
+      clickCount: 1,
+      modifiers: 0,
+    } as const;
+    const pressed = { ...mouse, action: "down", buttons: 1 } as const;
+    const released = { ...mouse, action: "up", buttons: 0 } as const;
+    expect(client.send(pressed)).toBe(true);
+    expect(client.send(released)).toBe(true);
+    expect(client.send({ ...mouse, action: "move", buttons: 0 })).toBe(false);
     expect(socket.sent.map((entry) => JSON.parse(entry))).toEqual([
-      {
-        type: "mouse",
-        action: "down",
-        x: 10,
-        y: 20,
-        button: "left",
-        buttons: 1,
-        clickCount: 1,
-        modifiers: 0,
-        automaticControl: true,
-      },
-      {
-        type: "mouse",
-        action: "up",
-        x: 10,
-        y: 20,
-        button: "left",
-        buttons: 0,
-        clickCount: 1,
-        modifiers: 0,
-        automaticControl: true,
-      },
+      { ...pressed, automaticControl: true },
+      { ...released, automaticControl: true },
     ]);
     client.stop();
   });
