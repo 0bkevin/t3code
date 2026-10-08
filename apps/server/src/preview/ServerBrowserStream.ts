@@ -270,7 +270,10 @@ const receiveUpload = (browser: ServerBrowser.ServerBrowser["Service"], params: 
     });
     return answered
       ? HttpServerResponse.empty({ status: 204 })
-      : HttpServerResponse.text("The page's file picker is no longer open.", { status: 409 });
+      : HttpServerResponse.text(
+          "The file picker or browser control changed. Take control and choose the files again.",
+          { status: 409 },
+        );
   }).pipe(Effect.scoped);
 
 // Capture the browser because handlers only see request-scoped services.

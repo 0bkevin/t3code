@@ -302,6 +302,7 @@ interface ServerTab {
   /** A page's open file picker, waiting for the controlling viewer's files. */
   fileChooser: {
     readonly id: string;
+    readonly generation: number;
     readonly chooser: FileChooser;
     readonly accept: string;
   } | null;
@@ -895,15 +896,22 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const fileChooserMessage = (tab: ServerTab): ServerBrowserViewerOutput | null =>
-    tab.fileChooser
-      ? {
-          _tag: "fileChooser",
-          id: tab.fileChooser.id,
-          multiple: tab.fileChooser.chooser.isMultiple(),
-          accept: tab.fileChooser.accept,
-        }
-      : null;
+  const fileChooserMessage = (tab: ServerTab): ServerBrowserViewerOutput | null => {
+    if (!tab.fileChooser || tab.control.controller === null) return null;
+    // The upload URL is a capability for this owner and generation, not the page alone.
+    if (tab.fileChooser.generation !== tab.control.generation)
+      tab.fileChooser = {
+        ...tab.fileChooser,
+        id: NodeCrypto.randomUUID(),
+        generation: tab.control.generation,
+      };
+    return {
+      _tag: "fileChooser",
+      id: tab.fileChooser.id,
+      multiple: tab.fileChooser.chooser.isMultiple(),
+      accept: tab.fileChooser.accept,
+    };
+  };
 
   const offerFileChooser = async (tab: ServerTab, chooser: FileChooser) => {
     const previous = tab.fileChooser;
@@ -914,7 +922,12 @@ const make = Effect.gen(function* () {
         .catch(() => null)) ?? "";
     // A newer picker replaces an unanswered one, as a real browser allows only one.
     if (previous) closeFileChooser(tab);
-    tab.fileChooser = { id: NodeCrypto.randomUUID(), chooser, accept: accept.slice(0, 1024) };
+    tab.fileChooser = {
+      id: NodeCrypto.randomUUID(),
+      generation: tab.control.generation,
+      chooser,
+      accept: accept.slice(0, 1024),
+    };
     pushFileChooser(tab);
   };
 
@@ -937,14 +950,24 @@ const make = Effect.gen(function* () {
   ) => {
     const tab = tabs.get(tabKey(input.threadId, input.tabId));
     const open = tab?.fileChooser;
-    if (!tab || !open || open.id !== input.chooserId) return false;
-    if (input.files.length > 0) {
-      await open.chooser.setFiles(
-        open.chooser.isMultiple() ? [...input.files] : input.files.slice(0, 1),
-      );
-    }
-    if (tab.fileChooser === open) closeFileChooser(tab);
-    return true;
+    if (
+      !tab ||
+      !open ||
+      open.id !== input.chooserId ||
+      tab.control.controller === null ||
+      open.generation !== tab.control.generation
+    )
+      return false;
+    return tab.control.human(tab.control.controller, async () => {
+      if (tab.fileChooser !== open) return false;
+      if (input.files.length > 0) {
+        await open.chooser.setFiles(
+          open.chooser.isMultiple() ? [...input.files] : input.files.slice(0, 1),
+        );
+      }
+      if (tab.fileChooser?.chooser === open.chooser) closeFileChooser(tab);
+      return true;
+    });
   };
   /** The agent's files go to a named file input, or else to the page's open picker. */
   const uploadFiles = async (tab: ServerTab, input: PreviewAutomationUploadInput) => {

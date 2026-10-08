@@ -1007,6 +1007,76 @@ it.live("a page's file picker goes to the controller and takes its uploaded file
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("file uploads reject stale owners and drain before the next owner's actions", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "text", text: "upload", automaticControl: true });
+      const finished = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => finished.resolve()));
+      const events: string[] = [];
+      const setFiles = vi.fn(async () => {
+        started.resolve();
+        await finished.promise;
+        events.push("files delivered");
+      });
+      page.emit("filechooser", {
+        isMultiple: () => false,
+        element: () => ({ getAttribute: async () => ".csv" }),
+        setFiles,
+      });
+      let offered = yield* Queue.take(viewer.output);
+      while (offered._tag !== "fileChooser") offered = yield* Queue.take(viewer.output);
+      const answer = (chooserId: string) =>
+        browser.answerFileChooser({
+          threadId: scope.thread.threadId,
+          tabId,
+          chooserId,
+          files: [{ name: "a.csv", mimeType: "text/csv", buffer: Buffer.from("a") }],
+        });
+      // Expiry and disconnect use the same release path: a late HTTP body must be refused.
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* answer(offered.id)).toBe(false);
+      const other = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* other.input({ type: "takeControl" });
+      let replacement = yield* Queue.take(other.output);
+      while (replacement._tag !== "fileChooser") replacement = yield* Queue.take(other.output);
+      expect(replacement.id).not.toBe(offered.id);
+      expect(yield* answer(offered.id)).toBe(false);
+      expect(setFiles).not.toHaveBeenCalled();
+      // A failed delivery leaves the current picker available to retry.
+      setFiles.mockRejectedValueOnce(new Error("upload failed"));
+      expect(yield* answer(replacement.id)).toBe(false);
+      const uploading = yield* answer(replacement.id).pipe(Effect.forkScoped);
+      yield* Effect.promise(() => started.promise);
+      const releasing = yield* other.input({ type: "releaseControl" }).pipe(Effect.forkScoped);
+      let released = yield* Queue.take(other.output);
+      while (released._tag !== "control" || released.controller !== "agent")
+        released = yield* Queue.take(other.output);
+      page.goto.mockImplementation(async () => {
+        events.push("agent navigated");
+      });
+      const navigating = yield* broker
+        .invoke({
+          scope,
+          tabId,
+          operation: "navigate",
+          input: { url: "https://example.com/" },
+        })
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      finished.resolve();
+      expect(yield* Fiber.join(uploading)).toBe(true);
+      yield* Fiber.join(releasing);
+      yield* Fiber.join(navigating);
+      expect(events).toEqual(["files delivered", "agent navigated"]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a file picker replaces a stalled viewer backlog instead of being dropped", () =>
   Effect.scoped(
     Effect.gen(function* () {

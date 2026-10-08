@@ -810,7 +810,7 @@ export function ServerBrowserSurface(props: {
             if (text) send({ type: "text", text });
           }}
         />
-        {fileChooser && control?.controller === "you" ? (
+        {fileChooser && canInteract ? (
           <div
             className="absolute inset-x-2 top-2 z-10 flex flex-col gap-2 rounded-lg border border-border bg-background p-3 shadow-lg"
             role="dialog"
@@ -831,14 +831,18 @@ export function ServerBrowserSurface(props: {
                 if (files.length > 0) answerFileChooser(files);
               }}
             />
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => answerFileChooser([])}>
-                Cancel
-              </Button>
-              <Button size="sm" onClick={() => fileInputRef.current?.click()}>
-                Choose {fileChooser.multiple ? "files" : "file"}
-              </Button>
-            </div>
+            {control?.controller === "you" ? (
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => answerFileChooser([])}>
+                  Cancel
+                </Button>
+                <Button size="sm" onClick={() => fileInputRef.current?.click()}>
+                  Choose {fileChooser.multiple ? "files" : "file"}
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">Take control to choose files.</p>
+            )}
           </div>
         ) : null}
         {control?.dialog ? (

@@ -444,29 +444,35 @@ function PreviewStreamDocumentView({
           }
         }}
       />
-      {!compact && fileChooser && control?.controller === "you" ? (
+      {!compact && fileChooser && previewStreamCanInteract(control, automaticControl) ? (
         <View className="absolute inset-x-3 top-16 gap-3 rounded-xl border border-secondary-border bg-secondary p-4">
           <AppText className="text-sm text-secondary-foreground">
             The page asks for {fileChooser.multiple ? "files" : "a file"}.
           </AppText>
-          <View className="flex-row justify-end gap-3">
-            <Pressable
-              accessibilityRole="button"
-              className="px-3 py-2"
-              onPress={() => answerFileChooser(false)}
-            >
-              <AppText className="text-secondary-foreground">Cancel</AppText>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              className="px-3 py-2"
-              onPress={() => answerFileChooser(true)}
-            >
-              <AppText className="text-secondary-foreground">
-                Choose {fileChooser.multiple ? "files" : "file"}
-              </AppText>
-            </Pressable>
-          </View>
+          {control?.controller === "you" ? (
+            <View className="flex-row justify-end gap-3">
+              <Pressable
+                accessibilityRole="button"
+                className="px-3 py-2"
+                onPress={() => answerFileChooser(false)}
+              >
+                <AppText className="text-secondary-foreground">Cancel</AppText>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                className="px-3 py-2"
+                onPress={() => answerFileChooser(true)}
+              >
+                <AppText className="text-secondary-foreground">
+                  Choose {fileChooser.multiple ? "files" : "file"}
+                </AppText>
+              </Pressable>
+            </View>
+          ) : (
+            <AppText className="text-sm text-secondary-foreground">
+              Take control to choose files.
+            </AppText>
+          )}
         </View>
       ) : null}
       {!compact && control?.dialog ? (

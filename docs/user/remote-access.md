@@ -197,7 +197,9 @@ The preference is saved on each device and also applies to remote connections.
 Older environments keep the explicit flow until you update them.
 Disconnecting returns control immediately. Use **Take control** before interacting
 when you want to keep control until you explicitly release it, such as during a
-long file selection.
+file selection or upload. If automatic control expires while choosing files,
+the pending picker stays visible. Take control to continue; files submitted
+after control changed are refused.
 
 While you have control, the tab works with your device: text the page copies or
 cuts goes to your clipboard, a file picker on the page opens your device's
