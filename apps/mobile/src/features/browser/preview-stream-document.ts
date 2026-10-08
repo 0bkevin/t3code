@@ -12,6 +12,7 @@ export interface PreviewStreamConfiguration {
   readonly tabId: string;
   /** Taps, scrolls, keys, and `resize` to the view size. The floating player only watches. */
   readonly interactive: boolean;
+  readonly automaticControl?: boolean;
   readonly background: string;
 }
 

@@ -299,6 +299,21 @@ describe("ClientSettings notifications", () => {
   );
 });
 
+describe("ClientSettings automatic browser control", () => {
+  it("keeps explicit Take control as the default", () => {
+    expect(decodeClientSettings({}).browserAutomaticControl).toBe(false);
+  });
+
+  it.each([true, false])("round-trips the opt-in as %s", (browserAutomaticControl) => {
+    expect(decodeClientSettings({ browserAutomaticControl }).browserAutomaticControl).toBe(
+      browserAutomaticControl,
+    );
+    expect(decodeClientSettingsPatch({ browserAutomaticControl })).toEqual({
+      browserAutomaticControl,
+    });
+  });
+});
+
 describe("ClientSettings default diff file state", () => {
   it("keeps files collapsed when existing settings omit the preference", () => {
     expect(decodeClientSettings({}).diffFilesCollapsed).toBe(true);

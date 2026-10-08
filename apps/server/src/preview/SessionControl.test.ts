@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 
 describe("SessionControl", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("returns an action result before tracked navigation but drains it before already queued actions", async () => {
     const control = new SessionControl("agent");
     const committed = Promise.withResolvers<void>();
@@ -85,6 +87,180 @@ describe("SessionControl", () => {
     await expect(control.human("viewer-a", async () => "still controlled")).resolves.toBe(
       "still controlled",
     );
+  });
+
+  it("automatically claims intentional input, drains the agent, and returns after inactivity", async () => {
+    vi.useFakeTimers();
+    let invalidations = 0;
+    const control = new SessionControl("agent", () => invalidations++);
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const events: string[] = [];
+    const running = control.agent("agent", async () => {
+      events.push("agent started");
+      started.resolve();
+      await finish.promise;
+      events.push("agent finished");
+    });
+    await started.promise;
+
+    const cleanup = vi.fn(async () => {
+      events.push("input released");
+    });
+    const released = vi.fn();
+    const gesture = control.automaticHuman(
+      "viewer-a",
+      async () => events.push("human gesture"),
+      cleanup,
+      released,
+    );
+    expect(control.controller).toBe("viewer-a");
+    await expect(control.take("viewer-b")).rejects.toThrow("Another viewer");
+    finish.resolve();
+    await Promise.all([running, gesture]);
+    expect(events).toEqual(["agent started", "agent finished", "human gesture"]);
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(control.controller).toBe("viewer-a");
+    expect(released).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(control.controller).toBeNull();
+    expect(invalidations).toBe(2);
+    expect(released).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(events).toEqual(["agent started", "agent finished", "human gesture", "input released"]);
+    await control.close();
+  });
+
+  it("keeps explicit takeover indefinite after automatic control", async () => {
+    vi.useFakeTimers();
+    const control = new SessionControl("agent");
+    await control.automaticHuman(
+      "viewer",
+      async () => "gesture",
+      async () => {},
+      () => {},
+    );
+    await control.take("viewer");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(control.controller).toBe("viewer");
+    await control.close();
+  });
+
+  it("renews the automatic lease and drains input cleanup before the agent resumes", async () => {
+    vi.useFakeTimers();
+    const control = new SessionControl("agent");
+    const drained = Promise.withResolvers<void>();
+    const cleanupStarted = Promise.withResolvers<void>();
+    const cleanup = async () => {
+      cleanupStarted.resolve();
+      await drained.promise;
+    };
+    const gesture = () =>
+      control.automaticHuman(
+        "viewer",
+        async () => {},
+        cleanup,
+        () => {},
+      );
+    await gesture();
+    await vi.advanceTimersByTimeAsync(4_000);
+    await gesture();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(control.controller).toBe("viewer");
+    await vi.advanceTimersByTimeAsync(1);
+    await cleanupStarted.promise;
+    expect(control.controller).toBeNull();
+    const act = vi.fn(async () => "resumed");
+    const resumed = control.agent("agent", act);
+    expect(act).not.toHaveBeenCalled();
+    drained.resolve();
+    await expect(resumed).resolves.toBe("resumed");
+    await control.close();
+  });
+
+  it("cancels the automatic lease on disconnect and releases a failed first gesture", async () => {
+    vi.useFakeTimers();
+    const control = new SessionControl("agent");
+    const idleRelease = vi.fn();
+    const cleanup = vi.fn(async () => {});
+    await control.automaticHuman("viewer", async () => {}, cleanup, idleRelease);
+    await control.disconnect("viewer", cleanup);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(idleRelease).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledOnce();
+    await expect(
+      control.automaticHuman(
+        "reconnected",
+        async () => {
+          throw new Error("input failed");
+        },
+        cleanup,
+        idleRelease,
+      ),
+    ).rejects.toThrow("input failed");
+    expect(control.controller).toBeNull();
+    await expect(control.agent("agent", async () => "resumed")).resolves.toBe("resumed");
+    await control.close();
+  });
+
+  it("does not run stale queued agent actions after an automatic claim", async () => {
+    vi.useFakeTimers();
+    const control = new SessionControl("agent");
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const running = control.agent("agent", async () => {
+      started.resolve();
+      await finish.promise;
+    });
+    await started.promise;
+    const stale = vi.fn(async () => {});
+    const rejected = expect(control.agent("agent", stale)).rejects.toThrow(
+      BrowserControlInterrupted,
+    );
+    const pressed = vi.fn(async () => {});
+    const gesture = control.automaticHuman(
+      "viewer",
+      pressed,
+      async () => {},
+      () => {},
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(control.controller).toBe("viewer");
+    expect(pressed).not.toHaveBeenCalled();
+    finish.resolve();
+    await Promise.all([running, rejected, gesture]);
+    expect(stale).not.toHaveBeenCalled();
+    expect(pressed).toHaveBeenCalledOnce();
+    await control.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a late dialog reply from a released lease cannot suppress the next viewer's idle release", async () => {
+    vi.useFakeTimers();
+    const control = new SessionControl("agent");
+    const answered = Promise.withResolvers<void>();
+    const oldReply = control.automaticHuman(
+      "viewer-a",
+      () => answered.promise,
+      async () => {},
+      () => {},
+      true,
+    );
+    await control.release("viewer-a");
+    await control.automaticHuman(
+      "viewer-b",
+      async () => {},
+      async () => {},
+      () => {},
+    );
+    expect(control.controller).toBe("viewer-b");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(control.controller).toBeNull();
+    answered.resolve();
+    await oldReply;
+    expect(vi.getTimerCount()).toBe(0);
+    await control.close();
   });
 
   it("invalidates queued human actions and refs when a viewer disconnects", async () => {

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { createPreviewStreamClient, type PreviewStreamControl } from "./serverBrowserStream.ts";
+import {
+  createPreviewStreamClient,
+  type PreviewStreamControl,
+  type PreviewStreamTarget,
+} from "./serverBrowserStream.ts";
 
 class FakeSocket extends EventTarget {
   static readonly OPEN = 1;
@@ -28,7 +32,7 @@ class FakeSocket extends EventTarget {
   }
 }
 
-const target = {
+const target: PreviewStreamTarget = {
   access: {
     httpBase: "http://preview.test/api/preview-stream",
     wsBase: "ws://preview.test/api/preview-stream",
@@ -43,11 +47,14 @@ const target = {
 
 describe("preview stream control", () => {
   beforeEach(() => vi.stubGlobal("WebSocket", FakeSocket));
-  afterEach(() => vi.unstubAllGlobals());
-  const connect = () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+  const connect = (streamTarget = target) => {
     const onFrame = vi.fn();
     const onControl = vi.fn();
-    const client = createPreviewStreamClient(target, {
+    const client = createPreviewStreamClient(streamTarget, {
       onFrame,
       onControl,
       onViewport: vi.fn(),
@@ -58,6 +65,7 @@ describe("preview stream control", () => {
   };
   const agent: PreviewStreamControl = {
     canOperate: true,
+    automaticControlSupported: true,
     controller: "agent",
     generation: 1,
     dialog: null,
@@ -93,6 +101,137 @@ describe("preview stream control", () => {
       { type: "takeControl" },
       { type: "text", text: "owned" },
     ]);
+    client.stop();
+  });
+
+  it("sends the first automatic gesture, including its release, before the control update", () => {
+    const { client, socket } = connect({ ...target, automaticControl: true });
+    socket.control(agent);
+
+    expect(
+      client.send({
+        type: "mouse",
+        action: "down",
+        x: 10,
+        y: 20,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+        modifiers: 0,
+      }),
+    ).toBe(true);
+    expect(
+      client.send({
+        type: "mouse",
+        action: "up",
+        x: 10,
+        y: 20,
+        button: "left",
+        buttons: 0,
+        clickCount: 1,
+        modifiers: 0,
+      }),
+    ).toBe(true);
+    expect(
+      client.send({
+        type: "mouse",
+        action: "move",
+        x: 10,
+        y: 20,
+        button: "none",
+        buttons: 0,
+        clickCount: 0,
+        modifiers: 0,
+      }),
+    ).toBe(false);
+    expect(socket.sent.map((entry) => JSON.parse(entry))).toEqual([
+      {
+        type: "mouse",
+        action: "down",
+        x: 10,
+        y: 20,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+        modifiers: 0,
+        automaticControl: true,
+      },
+      {
+        type: "mouse",
+        action: "up",
+        x: 10,
+        y: 20,
+        button: "left",
+        buttons: 0,
+        clickCount: 1,
+        modifiers: 0,
+        automaticControl: true,
+      },
+    ]);
+    client.stop();
+  });
+
+  it.each([
+    { type: "wheel", x: 10, y: 20, deltaX: 0, deltaY: 12, modifiers: 0 },
+    { type: "key", action: "down", key: "a", code: "KeyA", text: "a", modifiers: 0 },
+    { type: "key", action: "up", key: "a", code: "KeyA", modifiers: 0 },
+    { type: "text", text: "pasted or composed text" },
+    { type: "probe", x: 10, y: 20 },
+    { type: "dialog", accept: true },
+  ] as const)("forwards automatic $type input before ownership is acknowledged", (input) => {
+    const { client, socket } = connect({ ...target, automaticControl: true });
+    socket.control(agent);
+    expect(client.send(input)).toBe(true);
+    expect(socket.sent.map((entry) => JSON.parse(entry))).toEqual([
+      { ...input, automaticControl: true },
+    ]);
+    client.stop();
+  });
+
+  it.each([
+    { interactive: false, canOperate: true, controller: "agent" },
+    { interactive: true, canOperate: false, controller: "agent" },
+    { interactive: true, canOperate: true, controller: "another-viewer" },
+  ] as const)(
+    "refuses automatic input for $controller / operate=$canOperate / interactive=$interactive",
+    ({ interactive, canOperate, controller }) => {
+      const { client, socket } = connect({ ...target, automaticControl: true, interactive });
+      socket.control({ ...agent, canOperate, controller });
+      expect(client.send({ type: "text", text: "must not reach page" })).toBe(false);
+      expect(client.send({ type: "probe", x: 1, y: 2 })).toBe(false);
+      expect(socket.sent).toEqual([]);
+      client.stop();
+    },
+  );
+
+  it("retains the opt-in across reconnects without replaying disconnected input", () => {
+    vi.useFakeTimers();
+    const { client, socket } = connect({ ...target, automaticControl: true });
+    socket.dispatchEvent(new Event("open"));
+    socket.control(agent);
+    socket.readyState = 3;
+    socket.dispatchEvent(Object.assign(new Event("close"), { code: 1012 }));
+    expect(client.send({ type: "text", text: "offline" })).toBe(false);
+    vi.advanceTimersByTime(500);
+    const reconnected = FakeSocket.current;
+    expect(reconnected).not.toBe(socket);
+    expect(client.send({ type: "text", text: "before status" })).toBe(false);
+    reconnected.control(agent);
+    expect(client.send({ type: "text", text: "fresh input" })).toBe(true);
+    expect(reconnected.sent.map((entry) => JSON.parse(entry))).toEqual([
+      { type: "text", text: "fresh input", automaticControl: true },
+    ]);
+    client.stop();
+  });
+
+  it("keeps explicit takeover for an older environment rather than dropping an automatic gesture", () => {
+    const { client, socket } = connect({ ...target, automaticControl: true });
+    const { automaticControlSupported: _support, ...legacy } = agent;
+    socket.control(legacy);
+    expect(client.send({ type: "text", text: "cannot implicitly claim" })).toBe(false);
+    expect(client.send({ type: "takeControl" })).toBe(true);
+    socket.control({ ...legacy, controller: "you" });
+    expect(client.send({ type: "text", text: "manual takeover works" })).toBe(true);
     client.stop();
   });
 

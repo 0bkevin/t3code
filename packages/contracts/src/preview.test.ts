@@ -8,8 +8,10 @@ import {
   PREVIEW_URL_MAX_LENGTH,
   PreviewEvent,
   PreviewNavStatus,
+  PreviewAutomaticControlInput,
   PreviewSessionSnapshot,
   PreviewViewportSetting,
+  isPreviewControlGesture,
 } from "./preview.ts";
 import {
   PreviewAutomationHost,
@@ -32,6 +34,18 @@ const decodeResizeResult = Schema.decodeUnknownSync(PreviewAutomationResizeResul
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationError = Schema.decodeUnknownSync(PreviewAutomationError);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);
+const decodeAutomaticControlInput = Schema.decodeUnknownSync(PreviewAutomaticControlInput);
+
+describe("automatic preview control", () => {
+  it("defaults the wire opt-in to absent and recognizes intentional input", () => {
+    expect(decodeAutomaticControlInput({})).toEqual({});
+    expect(isPreviewControlGesture({ type: "mouse", action: "down" })).toBe(true);
+    expect(isPreviewControlGesture({ type: "mouse", action: "move", buttons: 0 })).toBe(false);
+    expect(isPreviewControlGesture({ type: "mouse", action: "move", buttons: 1 })).toBe(true);
+    expect(isPreviewControlGesture({ type: "text" })).toBe(true);
+    expect(isPreviewControlGesture({ type: "resize" })).toBe(false);
+  });
+});
 
 describe("PreviewAutomationOpenInput", () => {
   it("accepts the inline preview visibility flag", () => {

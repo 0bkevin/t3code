@@ -271,6 +271,7 @@ describe("getChangedBrowserSettingLabels", () => {
         browserRecordingShowKeyPresses: true,
         browserRecordingShowMousePresses: true,
         browserLinkTarget: "app",
+        browserAutomaticControl: true,
         browserAutoShowFloatingPreview: !DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,
       }),
     ).toEqual([
@@ -278,6 +279,7 @@ describe("getChangedBrowserSettingLabels", () => {
       "Browser zoom",
       "Browser appearance",
       "Recording frame rate",
+      "Automatic browser control",
       "Recording key presses",
       "Recording mouse presses",
       "Open links in",

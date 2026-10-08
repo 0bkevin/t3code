@@ -3,10 +3,12 @@
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
 import {
   FILL_PREVIEW_VIEWPORT,
+  isPreviewControlGesture,
   INCOGNITO_BROWSER_PROFILE_ID,
   PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   PreviewViewportSetting as PreviewViewportSettingSchema,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  type PreviewAutomaticControlSupport,
   type PreviewAutomationActionEvent,
   type PreviewAutomationClickInput,
   type PreviewAutomationDialogInput,
@@ -153,7 +155,7 @@ export type ServerBrowserViewerOutput =
       readonly ack: Effect.Effect<void>;
     }
   | { readonly _tag: "viewport"; readonly width: number; readonly height: number }
-  | {
+  | (PreviewAutomaticControlSupport & {
       readonly _tag: "control";
       readonly canOperate: boolean;
       readonly controller: "agent" | "you" | "another-viewer" | "unclaimed";
@@ -163,7 +165,7 @@ export type ServerBrowserViewerOutput =
         readonly message: string;
         readonly defaultValue: string;
       } | null;
-    }
+    })
   | {
       readonly _tag: "probe";
       readonly x: number;
@@ -491,6 +493,7 @@ const make = Effect.gen(function* () {
       viewer.push({
         _tag: "control",
         canOperate: viewer.canOperate,
+        automaticControlSupported: true,
         controller:
           tab.control.controller === viewer.id
             ? "you"
@@ -2097,6 +2100,36 @@ const make = Effect.gen(function* () {
                 );
                 broadcastControl(tab);
                 await releasing;
+              } else if (
+                message.automaticControl === true &&
+                (isPreviewControlGesture({
+                  type: message.type,
+                  action: message.action,
+                  buttons: message.buttons,
+                }) ||
+                  (tab.control.controller === viewer.id &&
+                    ((message.type === "mouse" && message.action === "up") ||
+                      (message.type === "key" && message.action === "up"))))
+              ) {
+                const generation = tab.control.generation;
+                const acting = tab.control.automaticHuman(
+                  viewer.id,
+                  () =>
+                    message.type === "dialog" && typeof message.accept === "boolean"
+                      ? resolveDialog(tab, {
+                          accept: message.accept,
+                          ...(typeof message.promptText === "string"
+                            ? { promptText: message.promptText }
+                            : {}),
+                        })
+                      : dispatchViewerInput(tab, session, viewer, message),
+                  () => releaseViewerInput(viewer, session),
+                  () => broadcastControl(tab),
+                  message.type === "dialog",
+                );
+                if (generation !== tab.control.generation) broadcastControl(tab);
+                await acting;
+                if (generation !== tab.control.generation) pushFileChooser(tab);
               } else if (
                 message.type === "dialog" &&
                 tab.control.controller === viewer.id &&

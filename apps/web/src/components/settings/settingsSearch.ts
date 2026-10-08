@@ -711,6 +711,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["links default browser in-app browser external open"],
   },
   {
+    id: "browser-automatic-control",
+    title: "Automatic browser control",
+    to: "/settings/integrations",
+    searchTerms: ["take release control opt out click scroll touch agent handoff"],
+  },
+  {
     id: "browser-auto-show-floating-preview",
     title: "Auto-show floating preview",
     to: "/settings/integrations",

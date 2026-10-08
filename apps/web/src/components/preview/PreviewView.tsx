@@ -1,5 +1,8 @@
 "use client";
 
+import { previewStreamCanInteract } from "@t3tools/client-runtime/preview/server-browser-stream";
+import { useClientSettings } from "~/hooks/useSettings";
+
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
@@ -186,6 +189,7 @@ export function PreviewView({
     observer.observe(element);
     return () => observer.disconnect();
   }, [serverToolbarShown]);
+  const automaticControl = useClientSettings((settings) => settings.browserAutomaticControl);
   const [serverControlledTabId, setServerControlledTabId] = useState<string | null>(null);
   const serverInputDisabled = isServerTab && serverControlledTabId !== runtimeTabId;
   const [serverFrameTabId, setServerFrameTabId] = useState<string | null>(null);
@@ -993,7 +997,9 @@ export function PreviewView({
                 visible={visible}
                 onFirstFrame={() => setServerFrameTabId(runtimeTabId)}
                 onControl={(control) =>
-                  setServerControlledTabId(control?.controller === "you" ? runtimeTabId : null)
+                  setServerControlledTabId(
+                    previewStreamCanInteract(control, automaticControl) ? runtimeTabId : null,
+                  )
                 }
                 // Stays connected under the empty state so a URL picked there reaches the page.
                 className={cn(

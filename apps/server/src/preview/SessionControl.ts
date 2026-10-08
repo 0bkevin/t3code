@@ -1,4 +1,7 @@
+// @effect-diagnostics globalTimers:off - Session ownership is shared with Promise-based browser callbacks.
 import type { PreviewAutomationControlReason } from "@t3tools/contracts";
+
+const AUTOMATIC_CONTROL_IDLE_MS = 5_000;
 
 export class BrowserControlInterrupted extends Error {
   readonly reason: PreviewAutomationControlReason;
@@ -20,6 +23,13 @@ export class SessionControl {
   private owner: string | null = null;
   private epoch = 0;
   private closed = false;
+  private automatic: { pending: number } | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private cancelIdleRelease() {
+    if (this.idleTimer !== null) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
 
   constructor(agentId: string | null, onGenerationChange: () => void = () => {}) {
     this.agentId = agentId;
@@ -57,6 +67,8 @@ export class SessionControl {
   }
 
   private changeOwner(owner: string | null) {
+    this.cancelIdleRelease();
+    this.automatic = null;
     this.owner = owner;
     this.epoch++;
     this.onGenerationChange();
@@ -101,11 +113,54 @@ export class SessionControl {
     return this.action(() => this.owner === viewerId, run);
   }
 
+  /** Reserve synchronously so the first gesture and its following input share one generation. */
+  async automaticHuman<A>(
+    viewerId: string,
+    run: () => Promise<A>,
+    afterDrain: () => Promise<void>,
+    onRelease: () => void,
+    // Dialog replies unblock running actions, so they cannot wait behind those actions.
+    dialogReply = false,
+  ) {
+    this.assertOpen();
+    if (this.owner !== null && this.owner !== viewerId)
+      throw new BrowserControlInterrupted("Another viewer controls this browser tab.");
+    if (this.owner === null) {
+      this.changeOwner(viewerId);
+      this.automatic = { pending: 0 };
+    }
+    const act = () => (dialogReply ? run() : this.human(viewerId, run));
+    const lease = this.automatic;
+    if (!lease) return act();
+    this.cancelIdleRelease();
+    lease.pending++;
+    let delivered = false;
+    try {
+      const result = await act();
+      delivered = true;
+      return result;
+    } finally {
+      lease.pending--;
+      if (lease.pending === 0 && this.automatic === lease) {
+        // Count inactivity after delivery, including a slow takeover, rather than receipt.
+        const release = () => {
+          const releasing = this.release(viewerId, afterDrain);
+          onRelease();
+          void releasing.catch(() => undefined);
+        };
+        if (delivered) this.idleTimer = setTimeout(release, AUTOMATIC_CONTROL_IDLE_MS);
+        else release();
+      }
+    }
+  }
+
   async take(viewerId: string) {
     this.assertOpen();
     if (this.owner !== null && this.owner !== viewerId) {
       throw new BrowserControlInterrupted("Another viewer controls this browser tab.");
     }
+    this.cancelIdleRelease();
+    this.automatic = null;
     if (this.owner !== viewerId) this.changeOwner(viewerId);
     return this.human(viewerId, async () => {});
   }

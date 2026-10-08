@@ -4,6 +4,7 @@ import {
   createPreviewFramePainter,
   createPreviewStreamClient,
   previewStreamControlLabel,
+  previewStreamCanInteract,
   previewStreamModifiers,
   type PreviewStreamClient,
   type PreviewStreamControl,
@@ -33,6 +34,8 @@ import {
   useRef,
   useState,
 } from "react";
+
+import { useClientSettings } from "~/hooks/useSettings";
 
 import { AgentCursorMark } from "~/components/preview/AgentBrowserCursor";
 import { CommandBlock } from "~/components/CommandBlock";
@@ -170,6 +173,7 @@ export function ServerBrowserSurface(props: {
     ref,
   } = props;
   const access = usePreviewStreamAccess(environmentId);
+  const automaticControl = useClientSettings((settings) => settings.browserAutomaticControl);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const keySentRef = useRef(false);
@@ -179,6 +183,7 @@ export function ServerBrowserSurface(props: {
   const hasFrameRef = useRef(false);
   const controlRef = useRef<PreviewStreamControl | null>(null);
   const [control, setControl] = useState<PreviewStreamControl | null>(null);
+  const canInteract = previewStreamCanInteract(control, automaticControl);
   const [promptText, setPromptText] = useState("");
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
   const [agentCursor, setAgentCursor] = useState<AgentCursorPlacement | null>(null);
@@ -275,7 +280,12 @@ export function ServerBrowserSurface(props: {
     (clientX: number, clientY: number, clamp: boolean): PagePoint | null => {
       const canvas = canvasRef.current;
       const viewport = viewportRef.current;
-      if (!canvas || !viewport || !hasFrameRef.current || controlRef.current?.controller !== "you")
+      if (
+        !canvas ||
+        !viewport ||
+        !hasFrameRef.current ||
+        !previewStreamCanInteract(controlRef.current, automaticControl)
+      )
         return null;
       const rect = canvas.getBoundingClientRect();
       // `object-contain` letterboxes the frame inside the canvas box.
@@ -294,7 +304,7 @@ export function ServerBrowserSurface(props: {
         scale,
       };
     },
-    [],
+    [automaticControl],
   );
 
   const countClick = (button: PreviewStreamMouseButton, x: number, y: number, time: number) => {
@@ -372,14 +382,14 @@ export function ServerBrowserSurface(props: {
       firstFrame();
     });
     const client = createPreviewStreamClient(
-      { access, threadId, tabId, maxWidth: cap.width, maxHeight: cap.height },
+      { access, threadId, tabId, maxWidth: cap.width, maxHeight: cap.height, automaticControl },
       {
         onFrame: (jpeg) => {
           unauthorizedRef.current = 0;
           painter.paint(jpeg);
         },
         onProbe: (result) => {
-          if (controlRef.current?.controller !== "you") return;
+          if (!previewStreamCanInteract(controlRef.current, automaticControl)) return;
           lastProbeRef.current = { ...result, at: performance.now() };
           const probe = probeRef.current;
           if (!probe || probe.x !== result.x || probe.y !== result.y) return;
@@ -457,6 +467,7 @@ export function ServerBrowserSurface(props: {
   }, [
     access,
     accessDenied,
+    automaticControl,
     cap,
     clearInput,
     environmentId,
@@ -502,7 +513,7 @@ export function ServerBrowserSurface(props: {
   );
 
   const handlePointer = (event: PointerEvent<HTMLCanvasElement>) => {
-    if (controlRef.current?.controller !== "you") return;
+    if (!previewStreamCanInteract(controlRef.current, automaticControl)) return;
     const { type, pointerId, clientX, clientY } = event;
     const cancelled = type === "pointercancel";
     const touch = touchRef.current;
@@ -651,7 +662,7 @@ export function ServerBrowserSurface(props: {
   };
 
   const handleKey = (action: "down" | "up", event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (controlRef.current?.controller !== "you") return;
+    if (!previewStreamCanInteract(controlRef.current, automaticControl)) return;
     keySentRef.current = false;
     // IME and soft keyboards deliver text through composition and input events.
     if (
@@ -730,6 +741,11 @@ export function ServerBrowserSurface(props: {
       >
         <span role="status" className="text-xs text-muted-foreground">
           {previewStreamControlLabel(control)}
+          {automaticControl && control?.canOperate
+            ? control.automaticControlSupported
+              ? " · Automatic control"
+              : " · Update environment for automatic control"
+            : ""}
         </span>
         {control?.canOperate ? (
           <Button
@@ -772,7 +788,7 @@ export function ServerBrowserSurface(props: {
           autoComplete="off"
           autoCorrect="off"
           spellCheck={false}
-          disabled={control?.controller !== "you"}
+          disabled={!canInteract}
           defaultValue={INPUT_SENTINEL}
           // The caret must sit after the sentinel for a deletion to have something to delete.
           onFocus={(event) => resetInput(event.currentTarget)}
@@ -832,7 +848,7 @@ export function ServerBrowserSurface(props: {
             aria-label="Browser dialog"
           >
             <p className="break-words text-sm">{control.dialog.message}</p>
-            {control.controller === "you" ? (
+            {canInteract ? (
               <>
                 {control.dialog.type === "prompt" ? (
                   <Input

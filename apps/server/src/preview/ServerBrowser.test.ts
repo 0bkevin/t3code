@@ -304,6 +304,54 @@ it.live("readiness none responds immediately but takeover input waits for naviga
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("automatic viewer input delivers the gesture and protects an existing human owner", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const cdp = contexts[0]!.sessions.at(-1)!;
+      const input = {
+        x: 10,
+        y: 20,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+        modifiers: 0,
+        automaticControl: true,
+      } as const;
+
+      // The server reserves ownership while the first message is being handled;
+      // a following release therefore cannot be dropped while its control event travels back.
+      yield* Queue.clear(viewer.output);
+      const pressed = yield* viewer
+        .input({ type: "mouse", action: "down", ...input })
+        .pipe(Effect.forkScoped);
+      const released = yield* viewer
+        .input({ type: "mouse", action: "up", ...input, buttons: 0 })
+        .pipe(Effect.forkScoped);
+      yield* Fiber.join(pressed);
+      yield* Fiber.join(released);
+      const notifications = (yield* Queue.takeAll(viewer.output)).filter(
+        (item) => item._tag === "control",
+      );
+      expect(notifications).toHaveLength(1);
+      expect(cdp.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ type: "mousePressed", x: 10, y: 20 }),
+      );
+      expect(cdp.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ type: "mouseReleased", x: 10, y: 20 }),
+      );
+
+      const other = yield* browser.attachViewer(viewerInput(tabId, true));
+      const otherCdp = contexts[0]!.sessions.at(-1)!;
+      yield* other.input({ type: "mouse", action: "down", ...input });
+      expect(otherCdp.send).not.toHaveBeenCalledWith("Input.dispatchMouseEvent", expect.anything());
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live.each([
   { method: "goto" as const, message: { type: "navigate", url: "http://localhost:5173/next" } },
   { method: "goBack" as const, message: { type: "history", delta: -1 } },
@@ -429,6 +477,8 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
       for (const message of [
         { type: "takeControl" },
         { type: "key", action: "down", key: "a", text: "a" },
+        { type: "text", text: "automatic denied", automaticControl: true },
+        { type: "probe", x: 1, y: 2, automaticControl: true },
         { type: "resize", width: 390, height: 844 },
         { type: "viewport", setting: { _tag: "freeform", width: 390, height: 844 } },
       ])
@@ -549,6 +599,92 @@ it.live(
         ).toBe("evaluated");
       }),
     ).pipe(Effect.provide(layer)),
+);
+
+it.live.each([false, true])(
+  "automatic dialog replies unblock a running action (explicit takeover: %s)",
+  (explicit) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { browser, broker, tabId } = yield* ready;
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        const page = contexts[0]!.page;
+        const started = Promise.withResolvers<void>();
+        const resolved = Promise.withResolvers<Record<string, unknown>>();
+        const cdp = contexts[0]!.sessions[0]!;
+        const send = cdp.send.getMockImplementation()!;
+        cdp.send.mockImplementation(async (method, input) => {
+          if (method !== "Runtime.evaluate") return send(method, input);
+          started.resolve();
+          return resolved.promise;
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => resolved.resolve({ result: { value: true } })),
+        );
+        const action = yield* broker
+          .invoke({
+            scope,
+            tabId,
+            operation: "evaluate",
+            input: { expression: 'confirm("Continue?")' },
+          })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => started.promise);
+        const accept = vi.fn(async () => resolved.resolve({ result: { value: true } }));
+        page.emit("dialog", {
+          type: () => "confirm",
+          message: () => "Continue?",
+          defaultValue: () => "",
+          accept,
+          dismiss: vi.fn(async () => {}),
+        });
+        yield* Queue.clear(viewer.output);
+        const taking = explicit
+          ? yield* viewer.input({ type: "takeControl" }).pipe(Effect.forkScoped)
+          : null;
+        if (taking) {
+          let next = yield* Queue.take(viewer.output);
+          while (next._tag !== "control" || next.controller !== "you")
+            next = yield* Queue.take(viewer.output);
+        }
+        const reply = yield* viewer
+          .input({ type: "dialog", accept: true, automaticControl: true })
+          .pipe(Effect.forkScoped);
+        // A control notification/status read is a milestone, not a timeout waiting for a deadlock.
+        if (!explicit) {
+          let next = yield* Queue.take(viewer.output);
+          while (next._tag !== "control" || next.controller !== "you")
+            next = yield* Queue.take(viewer.output);
+        } else yield* broker.invoke({ scope, tabId, operation: "status", input: {} });
+        expect(accept).toHaveBeenCalledOnce();
+        yield* Fiber.join(reply);
+        yield* Fiber.join(action);
+        if (taking) yield* Fiber.join(taking);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("human tabs still grant the first authorized viewer control without the opt-in", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.yieldNow;
+      const snapshot = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      const reader = yield* browser.attachViewer(viewerInput(snapshot.tabId, false));
+      expect(yield* Queue.takeAll(reader.output)).toContainEqual(
+        expect.objectContaining({ _tag: "control", controller: "unclaimed" }),
+      );
+      const operator = yield* browser.attachViewer(viewerInput(snapshot.tabId, true));
+      expect(yield* Queue.takeAll(operator.output)).toContainEqual(
+        expect.objectContaining({ _tag: "control", controller: "you" }),
+      );
+      yield* operator.input({ type: "text", text: "human tab" });
+      expect(contexts[0]!.sessions.at(-1)!.send).toHaveBeenCalledWith("Input.insertText", {
+        text: "human tab",
+      });
+    }),
+  ).pipe(Effect.provide(layer)),
 );
 
 it.live("reports a pending dialog without evaluating the page and resolves it explicitly", () =>

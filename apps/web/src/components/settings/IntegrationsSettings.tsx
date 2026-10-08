@@ -890,6 +890,28 @@ function DeviceIntegrationControls({
   );
 }
 
+function BrowserAutomaticControlSetting() {
+  const enabled = useClientSettings((settings) => settings.browserAutomaticControl);
+  const hydrated = useClientSettingsHydrated();
+  const updateSettings = useUpdatePrimarySettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("browser-automatic-control")}
+      description="Interact with agent tabs without pressing Take control. Control returns after 5 seconds without input. Another viewer's control stays protected. Saved on this device."
+      control={
+        <Switch
+          disabled={!hydrated}
+          checked={enabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ browserAutomaticControl: Boolean(checked) })
+          }
+          aria-label="Automatic browser control"
+        />
+      }
+    />
+  );
+}
+
 function BrowserAutoShowFloatingPreviewSetting({ disabled }: { readonly disabled: boolean }) {
   const autoShow = useClientSettings((settings) => settings.browserAutoShowFloatingPreview);
   const updateSettings = useUpdatePrimarySettings();
@@ -1538,6 +1560,7 @@ export function IntegrationsSettingsPanel() {
           the preview defaults below are device-local and ignore it. */}
       <ProjectDefaultsSettings category="integrations" />
       <SettingsSection id="browser" title="Browser">
+        <BrowserAutomaticControlSetting />
         {previewDefaultsDisabled ? (
           <SettingsUnavailableGroup message="Only available in the desktop app.">
             {previewDefaults}

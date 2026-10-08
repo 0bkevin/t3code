@@ -1,6 +1,9 @@
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
 import previewStreamScript from "@t3tools/mobile-preview-stream";
 import {
   previewStreamControlLabel,
+  previewStreamCanInteract,
   previewStreamHostSetupMessage,
   type PreviewStreamControl,
   type PreviewStreamDownload,
@@ -25,6 +28,7 @@ import * as Clipboard from "expo-clipboard";
 import { AppText } from "../../components/AppText";
 import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
 import { beginForegroundHandoff } from "../../lib/foreground-handoff";
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { usePreviewStreamAccess } from "../../state/preview";
 
 import {
@@ -121,8 +125,18 @@ export function PreviewStreamWebView(
     },
 ) {
   const { access, error, refresh } = usePreviewStreamAccess(props.environmentId);
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const automaticControl =
+    AsyncResult.isSuccess(preferences) && preferences.value.browserAutomaticControl === true;
   if (access && !props.paused) {
-    return <AuthorizedPreviewStream {...props} access={access} onUnauthorized={refresh} />;
+    return (
+      <AuthorizedPreviewStream
+        {...props}
+        automaticControl={automaticControl}
+        access={access}
+        onUnauthorized={refresh}
+      />
+    );
   }
   return (
     <View
@@ -183,6 +197,7 @@ function AuthorizedPreviewStream({
     threadId: props.threadId,
     tabId: props.tabId,
     interactive: props.interactive,
+    automaticControl: props.automaticControl,
     background: props.background,
   } satisfies PreviewStreamConfiguration);
   return (
@@ -191,6 +206,7 @@ function AuthorizedPreviewStream({
       {...props}
       ref={ref}
       configuration={configuration}
+      automaticControl={props.automaticControl}
       onUnauthorized={() => {
         // The client has stopped. Restart it with a fresh ticket, backing off between refusals.
         const refusals = ++unauthorized.current;
@@ -227,6 +243,7 @@ function AuthorizedPreviewStream({
 function PreviewStreamDocumentView({
   ref,
   configuration,
+  automaticControl,
   background,
   compact,
   onUnauthorized,
@@ -240,6 +257,7 @@ function PreviewStreamDocumentView({
   onRecoverProcess,
 }: Omit<NativeStreamBridge, "onUnauthorized"> & {
   readonly configuration: string;
+  readonly automaticControl?: boolean;
   readonly background: string;
   /** False when the view should stop retrying and fail. */
   readonly onUnauthorized: () => boolean;
@@ -326,6 +344,11 @@ function PreviewStreamDocumentView({
         <View className="flex-row items-center justify-between gap-2 border-b border-secondary-border px-3 py-2">
           <AppText className="text-xs text-foreground-muted">
             {previewStreamControlLabel(control)}
+            {automaticControl && control?.canOperate
+              ? control.automaticControlSupported
+                ? " · Automatic control"
+                : " · Update environment for automatic control"
+              : ""}
           </AppText>
           {control?.canOperate ? (
             <Pressable
@@ -449,7 +472,7 @@ function PreviewStreamDocumentView({
       {!compact && control?.dialog ? (
         <View className="absolute inset-x-3 top-16 gap-3 rounded-xl border border-secondary-border bg-secondary p-4">
           <AppText className="text-sm text-secondary-foreground">{control.dialog.message}</AppText>
-          {control.controller === "you" ? (
+          {previewStreamCanInteract(control, automaticControl) ? (
             <>
               {control.dialog.type === "prompt" ? (
                 <TextInput

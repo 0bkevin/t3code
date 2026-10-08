@@ -185,9 +185,19 @@ is the same browser [HTML renders](html-renders.md) use, so a host downloads it
 only once. Some Linux hosts need [setup](#browser-host-setup) before it can
 start.
 
-Agent tabs have separate storage and share a Chromium process. Take control before
-typing into an agent's tab, then release control when you want the agent to
-continue. Read-only connections can watch without changing the page.
+Agent tabs have separate storage and share a Chromium process. By default, take
+control before typing into an agent's tab, then release control when you want the
+agent to continue. If you prefer, enable **Automatic browser control** in
+**Settings → Integrations → Browser** on web or desktop, or in **Settings →
+Thread behavior → Browser** on mobile. With it enabled, an intentional click,
+scroll, typing, paste, or touch starts control without the button; control
+returns to the agent after five seconds without input. A different human's
+control is never taken over, and read-only connections cannot operate the page.
+The preference is saved on each device and also applies to remote connections.
+Older environments keep the explicit flow until you update them.
+Disconnecting returns control immediately. Use **Take control** before interacting
+when you want to keep control until you explicitly release it, such as during a
+long file selection.
 
 While you have control, the tab works with your device: text the page copies or
 cuts goes to your clipboard, a file picker on the page opens your device's

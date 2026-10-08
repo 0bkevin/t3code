@@ -2,6 +2,7 @@ import {
   createPreviewFramePainter,
   createPreviewStreamClient,
   previewStreamModifiers,
+  previewStreamCanInteract,
   type PreviewStreamClient,
   type PreviewStreamControl,
   type PreviewStreamInput,
@@ -75,7 +76,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     // oxlint-disable-next-line unicorn/require-post-message-target-origin -- The native WebView bridge takes one string.
     window.ReactNativeWebView.postMessage(JSON.stringify(message));
   };
-  const { interactive } = configuration;
+  const { interactive, automaticControl } = configuration;
   document.body.style.background = configuration.background;
   const container = document.createElement("div");
   const canvas = document.createElement("canvas");
@@ -178,6 +179,7 @@ export function start(configuration: PreviewStreamConfiguration) {
         maxWidth: cap.width,
         maxHeight: cap.height,
         interactive,
+        automaticControl,
       },
       {
         onFrame: (jpeg) => painter.paint(jpeg),
@@ -191,7 +193,7 @@ export function start(configuration: PreviewStreamConfiguration) {
           post({ type: "viewport", width: page.width, height: page.height });
         },
         onProbe: (result) => {
-          if (control?.controller !== "you") return;
+          if (!previewStreamCanInteract(control, automaticControl)) return;
           const current = probe;
           if (!current || current.x !== result.x || current.y !== result.y) return;
           probeCache = {
@@ -219,8 +221,8 @@ export function start(configuration: PreviewStreamConfiguration) {
           // Taking over hides the agent cursor; the person's own touch is the pointer now.
           if (nextControl.controller === "you") agentCursor.style.opacity = "0";
           if (nextControl.controller !== "you") clearInput();
-          else {
-            input.disabled = !interactive;
+          input.disabled = !interactive || !previewStreamCanInteract(nextControl, automaticControl);
+          if (nextControl.controller === "you") {
             if (interactive && size && previous?.controller !== "you")
               next.send({ type: "resize", ...size });
           }
@@ -304,7 +306,12 @@ export function start(configuration: PreviewStreamConfiguration) {
   };
 
   const pagePoint = (clientX: number, clientY: number, clamp: boolean) => {
-    if (!viewport || canvas.width === 0 || canvas.height === 0 || control?.controller !== "you")
+    if (
+      !viewport ||
+      canvas.width === 0 ||
+      canvas.height === 0 ||
+      !previewStreamCanInteract(control, automaticControl)
+    )
       return null;
     const rect = canvas.getBoundingClientRect();
     // `object-fit: contain` letterboxes the frame inside the canvas box.
@@ -380,7 +387,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     modifiers: previewStreamModifiers(event),
   });
   const onPointerDown = (event: PointerEvent) => {
-    if (control?.controller !== "you") return;
+    if (!previewStreamCanInteract(control, automaticControl)) return;
     if (!event.isPrimary) return;
     event.preventDefault();
     if (event.pointerType !== "touch") {
@@ -419,7 +426,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     send({ type: "probe", x: point.x, y: point.y });
   };
   const onPointerMove = (event: PointerEvent) => {
-    if (control?.controller !== "you") return;
+    if (!previewStreamCanInteract(control, automaticControl)) return;
     if (event.pointerType !== "touch") {
       const point = pagePoint(event.clientX, event.clientY, mouseButtons !== 0);
       if (!point) return;
@@ -528,7 +535,7 @@ export function start(configuration: PreviewStreamConfiguration) {
   const preventDefault = (event: Event) => event.preventDefault();
 
   const onKey = (action: "down" | "up", event: KeyboardEvent) => {
-    if (control?.controller !== "you") return;
+    if (!previewStreamCanInteract(control, automaticControl)) return;
     // IME and soft keyboards deliver text through composition and input events.
     if (
       event.isComposing ||

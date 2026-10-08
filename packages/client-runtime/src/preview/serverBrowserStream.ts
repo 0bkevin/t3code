@@ -2,6 +2,9 @@
 import { type DeviceHubAccess, withDeviceHubQuery } from "../device/hubAccess.ts";
 import {
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
+  isPreviewControlGesture,
+  type PreviewAutomaticControlInput,
+  type PreviewAutomaticControlSupport,
   type PreviewStreamHostSetup,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
@@ -15,7 +18,7 @@ export interface PreviewStreamViewport {
 
 export type PreviewStreamMouseButton = "none" | "left" | "middle" | "right";
 
-export interface PreviewStreamControl {
+export interface PreviewStreamControl extends PreviewAutomaticControlSupport {
   readonly canOperate: boolean;
   readonly controller: "agent" | "you" | "another-viewer" | "unclaimed";
   readonly generation: number;
@@ -25,6 +28,17 @@ export interface PreviewStreamControl {
     readonly defaultValue: string;
   };
 }
+
+/** Input can start an automatic claim only while no other human owns the tab. */
+export const previewStreamCanInteract = (
+  control: PreviewStreamControl | null,
+  automaticControl = false,
+): boolean =>
+  !!control?.canOperate &&
+  (control.controller === "you" ||
+    (automaticControl &&
+      control.automaticControlSupported === true &&
+      (control.controller === "agent" || control.controller === "unclaimed")));
 
 /** Status line shown above a viewer; `null` control means the socket is not connected. */
 export const previewStreamControlLabel = (control: PreviewStreamControl | null): string =>
@@ -188,6 +202,7 @@ export interface PreviewStreamTarget {
   readonly maxHeight: number;
   /** Passive viewers reduce their own access, including automatic control grants. */
   readonly interactive?: boolean;
+  readonly automaticControl?: boolean;
 }
 
 export interface PreviewStreamEvents {
@@ -275,6 +290,7 @@ export function createPreviewStreamClient(
         height,
         editable,
         canOperate,
+        automaticControlSupported,
         controller,
         generation,
         dialog,
@@ -347,6 +363,7 @@ export function createPreviewStreamClient(
       ) {
         const nextControl: PreviewStreamControl = {
           canOperate,
+          ...(typeof automaticControlSupported === "boolean" ? { automaticControlSupported } : {}),
           controller,
           generation,
           dialog,
@@ -387,9 +404,21 @@ export function createPreviewStreamClient(
   return {
     send: (input) => {
       if (socket?.readyState !== WebSocket.OPEN) return false;
-      if (!control?.canOperate) return false;
-      if (input.type !== "takeControl" && control.controller !== "you") return false;
-      socket.send(JSON.stringify(input));
+      if (target.interactive === false || !control?.canOperate) return false;
+      const automaticControl = target.automaticControl === true;
+      if (input.type !== "takeControl" && control.controller !== "you") {
+        if (!previewStreamCanInteract(control, automaticControl)) return false;
+        // End events may follow a claim before its control notification arrives.
+        const continuation =
+          (input.type === "mouse" && input.action === "up") ||
+          (input.type === "key" && input.action === "up");
+        if (!isPreviewControlGesture(input) && !continuation) return false;
+      }
+      const message: PreviewStreamInput & PreviewAutomaticControlInput = {
+        ...input,
+        ...(automaticControl ? { automaticControl: true } : {}),
+      };
+      socket.send(JSON.stringify(message));
       return true;
     },
     stop: () => {

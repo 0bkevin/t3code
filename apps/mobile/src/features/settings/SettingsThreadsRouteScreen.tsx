@@ -47,6 +47,7 @@ export function SettingsThreadsRouteScreen() {
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
         >
           <AutoSettleSettingsRows />
+          <BrowserControlSettingsSection />
           <BetaSettingsSection />
           <LegacySettingsSection />
         </ScrollView>
@@ -315,5 +316,24 @@ function LegacySettingsSection() {
         control; otherwise every task runs in Build mode.
       </Text>
     </View>
+  );
+}
+
+function BrowserControlSettingsSection() {
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  return (
+    <SettingsSection title="Browser">
+      <SettingsSwitchRow
+        icon="globe"
+        label="Automatic browser control"
+        subtitle="Interact without Take control. Return control after 5 seconds without input. Saved on this device."
+        disabled={!AsyncResult.isSuccess(preferences)}
+        value={
+          AsyncResult.isSuccess(preferences) && preferences.value.browserAutomaticControl === true
+        }
+        onValueChange={(value) => savePreferences({ browserAutomaticControl: value })}
+      />
+    </SettingsSection>
   );
 }

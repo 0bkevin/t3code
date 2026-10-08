@@ -1,3 +1,7 @@
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
+import { previewStreamCanInteract } from "@t3tools/client-runtime/preview/server-browser-stream";
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import {
@@ -84,6 +88,9 @@ function BrowserPreviewScreen({
   // Address bar commands only reach a page that is streaming.
   const [streaming, setStreaming] = useState(false);
   const [canControl, setCanControl] = useState(false);
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const automaticControl =
+    AsyncResult.isSuccess(preferences) && preferences.value.browserAutomaticControl === true;
   const streamRef = useRef<PreviewStreamRef>(null);
   const { tabs, loaded } = useThreadServerBrowserTabs({ environmentId, threadId, enabled: true });
   const tab = tabs.find((entry) => entry.tabId === selectedTabId) ?? latestBrowserTab(tabs);
@@ -187,7 +194,9 @@ function BrowserPreviewScreen({
               background={themeVariables["--color-sheet-solid"]}
               onPictureInPicture={onPictureInPicture}
               onStreamingChange={setStreaming}
-              onControl={(control) => setCanControl(control?.controller === "you")}
+              onControl={(control) =>
+                setCanControl(previewStreamCanInteract(control, automaticControl))
+              }
             />
           ) : (
             <View className="flex-1" />

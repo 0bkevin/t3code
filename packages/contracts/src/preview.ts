@@ -440,3 +440,42 @@ export const PreviewError = Schema.Union([
   PreviewControlRequiredError,
 ]);
 export type PreviewError = typeof PreviewError.Type;
+
+/** Older stream viewers and environments can keep using explicit takeover. */
+export const PreviewAutomaticControlSupport = Schema.Struct({
+  automaticControlSupported: Schema.optionalKey(Schema.Boolean),
+});
+export type PreviewAutomaticControlSupport = typeof PreviewAutomaticControlSupport.Type;
+
+/** Wire opt-in accompanying viewer input, never a grant of permission. */
+export const PreviewAutomaticControlInput = Schema.Struct({
+  automaticControl: Schema.optionalKey(Schema.Boolean),
+});
+export type PreviewAutomaticControlInput = typeof PreviewAutomaticControlInput.Type;
+
+/** Hover and background resizes must not interrupt an agent. */
+export function isPreviewControlGesture(input: {
+  readonly type: unknown;
+  readonly action?: unknown;
+  readonly buttons?: unknown;
+}): boolean {
+  switch (input.type) {
+    case "mouse":
+      return (
+        input.action === "down" ||
+        (input.action === "move" && typeof input.buttons === "number" && input.buttons > 0)
+      );
+    case "key":
+      return input.action === "down";
+    case "wheel":
+    case "text":
+    case "probe":
+    case "dialog":
+    case "navigate":
+    case "history":
+    case "reload":
+      return true;
+    default:
+      return false;
+  }
+}
