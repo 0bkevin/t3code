@@ -220,7 +220,7 @@ export function start(configuration: PreviewStreamConfiguration) {
           post({ type: "control", ...nextControl });
           // Taking over hides the agent cursor; the person's own touch is the pointer now.
           if (nextControl.controller === "you") agentCursor.style.opacity = "0";
-          if (nextControl.controller !== "you") clearInput();
+          if (!previewStreamCanInteract(nextControl, automaticControl)) clearInput();
           input.disabled = !interactive || !previewStreamCanInteract(nextControl, automaticControl);
           if (nextControl.controller === "you") {
             if (interactive && size && previous?.controller !== "you")

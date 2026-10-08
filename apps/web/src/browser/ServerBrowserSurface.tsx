@@ -422,9 +422,9 @@ export function ServerBrowserSurface(props: {
             next.dialog?.defaultValue !== previous?.dialog?.defaultValue
           )
             setPromptText(next.dialog?.defaultValue ?? "");
-          if (next.controller !== "you") {
+          if (!previewStreamCanInteract(next, automaticControl)) {
             clearInput();
-          } else if (previous?.controller !== "you") {
+          } else if (next.controller === "you" && previous?.controller !== "you") {
             const size = sizeRef.current;
             if (followSize && size) client.send({ type: "resize", ...size });
           }

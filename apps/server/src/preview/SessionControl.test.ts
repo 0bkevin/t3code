@@ -148,6 +148,7 @@ describe("SessionControl", () => {
     const control = new SessionControl("agent");
     await control.automaticHuman("viewer", async () => "gesture", noop, noop);
     await control.take("viewer");
+    await control.automaticHuman("viewer", async () => "gesture", noop, noop);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(control.controller).toBe("viewer");
     await control.close();
