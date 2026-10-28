@@ -694,19 +694,52 @@ export function StorageCleanupSections() {
   const { scope, connectedEnvironments, targets } = useSettingsScope();
   const scopedSettings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const [pendingRules, setPendingRules] = useState(
+    () => new Map<string, { count: number; mixed: boolean }>(),
+  );
   if (scope.kind === "project" || scope.kind === "checkout") return null;
   const settings = scopedSettings.storageCleanup;
+  const targetSetKey = JSON.stringify(targets.map((target) => target.environmentId).sort());
+  const currentRuleMixed = (key: "browserArtifactsAfterDays" | "logsAfterDays") =>
+    targets.length >= 2 &&
+    targets.some((target) => target.settings.storageCleanup[key] !== settings[key]);
+  const saveRule = (
+    key: "browserArtifactsAfterDays" | "logsAfterDays",
+    patch: Partial<StorageCleanupSettings>,
+  ) => {
+    const pendingKey = `${targetSetKey}:${key}`;
+    setPendingRules((current) => {
+      const active = current.get(pendingKey);
+      return new Map(current).set(pendingKey, {
+        count: (active?.count ?? 0) + 1,
+        mixed: active?.mixed ?? currentRuleMixed(key),
+      });
+    });
+    updateSettings(
+      { storageCleanup: patch },
+      {
+        onSettled: () => {
+          setPendingRules((current) => {
+            const pending = current.get(pendingKey);
+            if (!pending) return current;
+            const next = new Map(current);
+            if (pending.count === 1) next.delete(pendingKey);
+            else next.set(pendingKey, { ...pending, count: pending.count - 1 });
+            return next;
+          });
+        },
+      },
+    );
+  };
   const ruleStatus = (key: "browserArtifactsAfterDays" | "logsAfterDays") => {
     if (targets.length < 2) return undefined;
-    const mixed = targets.some((target) => target.settings.storageCleanup[key] !== settings[key]);
+    const mixed = pendingRules.get(`${targetSetKey}:${key}`)?.mixed ?? currentRuleMixed(key);
     return (
       <span className={mixed ? undefined : "invisible"} aria-hidden={!mixed}>
         Mixed across selected machines
       </span>
     );
   };
-  const update = (patch: Partial<StorageCleanupSettings>) =>
-    updateSettings({ storageCleanup: patch });
   const databaseStorageNotice = (
     <DatabaseStorageNotice
       environments={connectedEnvironments.filter(
@@ -739,7 +772,9 @@ export function StorageCleanupSections() {
             <RetentionControl
               label="Delete old browser artifacts"
               value={settings.browserArtifactsAfterDays}
-              onChange={(browserArtifactsAfterDays) => update({ browserArtifactsAfterDays })}
+              onChange={(browserArtifactsAfterDays) =>
+                saveRule("browserArtifactsAfterDays", { browserArtifactsAfterDays })
+              }
             />
           }
         />
@@ -752,7 +787,7 @@ export function StorageCleanupSections() {
             <RetentionControl
               label="Delete old rotated logs"
               value={settings.logsAfterDays}
-              onChange={(logsAfterDays) => update({ logsAfterDays })}
+              onChange={(logsAfterDays) => saveRule("logsAfterDays", { logsAfterDays })}
             />
           }
         />

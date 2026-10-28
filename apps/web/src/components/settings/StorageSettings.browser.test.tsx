@@ -6,7 +6,12 @@ import { expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
+  targets: [] as {
+    environmentId: string;
+    settings: typeof DEFAULT_SERVER_SETTINGS;
+  }[],
   run: vi.fn(),
+  update: vi.fn(),
   report: null as StorageCleanupReport | null,
 }));
 
@@ -34,11 +39,11 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
 vi.mock(import("./SettingsScopeContext"), async (original) => ({
   ...(await original()),
   useSettingsScope: (() => {
-    const environment = {
-      environmentId: "env",
-      label: "Build workstation",
+    const environments = state.targets.map(({ environmentId, settings }) => ({
+      environmentId,
+      label: environmentId,
       serverConfig: {
-        settings: state.settings,
+        settings,
         environment: {
           capabilities: {
             storageCleanup: true,
@@ -47,13 +52,16 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
           },
         },
       },
-    };
+    }));
     return {
-      scope: { kind: "environment" },
-      environments: [environment],
-      connectedEnvironments: [environment],
-      targets: [],
-      target: null,
+      scope: { kind: "all" },
+      environments,
+      connectedEnvironments: environments,
+      targets: state.targets.map(({ environmentId, settings }) => ({
+        environmentId,
+        settings,
+      })),
+      target: state.targets[0] ? { settings: state.targets[0].settings } : null,
     };
   }) as never,
 }));
@@ -61,16 +69,17 @@ vi.mock(import("./useScopedSettings"), async (original) => ({
   ...(await original()),
   useScopedSettings: (() => state.settings) as never,
   useScopedSettingsMixed: () => false,
-  useUpdateScopedSettings: () => vi.fn(),
+  useUpdateScopedSettings: () => state.update,
   useClearScopedSettings: () => vi.fn(),
 }));
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
   SettingsPageContainer: (({ children }: { children: ReactNode }) => children) as never,
-  SettingsRow: ({ title, description, control, children }) => (
+  SettingsRow: ({ title, description, status, control, children }) => (
     <div>
       <h3>{title}</h3>
       {description}
+      {status}
       {control}
       {children}
     </div>
@@ -101,6 +110,17 @@ function setup() {
   };
   state.report = null;
   state.run.mockReset();
+  state.targets = [
+    { environmentId: "machine-a", settings: state.settings },
+    {
+      environmentId: "machine-b",
+      settings: {
+        ...state.settings,
+        storageCleanup: { ...state.settings.storageCleanup },
+      },
+    },
+  ];
+  state.update.mockReset();
 }
 
 const panel = () => (
@@ -121,4 +141,152 @@ it("keeps cleanup disabled when settled retention and all other rules are off", 
   expect(button.disabled).toBe(true);
   await act(async () => button.click());
   expect(state.run).not.toHaveBeenCalled();
+});
+
+function setArtifactRetention(machineIndex: number, value: number | null) {
+  const target = state.targets[machineIndex]!;
+  target.settings = {
+    ...target.settings,
+    storageCleanup: { ...target.settings.storageCleanup, browserArtifactsAfterDays: value },
+  };
+  if (machineIndex === 0) state.settings = target.settings;
+}
+
+function retentionSwitch(container: HTMLElement) {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>('[role="switch"]')).find(
+    (control) => control.getAttribute("aria-label") === "Delete old browser artifacts",
+  )!;
+}
+
+function artifactStatus(container: HTMLElement) {
+  const title = Array.from(container.querySelectorAll("h3")).find(
+    (heading) => heading.textContent === "Delete old browser artifacts",
+  );
+  return title?.parentElement?.querySelector("span[aria-hidden]") as HTMLSpanElement;
+}
+
+function logsStatus(container: HTMLElement) {
+  const title = Array.from(container.querySelectorAll("h3")).find(
+    (heading) => heading.textContent === "Delete old rotated logs",
+  );
+  return title?.parentElement?.querySelector("span[aria-hidden]") as HTMLSpanElement;
+}
+
+it("keeps a uniform retention rule free of a transient mixed warning while machines save", async () => {
+  setup();
+  setArtifactRetention(0, 9);
+  setArtifactRetention(1, 9);
+  let onSettled: (() => void) | undefined;
+  state.update.mockImplementation((_patch, options) => {
+    onSettled = options?.onSettled;
+  });
+
+  await using screen = await render(panel());
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+
+  await act(async () =>
+    screen.container
+      .querySelector<HTMLButtonElement>('[aria-label="Increase Delete old browser artifacts"]')!
+      .click(),
+  );
+  setArtifactRetention(0, 10);
+  const machineB = state.targets[1]!;
+  machineB.settings = {
+    ...machineB.settings,
+    storageCleanup: { ...machineB.settings.storageCleanup, logsAfterDays: 30 },
+  };
+  await screen.rerender(panel());
+
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+  expect(logsStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+
+  setArtifactRetention(1, 10);
+  await act(async () => onSettled?.());
+  await screen.rerender(panel());
+
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+  expect(logsStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+});
+
+it.each([14, 30])(
+  "shows genuine differences after a partial save with a second value of %i",
+  async (secondValue) => {
+    setup();
+    setArtifactRetention(0, 14);
+    setArtifactRetention(1, secondValue);
+    let onSettled: (() => void) | undefined;
+    state.update.mockImplementation((_patch, options) => {
+      onSettled = options?.onSettled;
+    });
+
+    await using screen = await render(panel());
+    expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe(
+      String(secondValue === 14),
+    );
+
+    await act(async () => retentionSwitch(screen.container).click());
+    setArtifactRetention(0, null);
+    await screen.rerender(panel());
+    expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe(
+      String(secondValue === 14),
+    );
+
+    await act(async () => onSettled?.());
+    await screen.rerender(panel());
+    expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+  },
+);
+
+it("keeps the starting status until overlapping saves for the selected machines settle", async () => {
+  setup();
+  const onSettled: (() => void)[] = [];
+  state.update.mockImplementation((_patch, options) => {
+    if (options?.onSettled) onSettled.push(options.onSettled);
+  });
+
+  await using screen = await render(panel());
+  await act(async () => retentionSwitch(screen.container).click());
+  setArtifactRetention(0, 8);
+  await screen.rerender(panel());
+  await act(async () => retentionSwitch(screen.container).click());
+  setArtifactRetention(0, null);
+  setArtifactRetention(1, 8);
+  await screen.rerender(panel());
+
+  expect(onSettled).toHaveLength(2);
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+  await act(async () => onSettled[0]!());
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+
+  setArtifactRetention(1, null);
+  await act(async () => onSettled[1]!());
+  await screen.rerender(panel());
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+});
+
+it("derives mixed status from a newly selected machine set during an older save", async () => {
+  setup();
+  let onSettled: (() => void) | undefined;
+  state.update.mockImplementation((_patch, options) => {
+    onSettled = options?.onSettled;
+  });
+
+  await using screen = await render(panel());
+  await act(async () => retentionSwitch(screen.container).click());
+  setArtifactRetention(0, 8);
+  state.targets[1] = {
+    ...state.targets[1]!,
+    environmentId: "machine-c",
+    settings: {
+      ...state.targets[1]!.settings,
+      storageCleanup: { ...state.targets[1]!.settings.storageCleanup },
+    },
+  };
+  setArtifactRetention(1, 30);
+  await screen.rerender(panel());
+
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+  await act(async () => onSettled?.());
+  await screen.rerender(panel());
+  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
 });
