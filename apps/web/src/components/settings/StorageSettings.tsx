@@ -16,6 +16,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { AnimatedHeight } from "../AnimatedHeight";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 
@@ -694,52 +695,61 @@ export function StorageCleanupSections() {
   const { scope, connectedEnvironments, targets } = useSettingsScope();
   const scopedSettings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  type RetentionRule = "browserArtifactsAfterDays" | "logsAfterDays";
   const [pendingRules, setPendingRules] = useState(
-    () => new Map<string, { count: number; mixed: boolean }>(),
+    () =>
+      new Map<
+        RetentionRule,
+        {
+          targetSetKey: string;
+          value: number | null;
+          mixed: boolean;
+          saving: boolean;
+        }
+      >(),
   );
-  if (scope.kind === "project" || scope.kind === "checkout") return null;
   const settings = scopedSettings.storageCleanup;
-  const targetSetKey = JSON.stringify(targets.map((target) => target.environmentId).sort());
-  const currentRuleMixed = (key: "browserArtifactsAfterDays" | "logsAfterDays") =>
-    targets.length >= 2 &&
+  const targetSetKey = `${scope.kind}:${environmentIdsKey(targets.map((target) => target.environmentId).sort())}`;
+  const currentRuleMixed = (key: RetentionRule) =>
     targets.some((target) => target.settings.storageCleanup[key] !== settings[key]);
-  const saveRule = (
-    key: "browserArtifactsAfterDays" | "logsAfterDays",
-    patch: Partial<StorageCleanupSettings>,
-  ) => {
-    const pendingKey = `${targetSetKey}:${key}`;
-    setPendingRules((current) => {
-      const active = current.get(pendingKey);
-      return new Map(current).set(pendingKey, {
-        count: (active?.count ?? 0) + 1,
-        mixed: active?.mixed ?? currentRuleMixed(key),
+  for (const [key, pending] of pendingRules) {
+    if (
+      pending.targetSetKey !== targetSetKey ||
+      (!pending.saving &&
+        targets.every((target) => target.settings.storageCleanup[key] === pending.value))
+    ) {
+      const next = new Map(pendingRules);
+      next.delete(key);
+      setPendingRules(next);
+      break;
+    }
+  }
+  if (scope.kind === "project" || scope.kind === "checkout") return null;
+  const saveRule = (key: RetentionRule, value: number | null) => {
+    const pending = {
+      targetSetKey,
+      value,
+      mixed: pendingRules.get(key)?.mixed ?? currentRuleMixed(key),
+      saving: true,
+    };
+    const updatePending = (saved: boolean) =>
+      setPendingRules((current) => {
+        if (current.get(key) !== pending) return current;
+        const next = new Map(current);
+        if (saved) next.set(key, { ...pending, saving: false });
+        else next.delete(key);
+        return next;
       });
-    });
-    updateSettings(
-      { storageCleanup: patch },
-      {
-        onSettled: () => {
-          setPendingRules((current) => {
-            const pending = current.get(pendingKey);
-            if (!pending) return current;
-            const next = new Map(current);
-            if (pending.count === 1) next.delete(pendingKey);
-            else next.set(pendingKey, { ...pending, count: pending.count - 1 });
-            return next;
-          });
-        },
-      },
-    );
+    setPendingRules((current) => new Map(current).set(key, pending));
+    void updateSettings(
+      { storageCleanup: { [key]: value } },
+      { onFailed: () => updatePending(false) },
+    ).then(() => updatePending(true));
   };
-  const ruleStatus = (key: "browserArtifactsAfterDays" | "logsAfterDays") => {
-    if (targets.length < 2) return undefined;
-    const mixed = pendingRules.get(`${targetSetKey}:${key}`)?.mixed ?? currentRuleMixed(key);
-    return (
-      <span className={mixed ? undefined : "invisible"} aria-hidden={!mixed}>
-        Mixed across selected machines
-      </span>
-    );
-  };
+  const ruleStatus = (key: RetentionRule) =>
+    (pendingRules.get(key)?.mixed ?? currentRuleMixed(key))
+      ? "Mixed across selected machines"
+      : undefined;
   const databaseStorageNotice = (
     <DatabaseStorageNotice
       environments={connectedEnvironments.filter(
@@ -763,34 +773,36 @@ export function StorageCleanupSections() {
     <>
       {databaseStorageNotice}
       <SettingsSection id="storage-artifacts" title="Artifacts and logs">
-        <SettingsRow
-          title="Delete old browser artifacts"
-          status={ruleStatus("browserArtifactsAfterDays")}
-          description="Delete saved browser captures after this many days. Older capture links will no longer open."
-          serverScoped
-          control={
-            <RetentionControl
-              label="Delete old browser artifacts"
-              value={settings.browserArtifactsAfterDays}
-              onChange={(browserArtifactsAfterDays) =>
-                saveRule("browserArtifactsAfterDays", { browserArtifactsAfterDays })
-              }
-            />
-          }
-        />
-        <SettingsRow
-          title="Delete old rotated logs"
-          status={ruleStatus("logsAfterDays")}
-          description="Delete inactive rotated log files after this many days. Current logs are kept."
-          serverScoped
-          control={
-            <RetentionControl
-              label="Delete old rotated logs"
-              value={settings.logsAfterDays}
-              onChange={(logsAfterDays) => saveRule("logsAfterDays", { logsAfterDays })}
-            />
-          }
-        />
+        <AnimatedHeight>
+          <SettingsRow
+            title="Delete old browser artifacts"
+            status={ruleStatus("browserArtifactsAfterDays")}
+            description="Delete saved browser captures after this many days. Older capture links will no longer open."
+            serverScoped
+            control={
+              <RetentionControl
+                label="Delete old browser artifacts"
+                value={settings.browserArtifactsAfterDays}
+                onChange={(value) => saveRule("browserArtifactsAfterDays", value)}
+              />
+            }
+          />
+        </AnimatedHeight>
+        <AnimatedHeight>
+          <SettingsRow
+            title="Delete old rotated logs"
+            status={ruleStatus("logsAfterDays")}
+            description="Delete inactive rotated log files after this many days. Current logs are kept."
+            serverScoped
+            control={
+              <RetentionControl
+                label="Delete old rotated logs"
+                value={settings.logsAfterDays}
+                onChange={(value) => saveRule("logsAfterDays", value)}
+              />
+            }
+          />
+        </AnimatedHeight>
       </SettingsSection>
       <CleanupSection />
     </>

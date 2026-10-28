@@ -120,7 +120,7 @@ function setup() {
       },
     },
   ];
-  state.update.mockReset();
+  state.update.mockReset().mockResolvedValue(undefined);
 }
 
 const panel = () => (
@@ -158,135 +158,139 @@ function retentionSwitch(container: HTMLElement) {
   )!;
 }
 
-function artifactStatus(container: HTMLElement) {
-  const title = Array.from(container.querySelectorAll("h3")).find(
-    (heading) => heading.textContent === "Delete old browser artifacts",
-  );
-  return title?.parentElement?.querySelector("span[aria-hidden]") as HTMLSpanElement;
+function ruleIsMixed(container: HTMLElement, title: string) {
+  return Array.from(container.querySelectorAll("h3"))
+    .find((heading) => heading.textContent === title)
+    ?.parentElement?.textContent?.includes("Mixed across selected machines");
 }
 
-function logsStatus(container: HTMLElement) {
-  const title = Array.from(container.querySelectorAll("h3")).find(
-    (heading) => heading.textContent === "Delete old rotated logs",
-  );
-  return title?.parentElement?.querySelector("span[aria-hidden]") as HTMLSpanElement;
+const artifactIsMixed = (container: HTMLElement) =>
+  ruleIsMixed(container, "Delete old browser artifacts");
+const logsAreMixed = (container: HTMLElement) => ruleIsMixed(container, "Delete old rotated logs");
+
+function deferredSave() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
-it("keeps a uniform retention rule free of a transient mixed warning while machines save", async () => {
+function stepArtifacts(container: HTMLElement, direction: "Increase" | "Decrease") {
+  container
+    .querySelector<HTMLButtonElement>(`[aria-label="${direction} Delete old browser artifacts"]`)!
+    .click();
+}
+
+it("does not add a mixed warning before every machine projects a completed save", async () => {
   setup();
   setArtifactRetention(0, 9);
   setArtifactRetention(1, 9);
-  let onSettled: (() => void) | undefined;
-  state.update.mockImplementation((_patch, options) => {
-    onSettled = options?.onSettled;
-  });
-
+  const save = deferredSave();
+  state.update.mockReturnValue(save.promise);
   await using screen = await render(panel());
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+  expect(artifactIsMixed(screen.container)).toBe(false);
 
-  await act(async () =>
-    screen.container
-      .querySelector<HTMLButtonElement>('[aria-label="Increase Delete old browser artifacts"]')!
-      .click(),
-  );
+  await act(async () => stepArtifacts(screen.container, "Increase"));
   setArtifactRetention(0, 10);
   const machineB = state.targets[1]!;
   machineB.settings = {
     ...machineB.settings,
     storageCleanup: { ...machineB.settings.storageCleanup, logsAfterDays: 30 },
   };
+  await act(async () => save.resolve());
   await screen.rerender(panel());
-
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
-  expect(logsStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+  expect(artifactIsMixed(screen.container)).toBe(false);
+  expect(logsAreMixed(screen.container)).toBe(true);
 
   setArtifactRetention(1, 10);
-  await act(async () => onSettled?.());
   await screen.rerender(panel());
+  expect(artifactIsMixed(screen.container)).toBe(false);
 
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
-  expect(logsStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+  setArtifactRetention(1, 11);
+  await screen.rerender(panel());
+  expect(artifactIsMixed(screen.container)).toBe(true);
 });
 
 it.each([14, 30])(
-  "shows genuine differences after a partial save with a second value of %i",
+  "shows genuine differences after a partial save fails with a second value of %i",
   async (secondValue) => {
     setup();
     setArtifactRetention(0, 14);
     setArtifactRetention(1, secondValue);
-    let onSettled: (() => void) | undefined;
+    const save = deferredSave();
+    let onFailed!: () => void;
     state.update.mockImplementation((_patch, options) => {
-      onSettled = options?.onSettled;
+      onFailed = options.onFailed;
+      return save.promise;
     });
-
     await using screen = await render(panel());
-    expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe(
-      String(secondValue === 14),
-    );
+    expect(artifactIsMixed(screen.container)).toBe(secondValue !== 14);
 
     await act(async () => retentionSwitch(screen.container).click());
     setArtifactRetention(0, null);
     await screen.rerender(panel());
-    expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe(
-      String(secondValue === 14),
-    );
+    expect(artifactIsMixed(screen.container)).toBe(secondValue !== 14);
 
-    await act(async () => onSettled?.());
-    await screen.rerender(panel());
-    expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+    await act(async () => {
+      onFailed();
+      save.resolve();
+    });
+    expect(artifactIsMixed(screen.container)).toBe(true);
   },
 );
 
-it("keeps the starting status until overlapping saves for the selected machines settle", async () => {
+it("keeps a reversed edit pending and ignores a superseded save failure", async () => {
   setup();
-  const onSettled: (() => void)[] = [];
-  state.update.mockImplementation((_patch, options) => {
-    if (options?.onSettled) onSettled.push(options.onSettled);
-  });
-
+  setArtifactRetention(0, 9);
+  setArtifactRetention(1, 9);
+  const first = deferredSave();
+  const second = deferredSave();
+  let failFirst!: () => void;
+  state.update
+    .mockImplementationOnce((_patch, options) => {
+      failFirst = options.onFailed;
+      return first.promise;
+    })
+    .mockReturnValueOnce(second.promise);
   await using screen = await render(panel());
-  await act(async () => retentionSwitch(screen.container).click());
-  setArtifactRetention(0, 8);
-  await screen.rerender(panel());
-  await act(async () => retentionSwitch(screen.container).click());
-  setArtifactRetention(0, null);
-  setArtifactRetention(1, 8);
-  await screen.rerender(panel());
+  await act(async () => stepArtifacts(screen.container, "Increase"));
+  await act(async () => stepArtifacts(screen.container, "Decrease"));
 
-  expect(onSettled).toHaveLength(2);
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
-  await act(async () => onSettled[0]!());
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
-
-  setArtifactRetention(1, null);
-  await act(async () => onSettled[1]!());
+  setArtifactRetention(0, 10);
   await screen.rerender(panel());
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("true");
+  expect(artifactIsMixed(screen.container)).toBe(false);
+  await act(async () => {
+    failFirst();
+    first.resolve();
+  });
+  expect(artifactIsMixed(screen.container)).toBe(false);
+
+  setArtifactRetention(0, 9);
+  setArtifactRetention(1, 10);
+  await act(async () => second.resolve());
+  await screen.rerender(panel());
+  expect(artifactIsMixed(screen.container)).toBe(false);
+  setArtifactRetention(1, 9);
+  await screen.rerender(panel());
+  expect(artifactIsMixed(screen.container)).toBe(false);
+
+  setArtifactRetention(1, 12);
+  await screen.rerender(panel());
+  expect(artifactIsMixed(screen.container)).toBe(true);
 });
 
-it("derives mixed status from a newly selected machine set during an older save", async () => {
+it("uses the newly selected machines rather than an older pending edit", async () => {
   setup();
-  let onSettled: (() => void) | undefined;
-  state.update.mockImplementation((_patch, options) => {
-    onSettled = options?.onSettled;
-  });
-
+  const save = deferredSave();
+  state.update.mockReturnValue(save.promise);
   await using screen = await render(panel());
   await act(async () => retentionSwitch(screen.container).click());
   setArtifactRetention(0, 8);
-  state.targets[1] = {
-    ...state.targets[1]!,
-    environmentId: "machine-c",
-    settings: {
-      ...state.targets[1]!.settings,
-      storageCleanup: { ...state.targets[1]!.settings.storageCleanup },
-    },
-  };
+  state.targets[1] = { ...state.targets[1]!, environmentId: "machine-c" };
   setArtifactRetention(1, 30);
   await screen.rerender(panel());
-
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
-  await act(async () => onSettled?.());
-  await screen.rerender(panel());
-  expect(artifactStatus(screen.container).getAttribute("aria-hidden")).toBe("false");
+  expect(artifactIsMixed(screen.container)).toBe(true);
+  await act(async () => save.resolve());
+  expect(artifactIsMixed(screen.container)).toBe(true);
 });

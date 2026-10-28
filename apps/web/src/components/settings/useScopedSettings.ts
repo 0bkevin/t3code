@@ -49,21 +49,17 @@ export function useScopedSettingSource(keys: readonly (keyof ServerSettings)[]) 
 
 function useRunScopedPlan() {
   const persistServer = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  return (
-    plan: ReturnType<typeof planScopedSettingsPatch>,
-    options?: { readonly onFailed?: () => void; readonly onSettled?: () => void },
-  ) => {
+  return (plan: ReturnType<typeof planScopedSettingsPatch>, onFailed?: () => void) => {
     if (plan.unavailableReason) {
       toastManager.add({
         type: "warning",
         title: "Setting not saved",
         description: plan.unavailableReason,
       });
-      options?.onFailed?.();
-      options?.onSettled?.();
-      return;
+      onFailed?.();
+      return Promise.resolve();
     }
-    void persistScopedSettingsPatch(
+    return persistScopedSettingsPatch(
       plan,
       async (request) => {
         const missing = requiredScopesForServerSettingsPatch(request.input.patch).find(
@@ -81,25 +77,23 @@ function useRunScopedPlan() {
         return persistServer(request);
       },
       persistClientSettingsPatch,
-    )
-      .then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
-        if (failedEnvironments.length === 0) return;
-        options?.onFailed?.();
-        toastManager.add({
-          type: "error",
-          title:
-            savedEnvironmentCount > 0 ? "Setting saved on some environments" : "Setting not saved",
-          description: [
-            ...failedEnvironments.map(
-              ({ label, message }) => `Could not save on ${label}: ${message}`,
-            ),
-            ...(savedEnvironmentCount > 0
-              ? [`Saved on ${savedEnvironments.map(({ label }) => label).join(", ")}.`]
-              : []),
-          ].join("\n"),
-        });
-      })
-      .finally(options?.onSettled);
+    ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
+      if (failedEnvironments.length === 0) return;
+      onFailed?.();
+      toastManager.add({
+        type: "error",
+        title:
+          savedEnvironmentCount > 0 ? "Setting saved on some environments" : "Setting not saved",
+        description: [
+          ...failedEnvironments.map(
+            ({ label, message }) => `Could not save on ${label}: ${message}`,
+          ),
+          ...(savedEnvironmentCount > 0
+            ? [`Saved on ${savedEnvironments.map(({ label }) => label).join(", ")}.`]
+            : []),
+        ].join("\n"),
+      });
+    });
   };
 }
 
@@ -107,10 +101,8 @@ export function useUpdateScopedSettings() {
   const { scope, environments } = useSettingsScope();
   const run = useRunScopedPlan();
   /** `onFailed` runs when any target rejects or drops the patch, so a draft can fall back. */
-  return (
-    patch: ScopedSettingsPatch,
-    options?: { readonly onFailed?: () => void; readonly onSettled?: () => void },
-  ) => run(planScopedSettingsPatch(scope, environments, patch), options);
+  return (patch: ScopedSettingsPatch, options?: { readonly onFailed?: () => void }) =>
+    run(planScopedSettingsPatch(scope, environments, patch), options?.onFailed);
 }
 
 export function useClearScopedSettings() {
