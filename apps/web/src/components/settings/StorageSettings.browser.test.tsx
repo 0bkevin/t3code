@@ -6,12 +6,7 @@ import { expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
-  targets: [] as {
-    environmentId: string;
-    settings: typeof DEFAULT_SERVER_SETTINGS;
-  }[],
   run: vi.fn(),
-  update: vi.fn(),
   report: null as StorageCleanupReport | null,
 }));
 
@@ -39,11 +34,11 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
 vi.mock(import("./SettingsScopeContext"), async (original) => ({
   ...(await original()),
   useSettingsScope: (() => {
-    const environments = state.targets.map(({ environmentId, settings }) => ({
-      environmentId,
-      label: environmentId,
+    const environment = {
+      environmentId: "env",
+      label: "Build workstation",
       serverConfig: {
-        settings,
+        settings: state.settings,
         environment: {
           capabilities: {
             storageCleanup: true,
@@ -52,16 +47,13 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
           },
         },
       },
-    }));
+    };
     return {
-      scope: { kind: "all" },
-      environments,
-      connectedEnvironments: environments,
-      targets: state.targets.map(({ environmentId, settings }) => ({
-        environmentId,
-        settings,
-      })),
-      target: state.targets[0] ? { settings: state.targets[0].settings } : null,
+      scope: { kind: "environment" },
+      environments: [environment],
+      connectedEnvironments: [environment],
+      targets: [],
+      target: null,
     };
   }) as never,
 }));
@@ -69,17 +61,16 @@ vi.mock(import("./useScopedSettings"), async (original) => ({
   ...(await original()),
   useScopedSettings: (() => state.settings) as never,
   useScopedSettingsMixed: () => false,
-  useUpdateScopedSettings: () => state.update,
+  useUpdateScopedSettings: () => vi.fn(),
   useClearScopedSettings: () => vi.fn(),
 }));
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
   SettingsPageContainer: (({ children }: { children: ReactNode }) => children) as never,
-  SettingsRow: ({ title, description, status, control, children }) => (
+  SettingsRow: ({ title, description, control, children }) => (
     <div>
       <h3>{title}</h3>
       {description}
-      {status}
       {control}
       {children}
     </div>
@@ -110,17 +101,6 @@ function setup() {
   };
   state.report = null;
   state.run.mockReset();
-  state.targets = [
-    { environmentId: "machine-a", settings: state.settings },
-    {
-      environmentId: "machine-b",
-      settings: {
-        ...state.settings,
-        storageCleanup: { ...state.settings.storageCleanup },
-      },
-    },
-  ];
-  state.update.mockReset().mockResolvedValue(undefined);
 }
 
 const panel = () => (
@@ -141,156 +121,4 @@ it("keeps cleanup disabled when settled retention and all other rules are off", 
   expect(button.disabled).toBe(true);
   await act(async () => button.click());
   expect(state.run).not.toHaveBeenCalled();
-});
-
-function setArtifactRetention(machineIndex: number, value: number | null) {
-  const target = state.targets[machineIndex]!;
-  target.settings = {
-    ...target.settings,
-    storageCleanup: { ...target.settings.storageCleanup, browserArtifactsAfterDays: value },
-  };
-  if (machineIndex === 0) state.settings = target.settings;
-}
-
-function retentionSwitch(container: HTMLElement) {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('[role="switch"]')).find(
-    (control) => control.getAttribute("aria-label") === "Delete old browser artifacts",
-  )!;
-}
-
-function ruleIsMixed(container: HTMLElement, title: string) {
-  return Array.from(container.querySelectorAll("h3"))
-    .find((heading) => heading.textContent === title)
-    ?.parentElement?.textContent?.includes("Mixed across selected machines");
-}
-
-const artifactIsMixed = (container: HTMLElement) =>
-  ruleIsMixed(container, "Delete old browser artifacts");
-const logsAreMixed = (container: HTMLElement) => ruleIsMixed(container, "Delete old rotated logs");
-
-function deferredSave() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
-function stepArtifacts(container: HTMLElement, direction: "Increase" | "Decrease") {
-  container
-    .querySelector<HTMLButtonElement>(`[aria-label="${direction} Delete old browser artifacts"]`)!
-    .click();
-}
-
-it("does not add a mixed warning before every machine projects a completed save", async () => {
-  setup();
-  setArtifactRetention(0, 9);
-  setArtifactRetention(1, 9);
-  const save = deferredSave();
-  state.update.mockReturnValue(save.promise);
-  await using screen = await render(panel());
-  expect(artifactIsMixed(screen.container)).toBe(false);
-
-  await act(async () => stepArtifacts(screen.container, "Increase"));
-  setArtifactRetention(0, 10);
-  const machineB = state.targets[1]!;
-  machineB.settings = {
-    ...machineB.settings,
-    storageCleanup: { ...machineB.settings.storageCleanup, logsAfterDays: 30 },
-  };
-  await act(async () => save.resolve());
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(false);
-  expect(logsAreMixed(screen.container)).toBe(true);
-
-  setArtifactRetention(1, 10);
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(false);
-
-  setArtifactRetention(1, 11);
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(true);
-});
-
-it.each([14, 30])(
-  "shows genuine differences after a partial save fails with a second value of %i",
-  async (secondValue) => {
-    setup();
-    setArtifactRetention(0, 14);
-    setArtifactRetention(1, secondValue);
-    const save = deferredSave();
-    let onFailed!: () => void;
-    state.update.mockImplementation((_patch, options) => {
-      onFailed = options.onFailed;
-      return save.promise;
-    });
-    await using screen = await render(panel());
-    expect(artifactIsMixed(screen.container)).toBe(secondValue !== 14);
-
-    await act(async () => retentionSwitch(screen.container).click());
-    setArtifactRetention(0, null);
-    await screen.rerender(panel());
-    expect(artifactIsMixed(screen.container)).toBe(secondValue !== 14);
-
-    await act(async () => {
-      onFailed();
-      save.resolve();
-    });
-    expect(artifactIsMixed(screen.container)).toBe(true);
-  },
-);
-
-it("keeps a reversed edit pending and ignores a superseded save failure", async () => {
-  setup();
-  setArtifactRetention(0, 9);
-  setArtifactRetention(1, 9);
-  const first = deferredSave();
-  const second = deferredSave();
-  let failFirst!: () => void;
-  state.update
-    .mockImplementationOnce((_patch, options) => {
-      failFirst = options.onFailed;
-      return first.promise;
-    })
-    .mockReturnValueOnce(second.promise);
-  await using screen = await render(panel());
-  await act(async () => stepArtifacts(screen.container, "Increase"));
-  await act(async () => stepArtifacts(screen.container, "Decrease"));
-
-  setArtifactRetention(0, 10);
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(false);
-  await act(async () => {
-    failFirst();
-    first.resolve();
-  });
-  expect(artifactIsMixed(screen.container)).toBe(false);
-
-  setArtifactRetention(0, 9);
-  setArtifactRetention(1, 10);
-  await act(async () => second.resolve());
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(false);
-  setArtifactRetention(1, 9);
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(false);
-
-  setArtifactRetention(1, 12);
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(true);
-});
-
-it("uses the newly selected machines rather than an older pending edit", async () => {
-  setup();
-  const save = deferredSave();
-  state.update.mockReturnValue(save.promise);
-  await using screen = await render(panel());
-  await act(async () => retentionSwitch(screen.container).click());
-  setArtifactRetention(0, 8);
-  state.targets[1] = { ...state.targets[1]!, environmentId: "machine-c" };
-  setArtifactRetention(1, 30);
-  await screen.rerender(panel());
-  expect(artifactIsMixed(screen.container)).toBe(true);
-  await act(async () => save.resolve());
-  expect(artifactIsMixed(screen.container)).toBe(true);
 });

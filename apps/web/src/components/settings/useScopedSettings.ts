@@ -57,9 +57,9 @@ function useRunScopedPlan() {
         description: plan.unavailableReason,
       });
       onFailed?.();
-      return Promise.resolve();
+      return;
     }
-    return persistScopedSettingsPatch(
+    void persistScopedSettingsPatch(
       plan,
       async (request) => {
         const missing = requiredScopesForServerSettingsPatch(request.input.patch).find(

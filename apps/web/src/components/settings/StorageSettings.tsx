@@ -695,61 +695,14 @@ export function StorageCleanupSections() {
   const { scope, connectedEnvironments, targets } = useSettingsScope();
   const scopedSettings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  type RetentionRule = "browserArtifactsAfterDays" | "logsAfterDays";
-  const [pendingRules, setPendingRules] = useState(
-    () =>
-      new Map<
-        RetentionRule,
-        {
-          targetSetKey: string;
-          value: number | null;
-          mixed: boolean;
-          saving: boolean;
-        }
-      >(),
-  );
-  const settings = scopedSettings.storageCleanup;
-  const targetSetKey = `${scope.kind}:${environmentIdsKey(targets.map((target) => target.environmentId).sort())}`;
-  const currentRuleMixed = (key: RetentionRule) =>
-    targets.some((target) => target.settings.storageCleanup[key] !== settings[key]);
-  for (const [key, pending] of pendingRules) {
-    if (
-      pending.targetSetKey !== targetSetKey ||
-      (!pending.saving &&
-        targets.every((target) => target.settings.storageCleanup[key] === pending.value))
-    ) {
-      const next = new Map(pendingRules);
-      next.delete(key);
-      setPendingRules(next);
-      break;
-    }
-  }
   if (scope.kind === "project" || scope.kind === "checkout") return null;
-  const saveRule = (key: RetentionRule, value: number | null) => {
-    const pending = {
-      targetSetKey,
-      value,
-      mixed: pendingRules.get(key)?.mixed ?? currentRuleMixed(key),
-      saving: true,
-    };
-    const updatePending = (saved: boolean) =>
-      setPendingRules((current) => {
-        if (current.get(key) !== pending) return current;
-        const next = new Map(current);
-        if (saved) next.set(key, { ...pending, saving: false });
-        else next.delete(key);
-        return next;
-      });
-    setPendingRules((current) => new Map(current).set(key, pending));
-    void updateSettings(
-      { storageCleanup: { [key]: value } },
-      { onFailed: () => updatePending(false) },
-    ).then(() => updatePending(true));
-  };
-  const ruleStatus = (key: RetentionRule) =>
-    (pendingRules.get(key)?.mixed ?? currentRuleMixed(key))
+  const settings = scopedSettings.storageCleanup;
+  const ruleStatus = (key: "browserArtifactsAfterDays" | "logsAfterDays") =>
+    targets.some((target) => target.settings.storageCleanup[key] !== settings[key])
       ? "Mixed across selected machines"
       : undefined;
+  const update = (patch: Partial<StorageCleanupSettings>) =>
+    updateSettings({ storageCleanup: patch });
   const databaseStorageNotice = (
     <DatabaseStorageNotice
       environments={connectedEnvironments.filter(
@@ -783,7 +736,7 @@ export function StorageCleanupSections() {
               <RetentionControl
                 label="Delete old browser artifacts"
                 value={settings.browserArtifactsAfterDays}
-                onChange={(value) => saveRule("browserArtifactsAfterDays", value)}
+                onChange={(browserArtifactsAfterDays) => update({ browserArtifactsAfterDays })}
               />
             }
           />
@@ -798,7 +751,7 @@ export function StorageCleanupSections() {
               <RetentionControl
                 label="Delete old rotated logs"
                 value={settings.logsAfterDays}
-                onChange={(value) => saveRule("logsAfterDays", value)}
+                onChange={(logsAfterDays) => update({ logsAfterDays })}
               />
             }
           />
