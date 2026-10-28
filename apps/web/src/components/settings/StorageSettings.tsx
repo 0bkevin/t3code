@@ -142,8 +142,8 @@ function RetentionControl({
             <NumberFieldDecrement aria-label={`Decrease ${label}`} />
             <NumberFieldInput
               aria-label={`${label} in days`}
-              size={new Intl.NumberFormat().format(draft ?? value).length}
-              className="field-sizing-content w-auto min-w-[1ch] grow-0 text-right"
+              size={5}
+              className="w-auto grow-0 text-right"
             />
             <span aria-hidden="true" className="self-center pr-2 text-xs">
               days
@@ -696,10 +696,15 @@ export function StorageCleanupSections() {
   const updateSettings = useUpdateScopedSettings();
   if (scope.kind === "project" || scope.kind === "checkout") return null;
   const settings = scopedSettings.storageCleanup;
-  const ruleStatus = (key: "browserArtifactsAfterDays" | "logsAfterDays") =>
-    targets.some((target) => target.settings.storageCleanup[key] !== settings[key])
-      ? "Mixed across selected machines"
-      : undefined;
+  const ruleStatus = (key: "browserArtifactsAfterDays" | "logsAfterDays") => {
+    if (targets.length < 2) return undefined;
+    const mixed = targets.some((target) => target.settings.storageCleanup[key] !== settings[key]);
+    return (
+      <span className={mixed ? undefined : "invisible"} aria-hidden={!mixed}>
+        Mixed across selected machines
+      </span>
+    );
+  };
   const update = (patch: Partial<StorageCleanupSettings>) =>
     updateSettings({ storageCleanup: patch });
   const databaseStorageNotice = (
